@@ -1,9 +1,25 @@
-//src/kernel/vga.zig
+// src/kernel/vga.zig
+//
+// Minimal VGA text‑mode driver for 80×25 mode.
+// Provides:
+//   • writeStringAt(row, col, text, fg, bg)
+//   • writeString(text, fg, bg) with cursor tracking
+//   • putChar()
+//   • scroll()
+//   • clearScreen()
+//
+// This is intentionally simple and synchronous — perfect for early kernel output.
 
 const VGA = @as([*]volatile u16, @ptrFromInt(0xB8000));
 const WIDTH = 80;
 const HEIGHT = 25;
 
+/// Global cursor position for writeString() and putChar()
+pub var cursor_row: usize = 0;
+pub var cursor_col: usize = 0;
+
+/// Write a string at a fixed position (no cursor movement).
+/// Colors: fg = foreground, bg = background (VGA 4‑bit each).
 pub fn writeStringAt(
     row: u16,
     col: u16,
@@ -15,17 +31,16 @@ pub fn writeStringAt(
 
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
-        const pos = row * 80 + col + @as(u16, @intCast(i));
+        const pos = row * WIDTH + col + @as(u16, @intCast(i));
         VGA[pos] = color | s[i];
     }
 }
 
-pub var cursor_row: usize = 0;
-pub var cursor_col: usize = 0;
-
-/// Scroll the screen up by one line
+/// Scroll the screen up by one line.
+/// Row 1 becomes row 0, row 2 becomes row 1, etc.
+/// Last row is cleared.
 pub fn scroll() void {
-    // Move rows 1..24 to rows 0..23
+    // Shift rows upward
     var row: usize = 1;
     while (row < HEIGHT) : (row += 1) {
         const src = row * WIDTH;
@@ -37,15 +52,16 @@ pub fn scroll() void {
         }
     }
 
-    // Clear the last row
+    // Clear last row (light grey on black)
     const last = (HEIGHT - 1) * WIDTH;
     var i: usize = 0;
     while (i < WIDTH) : (i += 1) {
-        VGA[last + i] = 0x0720; // space, light grey on black
+        VGA[last + i] = 0x0720; // space, fg=7, bg=0
     }
 }
 
-/// Write a single character at the current cursor position
+/// Write a single character at the current cursor position.
+/// Handles newline, wrapping, and scrolling.
 pub fn putChar(c: u8, fg: u8, bg: u8) void {
     const color = (@as(u16, bg) << 12) | (@as(u16, fg) << 8);
 
@@ -57,18 +73,21 @@ pub fn putChar(c: u8, fg: u8, bg: u8) void {
         cursor_col += 1;
     }
 
+    // Wrap horizontally
     if (cursor_col >= WIDTH) {
         cursor_col = 0;
         cursor_row += 1;
     }
 
+    // Scroll if needed
     if (cursor_row >= HEIGHT) {
         scroll();
         cursor_row = HEIGHT - 1;
     }
 }
 
-/// Write a string starting at the cursor
+/// Write a string starting at the next available line.
+/// Uses cursor tracking and putChar().
 pub fn writeString(s: []const u8, fg: u8, bg: u8) void {
     nextLine();
     var i: usize = 0;
@@ -77,9 +96,12 @@ pub fn writeString(s: []const u8, fg: u8, bg: u8) void {
     }
 }
 
+/// Move the cursor to the first empty line.
+/// If no empty line exists, scroll the screen.
 pub fn nextLine() void {
-    // Try to find the first empty line
     var row: usize = 0;
+
+    // Search for a fully blank row
     while (row < HEIGHT) : (row += 1) {
         var empty = true;
 
@@ -101,12 +123,14 @@ pub fn nextLine() void {
         }
     }
 
-    // No empty line found → scroll
+    // No empty line → scroll
     scroll();
     cursor_row = HEIGHT - 1;
     cursor_col = 0;
 }
 
+/// Clear the entire screen to the given fg/bg colors.
+/// Resets cursor to (0,0).
 pub fn clearScreen(fg: u8, bg: u8) void {
     const color = (@as(u16, bg) << 12) | (@as(u16, fg) << 8);
     const blank = color | 0x20; // space character
@@ -119,4 +143,3 @@ pub fn clearScreen(fg: u8, bg: u8) void {
     cursor_row = 0;
     cursor_col = 0;
 }
-

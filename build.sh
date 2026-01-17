@@ -1,5 +1,19 @@
 #!/bin/bash
 set -e
+
+# Choose which Zig to use:
+# System / existing Zig:
+# ZIG="/opt/zig/zig-x86_64-linux-0.16.0-dev.747+493ad58ff/zig"
+# New Zig dev build:
+# ZIG="/home/glen/zig/zig-0.16-dev/zig"
+# Default to system Zig if ZIG is not set externally
+#: "${ZIG:=/opt/zig/zig-x86_64-linux-0.16.0-dev.747+493ad58ff/zig}"
+: "${ZIG:=/home/glen/zig/zig-0.16-dev/zig}"
+echo "Using Zig at: $ZIG"
+$ZIG version
+
+
+
 ROOT=$(dirname "$0")
 SRC="$ROOT/src"
 BUILD="$ROOT/build"
@@ -9,7 +23,7 @@ echo "[1/6] Assembling bootloader..."
 nasm -f bin "$SRC/boot/boot.asm" -o "$BUILD/boot.bin"
 
 echo "[2/6] Compiling 64-bit Zig kernel..."
-zig build-obj "$SRC/kernel/kernel.zig" \
+$ZIG build-obj "$SRC/kernel/kernel.zig" \
     -target x86_64-freestanding \
     -mcpu=x86_64 \
     -O ReleaseSmall \

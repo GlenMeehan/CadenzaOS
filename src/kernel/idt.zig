@@ -1,9 +1,20 @@
 // src/kernel/idt.zig
+//
+// Interrupt Descriptor Table (IDT) setup and basic exception handling
+// for x86_64 long mode.
+//
+// Responsibilities:
+//   • Define IDT entry + IDTR structures
+//   • Build a 256-entry IDT
+//   • Install exception handlers for common faults
+//   • Provide a common Zig-level exception handler
+//
+// This is an early, simple implementation: no IRQs, no IST, no user mode.
 
 const vga = @import("vga.zig");
 const conv = @import("convert.zig");
 
-/// IDT entry structure (16 bytes for x86_64)
+/// IDT entry structure (16 bytes in x86_64)
 const IDTEntry = packed struct {
     /// Handler address bits 0–15
     offset_low: u16,
@@ -21,13 +32,13 @@ const IDTEntry = packed struct {
     reserved: u32 = 0,
 };
 
-/// IDT register structure
+/// IDT register structure (for lidt)
 const IDTR = packed struct {
     limit: u16,
     base: u64,
 };
 
-/// The IDT itself (256 entries)
+/// The IDT itself (256 entries, aligned to 16 bytes)
 var idt: [256]IDTEntry align(16) = [_]IDTEntry{.{
     .offset_low = 0,
     .selector = 0,
@@ -38,33 +49,33 @@ var idt: [256]IDTEntry align(16) = [_]IDTEntry{.{
     .reserved = 0,
 }} ** 256;
 
-/// Exception names for debugging
+/// Human-readable exception names for debugging
 const exception_names = [_][]const u8{
-    "Division By Zero",
-    "Debug",
-    "Non-Maskable Interrupt",
-    "Breakpoint",
-    "Overflow",
-    "Bound Range Exceeded",
-    "Invalid Opcode",
-    "Device Not Available",
-    "Double Fault",
-    "Coprocessor Segment Overrun",
-    "Invalid TSS",
-    "Segment Not Present",
-    "Stack-Segment Fault",
-    "General Protection Fault",
-    "Page Fault",
-    "Reserved",
-    "x87 Floating-Point Exception",
-    "Alignment Check",
-    "Machine Check",
-    "SIMD Floating-Point Exception",
-    "Virtualization Exception",
-    "Control Protection Exception",
+    "Division By Zero",                // 0
+    "Debug",                           // 1
+    "Non-Maskable Interrupt",          // 2
+    "Breakpoint",                      // 3
+    "Overflow",                        // 4
+    "Bound Range Exceeded",            // 5
+    "Invalid Opcode",                  // 6
+    "Device Not Available",            // 7
+    "Double Fault",                    // 8
+    "Coprocessor Segment Overrun",     // 9
+    "Invalid TSS",                     // 10
+    "Segment Not Present",             // 11
+    "Stack-Segment Fault",             // 12
+    "General Protection Fault",        // 13
+    "Page Fault",                      // 14
+    "Reserved",                        // 15
+    "x87 Floating-Point Exception",    // 16
+    "Alignment Check",                 // 17
+    "Machine Check",                   // 18
+    "SIMD Floating-Point Exception",   // 19
+    "Virtualization Exception",        // 20
+    "Control Protection Exception",    // 21
 };
 
-/// Set an IDT entry
+/// Set an IDT entry at `index` to point to `handler`.
 fn setIDTEntry(index: u8, handler: u64, selector: u16, flags: u8) void {
     idt[index] = IDTEntry{
         .offset_low = @truncate(handler & 0xFFFF),
@@ -77,13 +88,15 @@ fn setIDTEntry(index: u8, handler: u64, selector: u16, flags: u8) void {
     };
 }
 
-/// Initialize and load the IDT
-//vga.writeStringAt(0, 0, "IDT.init called", 0x0F, 0x00);
+/// Initialize and load the IDT.
+///
+/// Installs handlers for a subset of CPU exceptions and then loads
+/// the IDT using lidt.
 pub fn init() void {
-    // Set up exception handlers
-    const cs_selector: u16 = 0x18;
-    const flags: u8 = 0x8E;
+    const cs_selector: u16 = 0x18; // 64-bit kernel code segment
+    const flags: u8 = 0x8E;        // present, ring 0, 64-bit interrupt gate
 
+    // Basic exception handlers
     setIDTEntry(0,  @intFromPtr(&exception0_asm),  cs_selector, flags);
     setIDTEntry(1,  @intFromPtr(&exception1_asm),  cs_selector, flags);
     setIDTEntry(2,  @intFromPtr(&exception2_asm),  cs_selector, flags);
@@ -96,33 +109,30 @@ pub fn init() void {
     setIDTEntry(13, @intFromPtr(&exception13_asm), cs_selector, flags);
     setIDTEntry(14, @intFromPtr(&exception14_asm), cs_selector, flags);
 
-    // Load the IDT - using a different approach
+    // Build IDTR
     const idtr = IDTR{
         .limit = @sizeOf(@TypeOf(idt)) - 1,
         .base = @intFromPtr(&idt),
     };
 
-    // Store idtr on stack and load it
+    // Load IDT
     const idtr_ptr = &idtr;
-
     asm volatile (
         \\lidt (%[ptr])
     :
     : [ptr] "r" (idtr_ptr),
     );
-
-    //vga.writeStringAt(2, 0, "IDT loaded", 0x0F, 0x00);
 }
 
-
-/// Common exception handler (runs with normal SysV ABI)
+/// Common Zig-level exception handler.
+///
+/// Called by `exceptionHandlerWrapper` after the assembly stub has
+/// decoded the exception number and error code.
 fn exceptionHandler(num: u64, error_code: u64) noreturn {
-
     vga.clearScreen(15, 4);
-    // Print exception info
-    //vga.writeStringAt(10, 0, "EXCEPTION!", 0x0F, 0x04);
 
     var buf: [16]u8 = undefined;
+
     vga.writeStringAt(12, 0, "Exception #", 0x0F, 0x04);
     vga.writeStringAt(12, 11, conv.toHex(u64, num, &buf), 0x0F, 0x04);
 
@@ -139,7 +149,23 @@ fn exceptionHandler(num: u64, error_code: u64) noreturn {
     }
 }
 
-// Assembly stubs – emitted at comptime into the object file
+// ------------------------------------------------------------
+// Assembly stubs
+// ------------------------------------------------------------
+//
+// These are emitted at comptime and provide the low-level glue
+// between the CPU's interrupt mechanism and the Zig handler.
+//
+// Each exception stub:
+//   • pushes an error code (real or dummy)
+//   • pushes the exception number
+//   • jumps to exceptionCommonAsm
+//
+// exceptionCommonAsm:
+//   • moves RSP into RDI (first SysV argument)
+//   • calls exceptionHandlerWrapper(stack_ptr)
+// ------------------------------------------------------------
+
 comptime {
     asm (
         \\.global exception0_asm
@@ -227,12 +253,15 @@ extern fn exception8_asm() void;
 extern fn exception13_asm() void;
 extern fn exception14_asm() void;
 
-/// Wrapper called from assembly, interprets stack and calls the Zig handler
+/// Wrapper called from assembly, interprets the stack and calls the Zig handler.
+///
+/// Stack layout at entry (top of stack = lowest address):
+///   [RSP + 0]  = error code
+///   [RSP + 8]  = exception number
+///
+/// We receive RSP as `stack_ptr` and decode these two values.
 export fn exceptionHandlerWrapper(stack_ptr: u64) noreturn {
-    // Stack layout:
-    // [rsp + 8]: exception number
-    // [rsp + 0]: error code
-    const num_ptr = @as(*const u64, @ptrFromInt(stack_ptr));      // Changed: + 0
-    const err_ptr = @as(*const u64, @ptrFromInt(stack_ptr + 8));  // Changed: + 8
+    const err_ptr = @as(*const u64, @ptrFromInt(stack_ptr + 0));
+    const num_ptr = @as(*const u64, @ptrFromInt(stack_ptr + 8));
     exceptionHandler(num_ptr.*, err_ptr.*);
 }
