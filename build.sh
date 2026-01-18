@@ -26,6 +26,7 @@ echo "[2/6] Compiling 64-bit Zig kernel..."
 $ZIG build-obj "$SRC/kernel/kernel.zig" \
     -target x86_64-freestanding \
     -mcpu=x86_64 \
+    -mcmodel=large \
     -O ReleaseSmall \
     -fno-stack-protector \
     -femit-bin="$BUILD/kernel.o"

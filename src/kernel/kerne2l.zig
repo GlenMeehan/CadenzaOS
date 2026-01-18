@@ -134,7 +134,7 @@ pub export fn kmain() noreturn {
     idt.init();
     vga.writeStringAt(21, 0, "IDT initialized", 15, 0);
 
-     //Display boot info again (for IDT debug)
+    // Display boot info again (for IDT debug)
     const idt_info = bi.get();
     var buf_idt: [16]u8 = undefined;
 
@@ -181,7 +181,7 @@ pub export fn kmain() noreturn {
     }
 
     // --- Bitmap initialization and reserved ranges ---
-    //Initialize bitmap from usable regions
+    // Initialize bitmap from usable regions
     bm.init(regions);
 
     // Mark kernel image as used

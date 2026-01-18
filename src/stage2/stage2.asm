@@ -8,32 +8,25 @@
 ;==================================================================================================
 ; MEMORY MAP CONSTANTS
 ;==================================================================================================
-E820_BUF     equ 0x9000      ; E820 memory map storage
-MMAP_COUNT   equ 0x8FF8      ; E820 entry count (32-bit)
+E820_BUF        equ 0x9000          ; E820 memory map storage
+MMAP_COUNT      equ 0x8FF8          ; E820 entry count (32-bit)
 
-EARLY_STACK_TOP    equ 0x70000      ; Stack top (grows down)
-KERNEL_STACK_TOP   equ 0x80000      ; Kernel stack top
-;KERNEL_STACK_SIZE  equ 0x4000       ; 16 KiB
+KERNEL_OFFSET   equ 0xFFFFFFFF80000000
+KERNEL_LOAD_PHYS equ 0x00100000
+%include "build/kernel_info.inc"    ; Defines KERNEL_SECTORS
 
-; Page table locations (identity map first 2MB)
-PML4_ADDR    equ 0x1000      ; Page Map Level 4
-PDPT_ADDR    equ 0x2000      ; Page Directory Pointer Table
-PD_ADDR      equ 0x3000      ; Page Directory
+EARLY_STACK_TOP equ 0x70000         ; Early stack top (grows down)
+KERNEL_STACK_TOP equ 0x80000        ; Kernel stack top
+
+; Page table locations
+PML4_ADDR       equ 0x1000          ; Page Map Level 4
+PDPT_ADDR       equ 0x2000          ; Page Directory Pointer Table
+PD_ADDR         equ 0x3000          ; Page Directory
 
 ;==================================================================================================
 ; BOOT INFO - Data passed from bootloader to kernel
 ;==================================================================================================
 BOOT_INFO_ADDR  equ 0x7000
-
-; Structure layout:
-; +0x00: Kernel start address (u64)
-; +0x08: Kernel end address (u64)
-; +0x10: Kernel size in bytes (u64)
-; +0x18: Stack top (u64)
-; +0x20: E820 entry count (u32)
-; +0x24: Padding (u32)
-; +0x28: E820 buffer address (u64)
-; +0x30: Page table base PML4 (u64)
 
 ;==================================================================================================
 ; REAL MODE ENTRY POINT
@@ -182,14 +175,45 @@ pm_entry:
     mov dword [edi], eax
     mov dword [edi + 4], 0
 
-    ; Build PD: Entry 0 maps 0-2MB
+    ; Build PD: map first 8 MiB using 2 MiB pages
     mov edi, PD_ADDR
-    mov eax, 0x00000083        ; Present | RW | PS (2MB page)
+
+    ; 0–2 MiB
+    mov eax, 0x00000083          ; phys 0x00000000, PS | RW | P
     mov dword [edi], eax
     mov dword [edi + 4], 0
 
+    ; 2–4 MiB
+    mov eax, 0x00200083          ; phys 0x00200000
+    mov dword [edi + 8], eax
+    mov dword [edi + 12], 0
+
+    ; 4–6 MiB
+    mov eax, 0x00400083          ; phys 0x00400000
+    mov dword [edi + 16], eax
+    mov dword [edi + 20], 0
+
+    ; 6–8 MiB
+    mov eax, 0x00600083          ; phys 0x00600000
+    mov dword [edi + 24], eax
+    mov dword [edi + 28], 0
+
     ; Print 'T' to show page tables built
     mov word [0xB8006], 0x0F54
+
+; ------------------------------------------------------------
+; Mirror low mappings into higher half (PML4[511] = PML4[0])
+; ------------------------------------------------------------
+    mov edi, PML4_ADDR          ; base of PML4
+    mov eax, [edi]              ; low 32 bits of PML4[0]
+    mov edx, [edi + 4]          ; high 32 bits of PML4[0]
+
+    mov ebx, 511 * 8
+    add edi, ebx                ; point to PML4[511]
+
+    mov [edi], eax
+    mov [edi + 4], edx
+; ------------------------------------------------------------
 
 ;==================================================================================================
 ; ENABLE LONG MODE
@@ -218,10 +242,8 @@ pm_entry:
 ;==================================================================================================
 ; LOAD KERNEL
 ;==================================================================================================
-%include "build/kernel_info.inc"  ; Defines KERNEL_SECTORS
-
     mov esi, 3              ; Start at LBA sector 3
-    mov edi, 0x100000       ; Load at 1MB
+    mov edi, KERNEL_LOAD_PHYS
     mov ebx, KERNEL_SECTORS
 
 .load_kernel_loop:
@@ -237,7 +259,7 @@ pm_entry:
 ; FILL BOOT INFO STRUCTURE
 ;==================================================================================================
     ; Kernel start (offset 0x00)
-    mov dword [BOOT_INFO_ADDR + 0x00], 0x100000
+    mov dword [BOOT_INFO_ADDR + 0x00], KERNEL_LOAD_PHYS
     mov dword [BOOT_INFO_ADDR + 0x04], 0x00000000
 
     ; Calculate kernel size in bytes
@@ -246,7 +268,7 @@ pm_entry:
 
     ; Kernel end (offset 0x08)
     mov edx, eax
-    add edx, 0x100000
+    add edx, KERNEL_LOAD_PHYS
     mov dword [BOOT_INFO_ADDR + 0x08], edx
     mov dword [BOOT_INFO_ADDR + 0x0C], 0x00000000
 
@@ -366,7 +388,9 @@ long_mode_entry:
     mov word [rdi + 0x10], 0x0F36
     mov word [rdi + 0x12], 0x0F34
 
-    ; Jump to kernel
-    ;extern kernel_entry
+    ; Set up boot_info pointer in RDI (even if kernel_entry ignores it now)
+    mov rdi, BOOT_INFO_ADDR
+
+    ; Jump to kernel (higher-half entry)
     mov rax, KERNEL_ENTRY
     jmp rax

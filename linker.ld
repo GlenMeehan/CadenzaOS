@@ -1,8 +1,10 @@
 ENTRY(kernel_entry)
 
+KERNEL_OFFSET = 0xFFFFFF8000000000;
+
 SECTIONS {
     /* Load kernel at 1MiB */
-    . = 0x100000;
+    . = KERNEL_OFFSET + 0x00100000;
 
     /* Mark start of the kernel image */
     _kernel_start = .;

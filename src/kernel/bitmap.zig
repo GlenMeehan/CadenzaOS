@@ -92,10 +92,16 @@ pub fn markUsedRange(start_phys: usize, end_phys: usize) void {
 
 /// Return the physical address range occupied by the bitmap itself.
 /// This must be marked as used so the allocator never hands it out.
+const KERNEL_OFFSET: usize = 0xFFFFFF8000000000;
+
 pub fn getStorageRange() struct { start: usize, end: usize } {
-    const start = @intFromPtr(&bitmap_storage[0]);
-    const end   = start + bitmap_storage.len;
-    return .{ .start = start, .end = end };
+    const virt_start = @intFromPtr(&bitmap_storage[0]);
+    const virt_end   = virt_start + bitmap_storage.len;
+
+    const phys_start = virt_start - KERNEL_OFFSET;
+    const phys_end   = virt_end - KERNEL_OFFSET;
+
+    return .{ .start = phys_start, .end = phys_end };
 }
 
 // ------------------------------------------------------------
