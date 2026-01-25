@@ -8,25 +8,25 @@
 ;==================================================================================================
 ; MEMORY MAP CONSTANTS
 ;==================================================================================================
-E820_BUF        equ 0x9000          ; E820 memory map storage
-MMAP_COUNT      equ 0x8FF8          ; E820 entry count (32-bit)
+E820_BUF         equ 0x9000          ; E820 memory map storage
+MMAP_COUNT       equ 0x8FF8          ; E820 entry count (32-bit)
 
-KERNEL_OFFSET   equ 0xFFFFFFFF80000000
+KERNEL_OFFSET    equ 0xFFFFFFFF80000000
 KERNEL_LOAD_PHYS equ 0x00100000
-%include "build/kernel_info.inc"    ; Defines KERNEL_SECTORS
+%include "build/kernel_info.inc"     ; Defines KERNEL_SECTORS
 
-EARLY_STACK_TOP equ 0x70000         ; Early stack top (grows down)
-KERNEL_STACK_TOP equ 0x80000        ; Kernel stack top
+EARLY_STACK_TOP  equ 0x70000         ; Early stack top (grows down)
+KERNEL_STACK_TOP equ 0x80000         ; Kernel stack top
 
 ; Page table locations
-PML4_ADDR       equ 0x1000          ; Page Map Level 4
-PDPT_ADDR       equ 0x2000          ; Page Directory Pointer Table
-PD_ADDR         equ 0x3000          ; Page Directory
+PML4_ADDR        equ 0x1000          ; Page Map Level 4
+PDPT_ADDR        equ 0x2000          ; Page Directory Pointer Table
+PD_ADDR          equ 0x3000          ; Page Directory
 
 ;==================================================================================================
 ; BOOT INFO - Data passed from bootloader to kernel
 ;==================================================================================================
-BOOT_INFO_ADDR  equ 0x7000
+BOOT_INFO_ADDR   equ 0x7000
 
 ;==================================================================================================
 ; REAL MODE ENTRY POINT
@@ -155,94 +155,9 @@ pm_entry:
     loop .print_loop
 
 ;==================================================================================================
-; BUILD PAGE TABLES FOR LONG MODE
-;==================================================================================================
-    ; Zero out page table memory (12 KB)
-    mov edi, PML4_ADDR
-    mov ecx, 3072
-    xor eax, eax
-    rep stosd
-
-    ; Build PML4: Entry 0 points to PDPT
-    mov edi, PML4_ADDR
-    mov eax, PDPT_ADDR | 0x03
-    mov dword [edi], eax
-    mov dword [edi + 4], 0
-
-    ; Build PDPT: Entry 0 points to PD
-    mov edi, PDPT_ADDR
-    mov eax, PD_ADDR | 0x03
-    mov dword [edi], eax
-    mov dword [edi + 4], 0
-
-    ; Build PD: map first 8 MiB using 2 MiB pages
-    mov edi, PD_ADDR
-
-    ; 0–2 MiB
-    mov eax, 0x00000083          ; phys 0x00000000, PS | RW | P
-    mov dword [edi], eax
-    mov dword [edi + 4], 0
-
-    ; 2–4 MiB
-    mov eax, 0x00200083          ; phys 0x00200000
-    mov dword [edi + 8], eax
-    mov dword [edi + 12], 0
-
-    ; 4–6 MiB
-    mov eax, 0x00400083          ; phys 0x00400000
-    mov dword [edi + 16], eax
-    mov dword [edi + 20], 0
-
-    ; 6–8 MiB
-    mov eax, 0x00600083          ; phys 0x00600000
-    mov dword [edi + 24], eax
-    mov dword [edi + 28], 0
-
-    ; Print 'T' to show page tables built
-    mov word [0xB8006], 0x0F54
-
-; ------------------------------------------------------------
-; Mirror low mappings into higher half (PML4[511] = PML4[0])
-; ------------------------------------------------------------
-    mov edi, PML4_ADDR          ; base of PML4
-    mov eax, [edi]              ; low 32 bits of PML4[0]
-    mov edx, [edi + 4]          ; high 32 bits of PML4[0]
-
-    mov ebx, 511 * 8
-    add edi, ebx                ; point to PML4[511]
-
-    mov [edi], eax
-    mov [edi + 4], edx
-; ------------------------------------------------------------
-
-;==================================================================================================
-; ENABLE LONG MODE
-;==================================================================================================
-    ; Load CR3 with PML4 address
-    mov eax, PML4_ADDR
-    mov cr3, eax
-
-    ; Enable PAE
-    mov eax, cr4
-    or eax, 1 << 5
-    mov cr4, eax
-
-    ; Print 'P' to show PAE enabled
-    mov word [0xB8008], 0x0F50
-
-    ; Enable Long Mode (set EFER.LME)
-    mov ecx, 0xC0000080
-    rdmsr
-    or eax, 1 << 8
-    wrmsr
-
-    ; Print 'E' to show LME enabled
-    mov word [0xB800A], 0x0F45
-
-;==================================================================================================
 ; LOAD KERNEL
 ;==================================================================================================
-    mov esi, 3              ; Start at LBA sector 3
+    mov esi, 3                  ; Start at LBA sector 3
     mov edi, KERNEL_LOAD_PHYS
     mov ebx, KERNEL_SECTORS
 
@@ -264,11 +179,11 @@ pm_entry:
 
     ; Calculate kernel size in bytes
     mov eax, KERNEL_SECTORS
-    imul eax, 512
+    imul eax, 512               ; eax = kernel_size_bytes
 
     ; Kernel end (offset 0x08)
     mov edx, eax
-    add edx, KERNEL_LOAD_PHYS
+    add edx, KERNEL_LOAD_PHYS   ; edx = kernel_phys_end
     mov dword [BOOT_INFO_ADDR + 0x08], edx
     mov dword [BOOT_INFO_ADDR + 0x0C], 0x00000000
 
@@ -294,6 +209,107 @@ pm_entry:
     ; Page table base (offset 0x30)
     mov dword [BOOT_INFO_ADDR + 0x30], PML4_ADDR
     mov dword [BOOT_INFO_ADDR + 0x34], 0x00000000
+
+;==================================================================================================
+; BUILD PAGE TABLES FOR LONG MODE
+;==================================================================================================
+
+    ; Zero out page table memory (12 KB)
+    mov edi, PML4_ADDR
+    mov ecx, 3072
+    xor eax, eax
+    rep stosd
+
+    ; ------------------------------------------------------------
+    ; Build PML4: Entry 0 → PDPT
+    ; ------------------------------------------------------------
+    mov edi, PML4_ADDR
+    mov eax, PDPT_ADDR | 0x03
+    mov [edi], eax
+    mov dword [edi + 4], 0
+
+    ; ------------------------------------------------------------
+    ; Build PDPT: Entry 0 → PD
+    ; ------------------------------------------------------------
+    mov edi, PDPT_ADDR
+    mov eax, PD_ADDR | 0x03
+    mov [edi], eax
+    mov dword [edi + 4], 0
+
+    ; ------------------------------------------------------------
+    ; Build PD: map full kernel image using 2 MiB pages
+    ; ------------------------------------------------------------
+    mov edi, PD_ADDR                 ; PD base
+
+    ; Map a generous window: [0 .. 16 MiB)
+    mov eax, 0x00000000          ; phys_start
+    mov ebx, 0x01000000          ; phys_end
+
+    ; (eax is already aligned to 2 MiB)
+
+
+    ; PD index = phys_start / 2MiB
+    mov ecx, eax
+    shr ecx, 21                      ; ecx = PD index
+
+map_kernel_pages:
+        cmp eax, ebx
+        jge .done
+
+        ; Build PD entry: phys | PS | RW | P
+        mov edx, eax
+        or edx, 0x83                 ; 0x80 = PS, 0x02 = RW, 0x01 = P
+
+        ; Write entry into PD
+        mov [edi + ecx*8], edx
+        mov dword [edi + ecx*8 + 4], 0
+
+        ; Next 2 MiB
+        add eax, 0x200000
+        inc ecx
+        jmp map_kernel_pages
+
+.done:
+
+    ; ------------------------------------------------------------
+    ; Mirror low mappings into higher half (PML4[511] = PML4[0])
+    ; ------------------------------------------------------------
+    mov edi, PML4_ADDR
+    mov eax, [edi]
+    mov edx, [edi + 4]
+
+    mov ebx, 511 * 8
+    add edi, ebx
+
+    mov [edi], eax
+    mov [edi + 4], edx
+
+    ; Print 'T' to show page tables built
+    mov word [0xB8006], 0x0F54
+
+;==================================================================================================
+; ENABLE LONG MODE
+;==================================================================================================
+    ; Load CR3 with PML4 address
+    mov eax, PML4_ADDR
+    mov cr3, eax
+
+    ; Enable PAE
+    mov eax, cr4
+    or eax, 1 << 5
+    mov cr4, eax
+
+    ; Print 'P' to show PAE enabled
+    mov word [0xB8008], 0x0F50
+
+    ; Enable Long Mode (set EFER.LME)
+    mov ecx, 0xC0000080
+    rdmsr
+    or eax, 1 << 8
+    wrmsr
+
+    ; Print 'E' to show LME enabled
+    mov word [0xB800A], 0x0F45
 
 ;==================================================================================================
 ; ACTIVATE LONG MODE

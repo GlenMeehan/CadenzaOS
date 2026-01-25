@@ -31,9 +31,15 @@ $ZIG build-obj "$SRC/kernel/kernel.zig" \
     -fno-stack-protector \
     -femit-bin="$BUILD/kernel.o"
 
+echo "[2.5/6] Assembling IRQ stubs..."
+nasm -f elf64 "$SRC/kernel/interrupts/irq_stubs.asm" -o "$BUILD/irq_stubs.o"
+
 echo "[3/6] Linking 64-bit kernel..."
 # Step 1: Link to ELF (keeps entry point info)
-ld -m elf_x86_64 -T "$ROOT/linker.ld" -o "$BUILD/kernel.elf" "$BUILD/kernel.o"
+ld -m elf_x86_64 -T "$ROOT/linker.ld" -o "$BUILD/kernel.elf" \
+    "$BUILD/kernel.o" \
+    "$BUILD/irq_stubs.o"
+
 
 # Step 2: Extract the entry point address
 ENTRY_POINT=$(readelf -h "$BUILD/kernel.elf" | grep "Entry point" | awk '{print $4}')
@@ -72,7 +78,8 @@ qemu-system-x86_64 \
   -no-reboot \
   -no-shutdown \
   -D qemu.log \
-  -d int,cpu_reset,in_asm
+  -d int,cpu_reset,in_asm \
+  -vga std
 #qemu-system-x86_64 -drive format=raw,file="$BUILD/disk.img" -no-reboot -monitor stdio
 #qemu-system-x86_64 -drive format=raw,file=build/disk.img -no-reboot -d int -monitor stdio
 #qemu-system-i386 -cpu qemu64 -drive format=raw,file=build/disk.img -no-reboot -d int -monitor stdio

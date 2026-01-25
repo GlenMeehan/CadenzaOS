@@ -2,6 +2,7 @@ const std = @import("std");
 const frame_allocator = @import("frame_allocator.zig");
 const Region = frame_allocator.Region;
 const vga = @import("vga.zig");
+const mem = @import("memory.zig");
 
 pub const PAGE_SIZE: usize = 4096;
 
@@ -98,8 +99,9 @@ pub fn getStorageRange() struct { start: usize, end: usize } {
     const virt_start = @intFromPtr(&bitmap_storage[0]);
     const virt_end   = virt_start + bitmap_storage.len;
 
-    const phys_start = virt_start - KERNEL_OFFSET;
-    const phys_end   = virt_end - KERNEL_OFFSET;
+    const phys_start = mem.virtToPhys(virt_start);
+    const phys_end   = mem.virtToPhys(virt_end);
+
 
     return .{ .start = phys_start, .end = phys_end };
 }

@@ -10,6 +10,7 @@
 //
 // This is intentionally simple and synchronous — perfect for early kernel output.
 
+const conv = @import("convert.zig");
 const VGA = @as([*]volatile u16, @ptrFromInt(0xB8000));
 const WIDTH = 80;
 const HEIGHT = 25;
@@ -143,3 +144,11 @@ pub fn clearScreen(fg: u8, bg: u8) void {
     cursor_row = 0;
     cursor_col = 0;
 }
+
+pub fn step(n: u8) void {
+    var buf: [4]u8 = undefined;
+    const hex = conv.toHex(u8, n, &buf);
+    writeStringAt(0, 72, "STEP: ", 15, 0);
+    writeStringAt(0, 77, hex, 15, 0);
+}
+

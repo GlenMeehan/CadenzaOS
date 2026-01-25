@@ -12,9 +12,18 @@ const e820_test = @import("e820_test.zig");
 const E820Store = @import("E820Store.zig");
 const bm = @import("bitmap.zig");
 const page_alloc_mod = @import("page_allocator.zig");
+const idt = @import("idt.zig");
+const io = @import("port_io.zig");
+const pic = @import("pic.zig");
+const interrupts = @import("irupts.zig");
+const mouse = @import("drivers/mouse.zig");
 
 pub const STACK_SIZE = 0x4000;        // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
+extern fn irq0_stub() void;
+extern fn irq1_stub() void;
+extern fn irq12_stub() void;
+var ticks: u64 = 0;
 
 // Early static heap used with FixedBufferAllocator (bootstrap heap)
 var heap_buffer: [4 * 1024 * 1024]u8 align(4096) = undefined;
@@ -55,6 +64,12 @@ pub fn panic(
     }
 }
 
+comptime {
+    _ = interrupts.irq0_handler;
+    _ = interrupts.irq1_handler;
+    _ = interrupts.irq12_handler;
+}
+
 /// Bootloader entry point.
 /// Transfers control to kmain and never returns.
 export fn kernel_entry() void {
@@ -66,6 +81,7 @@ export fn kernel_entry() void {
 /// Sets up memory info, basic heap, frame allocator, IDT, bitmap,
 /// and runs a few sanity tests (std allocator + frame allocator stress test).
 pub export fn kmain() noreturn {
+    vga.step(0);
     // Optional debug pause
     // db.pause();
 
@@ -74,9 +90,11 @@ pub export fn kmain() noreturn {
 
     // 1) Copy E820 entries into kernel-owned memory.
     E820Store.init();
+    vga.step(1);
 
     // 2) Tell E820.zig to use the safe copy.
     e820.setTable(E820Store.getTableAddr(), E820Store.getTableCount());
+    vga.step(2);
 
     // 3) Set up a simple heap allocator from the static buffer.
     var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
@@ -84,6 +102,7 @@ pub export fn kmain() noreturn {
 
     // 4) Initialize frame allocator (backed by safe E820 data).
     fa.FrameAllocator.init();
+    vga.step(3);
 
     // --- Simple hex conversion debug output ---
     const x: u64 = 0x1234ABCDEF112233;
@@ -130,11 +149,25 @@ pub export fn kmain() noreturn {
     }
 
     // --- IDT setup ---
-    const idt = @import("idt.zig");
     idt.init();
-    vga.writeStringAt(21, 0, "IDT initialized", 15, 0);
+    idt.setGate(32, @intFromPtr(&irq0_stub));
+    idt.setGate(33, @intFromPtr(&irq1_stub));
+    idt.setGate(44, @intFromPtr(&irq12_stub));
 
-     //Display boot info again (for IDT debug)
+    pic.remap(32, 40);
+    pic.unmaskIrq(@as(u8, 0)); //timer
+    pic.unmaskIrq(@as(u8, 1));//keyborad
+    pic.unmaskIrq(@as(u8, 2));  // cascade to slave PIC
+    pic.unmaskIrq(@as(u8, 12));//mouse
+
+    mouse.initMouse();   // PS/2 controller + mouse
+    asm volatile ("sti");
+
+
+    vga.step(4);
+    vga.writeStringAt(21, 0, "IDT + PIC remapped", 15, 0);
+
+    // Display boot info again (for IDT debug)
     const idt_info = bi.get();
     var buf_idt: [16]u8 = undefined;
 
@@ -144,19 +177,7 @@ pub export fn kmain() noreturn {
     vga.writeStringAt(23, 0, "Kernel end:   ", 15, 0);
     vga.writeStringAt(23, 15, conv.toHex(u64, idt_info.kernel_end, &buf_idt), 15, 0);
 
-    // --- Exception tests (leave commented for now) ---
-    // tests.trigger_divide_by_zero();
-    // tests.test_breakpoint();
-    // tests.test_invalid_opcode();
-    // tests.test_gpf();
-    // tests.test_page_fault();
-    // @panic("TEST");
 
-    // --- Optional allocator tests using bootstrap heap ---
-    const ENABLE_TESTS = false;
-    if (ENABLE_TESTS) {
-        tests.runAllocatorTests(allocator);
-    }
 
     // --- Frame allocator: usable regions from E820 ---
     fa.FrameAllocator.init();
@@ -180,15 +201,26 @@ pub export fn kmain() noreturn {
         idx += 1;
     }
 
+
     // --- Bitmap initialization and reserved ranges ---
-    //Initialize bitmap from usable regions
+    // Initialize bitmap from usable regions
     bm.init(regions);
+    vga.step(5);
 
     // Mark kernel image as used
     bm.markUsedRange(info.kernel_start, info.kernel_end);
 
     // Mark stack as used
     bm.markUsedRange(info.stack_top - STACK_SIZE, info.stack_top);
+    vga.step(6);
+
+
+
+    //Mark heap as used
+    const mem = @import("memory.zig");
+    const heap_virt = @intFromPtr(&heap_buffer[0]);
+    const heap_phys = mem.virtToPhys(heap_virt);
+    bm.markUsedRange(heap_phys, heap_phys + heap_buffer.len);
 
     // Mark E820 table as used
     const e820_start = E820Store.getTableAddr();
@@ -210,6 +242,8 @@ pub export fn kmain() noreturn {
     vga.writeString(conv.toHex(u64, bmRange.start, &buf_bm_range), 15, 0);
     vga.writeString("Bitmap end:   0x", 15, 0);
     vga.writeString(conv.toHex(u64, bmRange.end, &buf_bm_range), 15, 0);
+
+
 
     // --- Test: std.ArrayList using custom page allocator ---
     var page_alloc = page_alloc_mod.PageAllocator.init();
@@ -238,6 +272,8 @@ pub export fn kmain() noreturn {
         slot.* = frame;
     }
 
+
+
     // Free them in reverse
     var i: usize = addrs.len;
     while (i > 0) : (i -= 1) {
@@ -250,6 +286,33 @@ pub export fn kmain() noreturn {
         vga.writeString("Allocator reuse OK", 15, 2);
     } else {
         vga.writeString("Allocator not reusing frames!", 15, 4);
+    }
+    var buf_status: [16]u8 = undefined;
+    const status = io.inb(0x64); // keyboard controller status port
+    vga.writeString("KBC status: ", 15, 0);
+    vga.writeString(conv.toHex(u64, status, &buf_status), 15, 0);
+
+
+    // --- Exception tests (leave commented for now) ---
+    // tests.trigger_divide_by_zero();
+    // tests.test_breakpoint();
+    // tests.test_invalid_opcode();
+    // tests.test_gpf();
+    // tests.test_page_fault();
+    const FORCE_PANIC = false;
+    if (FORCE_PANIC) {
+        @panic("TEST");
+    }
+
+    //vga.clearScreen(0, 0);
+    asm volatile ("sti");
+
+
+    // --- Optional allocator tests using bootstrap heap ---
+    const ENABLE_TESTS = false;
+    if (ENABLE_TESTS) {
+        tests.runAllocatorTests(allocator);
+        vga.step(7);
     }
 
     // Halt the CPU forever

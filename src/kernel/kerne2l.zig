@@ -12,6 +12,7 @@ const e820_test = @import("e820_test.zig");
 const E820Store = @import("E820Store.zig");
 const bm = @import("bitmap.zig");
 const page_alloc_mod = @import("page_allocator.zig");
+const idt = @import("idt.zig");
 
 pub const STACK_SIZE = 0x4000;        // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
@@ -130,7 +131,7 @@ pub export fn kmain() noreturn {
     }
 
     // --- IDT setup ---
-    const idt = @import("idt.zig");
+
     idt.init();
     vga.writeStringAt(21, 0, "IDT initialized", 15, 0);
 
@@ -145,12 +146,12 @@ pub export fn kmain() noreturn {
     vga.writeStringAt(23, 15, conv.toHex(u64, idt_info.kernel_end, &buf_idt), 15, 0);
 
     // --- Exception tests (leave commented for now) ---
-    // tests.trigger_divide_by_zero();
-    // tests.test_breakpoint();
-    // tests.test_invalid_opcode();
-    // tests.test_gpf();
-    // tests.test_page_fault();
-    // @panic("TEST");
+     tests.trigger_divide_by_zero();
+     tests.test_breakpoint();
+     tests.test_invalid_opcode();
+     tests.test_gpf();
+     tests.test_page_fault();
+     @panic("TEST");
 
     // --- Optional allocator tests using bootstrap heap ---
     const ENABLE_TESTS = false;

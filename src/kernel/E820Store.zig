@@ -14,6 +14,7 @@
 
 const bi = @import("boot_info.zig");
 const e820 = @import("E820.zig");
+const mem = @import("memory.zig");
 
 pub const E820Entry = e820.E820Entry;
 
@@ -26,11 +27,10 @@ var table_count: u32 = 0;
 
 /// Return the physical address of the first copied entry.
 /// Used by E820.zig to read from the safe table.
-const KERNEL_OFFSET: usize = 0xFFFFFF8000000000;
 
 pub fn getTableAddr() usize {
     const virt = @intFromPtr(&table[0]);
-    return virt - KERNEL_OFFSET;
+    return mem.virtToPhys(virt);
 }
 
 /// Return how many entries were copied.
