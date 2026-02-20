@@ -4,6 +4,7 @@
 const vga = @import("vga.zig");
 const io = @import("port_io.zig");
 const conv = @import("convert.zig");
+const keyboard = @import("inputs/keyboard.zig");
 
 pub var ticks: u64 = 0;
 
@@ -14,8 +15,8 @@ pub export fn irq0_handler() callconv(.c) void {
         var buf: [18]u8 = undefined;
         const hex = conv.toHex(u64, ticks, &buf);
 
-        vga.writeStringAt(2, 53, "Ticks: ", 15, 0);
-        vga.writeStringAt(2, 60, hex, 15, 0);
+        vga.writeStringAt(0, 57, "Ticks: ", 15, 0);
+        vga.writeStringAt(0, 64, hex, 15, 0);
     }
 
     io.outb(0x20, 0x20);
@@ -24,11 +25,7 @@ pub export fn irq0_handler() callconv(.c) void {
 pub export fn irq1_handler() callconv(.c) void {
     const scancode = io.inb(0x60);
 
-    //Temporary debug output
-    var buf: [18]u8 = undefined;
-    const hex = conv.toHex(u8, scancode, &buf);
-    vga.writeStringAt(3, 53, "Key", 15, 0);
-    vga.writeStringAt(3, 58, hex, 15, 0);
+    keyboard.handleScancode(scancode);
 
     io.outb(0x20, 0x20); // EOI
 }
@@ -78,3 +75,4 @@ pub export fn irq12_handler() callconv(.c) void {
     io.outb(0xA0, 0x20); // EOI slave
     io.outb(0x20, 0x20); // EOI master
 }
+

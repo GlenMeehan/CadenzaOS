@@ -76,9 +76,10 @@ qemu-system-x86_64 \
   -m 1024 \
   -monitor stdio \
   -no-reboot \
-  -no-shutdown \
+  #-no-shutdown \
   -D qemu.log \
   -d int,cpu_reset,in_asm \
+  -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
   -vga std
 #qemu-system-x86_64 -drive format=raw,file="$BUILD/disk.img" -no-reboot -monitor stdio
 #qemu-system-x86_64 -drive format=raw,file=build/disk.img -no-reboot -d int -monitor stdio

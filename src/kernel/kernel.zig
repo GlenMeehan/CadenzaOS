@@ -17,6 +17,12 @@ const io = @import("port_io.zig");
 const pic = @import("pic.zig");
 const interrupts = @import("irupts.zig");
 const mouse = @import("drivers/mouse.zig");
+const keyboard = @import("inputs/keyboard.zig");
+const shell = @import("shell.zig");
+pub const term = @import("terminal.zig");
+const RamDisk = @import("fs/ramdisk.zig").RamDisk;
+const BlockDevice = @import("fs/block_device.zig").BlockDevice;
+const coda = @import("fs/simplefs.zig").SimpleFS;
 
 pub const STACK_SIZE = 0x4000;        // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
@@ -27,6 +33,11 @@ var ticks: u64 = 0;
 
 // Early static heap used with FixedBufferAllocator (bootstrap heap)
 var heap_buffer: [4 * 1024 * 1024]u8 align(4096) = undefined;
+
+pub var simplefs: coda = undefined;
+var ramdisk_storage: [64 * 1024]u8 = undefined; // 64 KiB disk
+var ramdisk: RamDisk = undefined;
+var ramdisk_device: BlockDevice = undefined;
 
 /// Kernel panic handler.
 /// Clears the screen, prints a panic banner, message, and optional return address,
@@ -70,6 +81,25 @@ comptime {
     _ = interrupts.irq12_handler;
 }
 
+fn initRamDisk() void {
+    ramdisk = RamDisk.init(ramdisk_storage[0..], 512);
+    ramdisk_device = ramdisk.asBlockDevice();
+
+    simplefs = coda{
+        .device = &ramdisk_device,
+        .backend = &ramdisk,
+    };
+
+    // Format the disk
+    simplefs.mkfs() catch {
+        vga.writeString("mkfs failed\n", 5, 0);
+        @panic("mkfs failed");
+    };
+
+    vga.writeString("SimpleFS formatted\n", 5, 0);
+}
+
+
 /// Bootloader entry point.
 /// Transfers control to kmain and never returns.
 export fn kernel_entry() void {
@@ -82,6 +112,7 @@ export fn kernel_entry() void {
 /// and runs a few sanity tests (std allocator + frame allocator stress test).
 pub export fn kmain() noreturn {
     vga.step(0);
+
     // Optional debug pause
     // db.pause();
 
@@ -292,6 +323,8 @@ pub export fn kmain() noreturn {
     vga.writeString("KBC status: ", 15, 0);
     vga.writeString(conv.toHex(u64, status, &buf_status), 15, 0);
 
+    initRamDisk();
+    vga.writeString("RAM disk ready: ", 15, 0);
 
     // --- Exception tests (leave commented for now) ---
     // tests.trigger_divide_by_zero();
@@ -306,6 +339,10 @@ pub export fn kmain() noreturn {
 
     //vga.clearScreen(0, 0);
     asm volatile ("sti");
+    //vga.writeString("Start Typing\n", 15, 0);
+    vga.clearScreen(15,0);
+
+    shell.run(); // <-- start the shell
 
 
     // --- Optional allocator tests using bootstrap heap ---
@@ -314,6 +351,7 @@ pub export fn kmain() noreturn {
         tests.runAllocatorTests(allocator);
         vga.step(7);
     }
+
 
     // Halt the CPU forever
     while (true) {

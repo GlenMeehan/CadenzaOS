@@ -11,6 +11,7 @@
 // This is intentionally simple and synchronous — perfect for early kernel output.
 
 const conv = @import("convert.zig");
+const io = @import("port_io.zig");
 const VGA = @as([*]volatile u16, @ptrFromInt(0xB8000));
 const WIDTH = 80;
 const HEIGHT = 25;
@@ -85,6 +86,8 @@ pub fn putChar(c: u8, fg: u8, bg: u8) void {
         scroll();
         cursor_row = HEIGHT - 1;
     }
+    updateCursorHardware();
+
 }
 
 /// Write a string starting at the next available line.
@@ -150,5 +153,42 @@ pub fn step(n: u8) void {
     const hex = conv.toHex(u8, n, &buf);
     writeStringAt(0, 72, "STEP: ", 15, 0);
     writeStringAt(0, 77, hex, 15, 0);
+}
+// Low-level helpers: DO NOT use from terminal
+pub fn moveCursorLeft() void {
+    if (cursor_col > 0) {
+        cursor_col -= 1;
+        updateCursorHardware();
+    }
+}
+// Low-level helpers: DO NOT use from terminal
+pub fn moveCursorRight() void {
+    if (cursor_col < WIDTH - 1) {
+        cursor_col += 1;
+        updateCursorHardware();
+    }
+}
+
+pub fn setCursor(row: usize, col: usize) void {
+    cursor_row = row;
+    cursor_col = col;
+    updateCursorHardware();
+}
+
+pub fn updateCursorHardware() void {
+    const pos: u16 = @intCast(cursor_row * WIDTH + cursor_col);
+
+    io.outb(0x3D4, 0x0F);
+    io.outb(0x3D5, @intCast(pos & 0xFF));
+
+    io.outb(0x3D4, 0x0E);
+    io.outb(0x3D5, @intCast((pos >> 8) & 0xFF));
+}
+
+pub fn writeRaw(s: []const u8, fg: u8, bg: u8) void {
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        putChar(s[i], fg, bg);
+    }
 }
 
