@@ -21,22 +21,25 @@ mkdir -p "$BUILD"
 
 echo "[1/6] Assembling bootloader..."
 nasm -f bin "$SRC/boot/boot.asm" -o "$BUILD/boot.bin"
-
+# Periodically replace -O Debug \ with -Doptimize=ReleaseSafe \ to check for any issue with production
 echo "[2/6] Compiling 64-bit Zig kernel..."
 $ZIG build-obj "$SRC/kernel/kernel.zig" \
     -target x86_64-freestanding \
     -mcpu=x86_64 \
-    -mcmodel=large \
-    -O ReleaseSmall \
+    -mcmodel=kernel \
+    -fPIC \
+    -O Debug \
     -fno-stack-protector \
+    -freference-trace=12 \
     -femit-bin="$BUILD/kernel.o"
+
 
 echo "[2.5/6] Assembling IRQ stubs..."
 nasm -f elf64 "$SRC/kernel/interrupts/irq_stubs.asm" -o "$BUILD/irq_stubs.o"
 
 echo "[3/6] Linking 64-bit kernel..."
 # Step 1: Link to ELF (keeps entry point info)
-ld -m elf_x86_64 -T "$ROOT/linker.ld" -o "$BUILD/kernel.elf" \
+ld -m elf_x86_64 -z max-page-size=0x1000 -T "$ROOT/linker.ld" -o "$BUILD/kernel.elf" \
     "$BUILD/kernel.o" \
     "$BUILD/irq_stubs.o"
 
@@ -76,10 +79,9 @@ qemu-system-x86_64 \
   -m 1024 \
   -monitor stdio \
   -no-reboot \
-  #-no-shutdown \
+  -no-shutdown \
   -D qemu.log \
-  -d int,cpu_reset,in_asm \
-  -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+  -d int,cpu_reset,guest_errors \
   -vga std
 #qemu-system-x86_64 -drive format=raw,file="$BUILD/disk.img" -no-reboot -monitor stdio
 #qemu-system-x86_64 -drive format=raw,file=build/disk.img -no-reboot -d int -monitor stdio

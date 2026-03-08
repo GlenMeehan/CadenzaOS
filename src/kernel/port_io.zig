@@ -1,24 +1,22 @@
 // src/kernel/port_io.zig
 
 pub fn outb(port: u16, value: u8) void {
-    asm volatile ("outb %al, %dx"
-        :
-        : [value] "{al}" (value),
-          [port] "{dx}" (port),
+    asm volatile ("outb %[value], %[port]"
+    :
+    : [value] "{al}" (value),
+                  [port] "{dx}" (port),
     );
 }
 
 pub fn inb(port: u16) u8 {
-    var result: u8 = 0;
-    asm volatile ("inb %dx, %al"
-        : [result] "={al}" (result)
-        : [port] "{dx}" (port),
+    return asm volatile ("inb %[port], %[ret]"
+    : [ret] "={al}" (-> u8),
+                         : [port] "{dx}" (port),
     );
-    return result;
 }
 
 pub fn outw(port: u16, value: u16) void {
-    asm volatile ("outw %ax, %dx"
+    asm volatile ("outw %[value], %[port]"
     :
     : [value] "{ax}" (value),
                   [port] "{dx}" (port),

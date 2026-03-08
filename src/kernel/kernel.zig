@@ -20,11 +20,31 @@ const mouse = @import("drivers/mouse.zig");
 const keyboard = @import("inputs/keyboard.zig");
 const shell = @import("shell.zig");
 pub const term = @import("terminal.zig");
-const RamDisk = @import("fs/ramdisk.zig").RamDisk;
-const BlockDevice = @import("fs/block_device.zig").BlockDevice;
-const coda = @import("fs/simplefs.zig").SimpleFS;
+const conf = @import("config.zig");
+const CodaFs = @import("fs/coda_fs.zig").CodaFs;
+//const libc = @import("libc.zig");
 
-pub const STACK_SIZE = 0x4000;        // 16 KiB stack
+pub export fn memmove(dest: ?[*]u8, src: ?[*]const u8, n: usize) ?[*]u8 {
+    const d = dest orelse return dest;
+    const s = src orelse return dest;
+
+    if (@intFromPtr(d) < @intFromPtr(s)) {
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            d[i] = s[i];
+        }
+    } else {
+        var i: usize = n;
+        while (i > 0) {
+            i -= 1;
+            d[i] = s[i];
+        }
+    }
+    return dest;
+}
+
+
+pub const STACK_SIZE = 0x40000;        // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
 extern fn irq0_stub() void;
 extern fn irq1_stub() void;
@@ -34,10 +54,14 @@ var ticks: u64 = 0;
 // Early static heap used with FixedBufferAllocator (bootstrap heap)
 var heap_buffer: [4 * 1024 * 1024]u8 align(4096) = undefined;
 
-pub var simplefs: coda = undefined;
-var ramdisk_storage: [64 * 1024]u8 = undefined; // 64 KiB disk
-var ramdisk: RamDisk = undefined;
-var ramdisk_device: BlockDevice = undefined;
+// Global FixedBufferAllocator — lifetime = whole kernel
+var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
+
+//RAM Disk Buffer
+var fs_ramdisk_buf: [1024 * 1024]u8 = undefined; // 1 MiB ramdisk
+
+var fs_global: CodaFs = undefined;
+
 
 /// Kernel panic handler.
 /// Clears the screen, prints a panic banner, message, and optional return address,
@@ -81,23 +105,10 @@ comptime {
     _ = interrupts.irq12_handler;
 }
 
-fn initRamDisk() void {
-    ramdisk = RamDisk.init(ramdisk_storage[0..], 512);
-    ramdisk_device = ramdisk.asBlockDevice();
-
-    simplefs = coda{
-        .device = &ramdisk_device,
-        .backend = &ramdisk,
-    };
-
-    // Format the disk
-    simplefs.mkfs() catch {
-        vga.writeString("mkfs failed\n", 5, 0);
-        @panic("mkfs failed");
-    };
-
-    vga.writeString("SimpleFS formatted\n", 5, 0);
-}
+pub const std_options: std.Options = .{
+    .page_size_min = 4096,
+    .page_size_max = 4096,
+};
 
 
 /// Bootloader entry point.
@@ -127,12 +138,13 @@ pub export fn kmain() noreturn {
     e820.setTable(E820Store.getTableAddr(), E820Store.getTableCount());
     vga.step(2);
 
-    // 3) Set up a simple heap allocator from the static buffer.
-    var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
+    // 3) Use the global FixedBufferAllocator as the kernel heap
     const allocator = fba.allocator();
 
     // 4) Initialize frame allocator (backed by safe E820 data).
     fa.FrameAllocator.init();
+    fa.FrameAllocator.parseUsableMemory();
+    const regions = fa.getUsableRegions();
     vga.step(3);
 
     // --- Simple hex conversion debug output ---
@@ -211,9 +223,9 @@ pub export fn kmain() noreturn {
 
 
     // --- Frame allocator: usable regions from E820 ---
-    fa.FrameAllocator.init();
-    fa.FrameAllocator.parseUsableMemory();
-    const regions = fa.getUsableRegions();
+    //fa.FrameAllocator.init();
+    //fa.FrameAllocator.parseUsableMemory();
+    //const regions = fa.getUsableRegions();
 
     var idx: usize = 0;
     for (regions) |r| {
@@ -266,6 +278,13 @@ pub export fn kmain() noreturn {
     // Mark page table memory as used
     bm.markUsedRange(info.page_table_base, info.page_table_base + PAGE_TABLE_BYTES);
 
+    // Mark RAM disk buffer as used
+    const ramdisk_virt = @intFromPtr(&fs_ramdisk_buf[0]);
+    const ramdisk_phys = mem.virtToPhys(ramdisk_virt);
+    bm.markUsedRange(ramdisk_phys, ramdisk_phys + fs_ramdisk_buf.len);
+
+
+
     // Debug: show bitmap storage range
     const bmRange = bm.getStorageRange();
     var buf_bm_range: [16]u8 = undefined;
@@ -274,22 +293,22 @@ pub export fn kmain() noreturn {
     vga.writeString("Bitmap end:   0x", 15, 0);
     vga.writeString(conv.toHex(u64, bmRange.end, &buf_bm_range), 15, 0);
 
-
+    //while (true) asm volatile ("cli; hlt");
 
     // --- Test: std.ArrayList using custom page allocator ---
-    var page_alloc = page_alloc_mod.PageAllocator.init();
-    const allocator2 = page_alloc.allocator();
+    //var page_alloc = page_alloc_mod.PageAllocator.init();
+    //const allocatortest = page_alloc.allocator();
 
-    var list: std.ArrayList(u64) = .empty;
-    defer list.deinit(allocator2);
+    //var list: std.ArrayList(u64) = .empty;
+    //defer list.deinit(allocatortest);
 
-    list.append(allocator2, 0xDEAD) catch {
-        vga.writeString("ArrayList failed!", 15, 4);
-    };
+    //list.append(allocatortest, 0xDEAD) catch {
+        //vga.writeString("ArrayList failed!", 15, 4);
+   //};
 
-    if (list.items.len > 0) {
-        vga.writeString("Custom allocator works with std!", 15, 0);
-    }
+    //if (list.items.len > 0) {
+        //vga.writeString("Custom allocator works with std!", 15, 0);
+    //}
 
     // --- Stress test: frame allocator via bitmap ---
     var addrs: [128]usize = undefined;
@@ -323,9 +342,6 @@ pub export fn kmain() noreturn {
     vga.writeString("KBC status: ", 15, 0);
     vga.writeString(conv.toHex(u64, status, &buf_status), 15, 0);
 
-    initRamDisk();
-    vga.writeString("RAM disk ready: ", 15, 0);
-
     // --- Exception tests (leave commented for now) ---
     // tests.trigger_divide_by_zero();
     // tests.test_breakpoint();
@@ -342,8 +358,68 @@ pub export fn kmain() noreturn {
     //vga.writeString("Start Typing\n", 15, 0);
     vga.clearScreen(15,0);
 
-    shell.run(); // <-- start the shell
+    // --- Filesystem bring-up ---
 
+    const RD = @import("fs/ramdisk.zig").RamDisk;
+
+
+    // 1) Create RamDisk over fs_ramdisk_buf
+    const block_size = conf.BASE_IO_BUF_SIZE;
+    var ramdisk = RD.init(fs_ramdisk_buf[0..], block_size);
+    var dev = ramdisk.asBlockDevice(); // OK
+
+    // 2) Format the filesystem (mkfs) — now requires allocator
+    CodaFs.mkfs(allocator, &dev) catch |err| {
+        vga.writeString("mkfs failed\n", 12, 4);
+        @panic(@errorName(err));
+    };
+
+    //while (true) asm volatile ("cli; hlt");
+
+    // 3) Mount the filesystem
+const fs = CodaFs.mount(allocator, &dev) catch |err| {
+    vga.writeString("mount failed\n", 12, 4);
+    @panic(@errorName(err));
+};
+
+// Avoid implicit full-struct memcpy here
+fs_global.device = fs.device;
+fs_global.superblock = fs.superblock;
+fs_global.space_manager = fs.space_manager;
+fs_global.root_dir = fs.root_dir;
+
+
+    //var buftub: [32]u8 = undefined; // big enough for 64‑bit hex
+    //const addr = @intFromPtr(&fs_global);
+    //_ = addr;
+    //const hex = conv.toHex(usize, addr, &buftub);
+    //_ = hex;
+    //vga.writeString("fs_global @ 0x", 15, 0);
+    //vga.writeString(hex, 15, 0);
+    //vga.writeString("\n", 15, 0);
+    //while (true) asm volatile ("cli; hlt");
+
+    // To see where the POINTER ITSELF is stored:
+    // fs is a struct
+    // &fs is a pointer to the struct
+
+    //var p: *CodaFs = &fs_global;   // p is the pointer variable
+
+    //var buf_gfs: [16]u8 = undefined;
+    //vga.writeString("address of pointer p: ", 15, 0);
+    //vga.writeString(conv.toHex(usize, @intFromPtr(&p), &buf_gfs), 15, 0);
+
+
+
+
+    // 4) Optional: list root
+    // const entries = fs.listDir("/") catch |err| {
+    //     vga.writeString("listDir failed\n", 12, 4);
+    //     @panic(@errorName(err));
+    // };
+
+    // 5) Pass fs to the shell
+    shell.run(&fs_global, allocator);
 
     // --- Optional allocator tests using bootstrap heap ---
     const ENABLE_TESTS = false;

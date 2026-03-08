@@ -16,7 +16,7 @@ KERNEL_LOAD_PHYS equ 0x00100000
 %include "build/kernel_info.inc"     ; Defines KERNEL_SECTORS
 
 EARLY_STACK_TOP  equ 0x70000         ; Early stack top (grows down)
-KERNEL_STACK_TOP equ 0x80000         ; Kernel stack top
+KERNEL_STACK_TOP equ 0xC0000         ; Kernel stack top
 
 ; Page table locations
 PML4_ADDR        equ 0x1000          ; Page Map Level 4
@@ -243,7 +243,7 @@ pm_entry:
 
     ; Map a generous window: [0 .. 16 MiB)
     mov eax, 0x00000000          ; phys_start
-    mov ebx, 0x01000000          ; phys_end
+    mov ebx, 0x08000000          ; phys_end
 
     ; (eax is already aligned to 2 MiB)
 
@@ -387,7 +387,11 @@ long_mode_entry:
     mov ss, ax
 
     ; Set up 64-bit stack
-    mov rsp, KERNEL_STACK_TOP
+    mov rax, 0xFFFFFF8000080000
+    and rax, -16                ; Ensure it's 16-byte aligned
+    mov rsp, rax
+    sub rsp, 8                  ; Subtract 8 bytes to account for the "return address"
+                                ; space the ABI expects before a call/jump
 
     ; Enable SSE
     mov rax, cr0

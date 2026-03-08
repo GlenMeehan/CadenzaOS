@@ -14,33 +14,33 @@ pub const RamDisk = struct {
         };
     }
 
-    pub fn readBlocksImpl(self: *RamDisk, lba: u64, out: []u8) !void {
+    pub fn readBlocksImpl(ctx: *anyopaque, lba: u64, out: []u8) !void {
+        const self: *RamDisk = @ptrCast(@alignCast(ctx));
+
         const start = lba * self.block_size;
         const end = start + out.len;
 
         if (end > self.buffer.len)
             return error.OutOfRange;
 
-        // Convert slices to raw pointers
         const dst: [*]u8 = @ptrCast(out.ptr);
         const src: [*]const u8 = @ptrCast(self.buffer[start..end].ptr);
 
-        // Copy bytes
         _ = mem.memcpy(dst, src, out.len);
     }
 
-    pub fn writeBlocksImpl(self: *RamDisk, lba: u64, data: []const u8) !void {
+    pub fn writeBlocksImpl(ctx: *anyopaque, lba: u64, data: []const u8) !void {
+        const self: *RamDisk = @ptrCast(@alignCast(ctx));
+
         const start = lba * self.block_size;
         const end = start + data.len;
 
         if (end > self.buffer.len)
             return error.OutOfRange;
 
-        // Convert slices to raw pointers
         const dst: [*]u8 = @ptrCast(self.buffer[start..end].ptr);
         const src: [*]const u8 = @ptrCast(data.ptr);
 
-        // Copy bytes
         _ = mem.memcpy(dst, src, data.len);
     }
 
@@ -48,6 +48,9 @@ pub const RamDisk = struct {
         return BlockDevice{
             .block_size = self.block_size,
             .total_blocks = self.buffer.len / self.block_size,
+            .ctx = self,
+            .readBlocks = RamDisk.readBlocksImpl,
+            .writeBlocks = RamDisk.writeBlocksImpl,
         };
     }
 };

@@ -1,36 +1,36 @@
 ENTRY(kernel_entry)
 
+/* Virtual Address (Higher Half) */
 KERNEL_OFFSET = 0xFFFFFF8000000000;
+/* Physical Address (1MiB) */
+KERNEL_PHYS   = 0x00100000;
 
 SECTIONS {
-    /* Load kernel at 1MiB */
-    . = KERNEL_OFFSET + 0x00100000;
+    /* Set the location counter to the Virtual Address */
+    . = KERNEL_OFFSET + KERNEL_PHYS;
 
-    /* Mark start of the kernel image */
     _kernel_start = .;
 
-    /* Put all executable code first */
-    .text : ALIGN(16) {
-        KEEP(*(.text.kernel_entry))   /* make sure kernel_entry is first */
-        *(.text*)                     /* rest of code */
+    /* .text section starts at Virtual Address, but is Loaded at Physical Address */
+    .text : AT(ADDR(.text) - KERNEL_OFFSET) ALIGN(16) {
+        KEEP(*(.text.kernel_entry))
+        *(.text*)
     }
 
-    /* Read-only data next */
-    .rodata : ALIGN(16) {
+    .rodata : AT(ADDR(.rodata) - KERNEL_OFFSET) ALIGN(16) {
         *(.rodata*)
     }
 
-    /* Initialized data */
-    .data : ALIGN(16) {
+    .data : AT(ADDR(.data) - KERNEL_OFFSET) ALIGN(16) {
         *(.data*)
     }
 
-    /* Uninitialized data (includes your IDT) */
-    .bss : ALIGN(16) {
+    /* BSS is slightly different: it has no data in the file (AT isn't strictly needed,
+       but we keep alignment consistent) */
+    .bss : AT(ADDR(.bss) - KERNEL_OFFSET) ALIGN(16) {
         *(.bss*)
         *(COMMON)
     }
 
-    /* Mark end of kernel image */
     _kernel_end = .;
 }

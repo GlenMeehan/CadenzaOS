@@ -90,7 +90,7 @@ pub fn commitHistory() void {
 
     // Copy current line into history ring buffer
     const dst = history_head;
-    @memcpy(history[dst][0..line_len], line_buffer[0..line_len]);
+    _ = mem.memcpy(history[dst][0..line_len].ptr, line_buffer[0..line_len].ptr, line_len);
 
     // Optionally null-terminate (useful later)
     if (line_len < MAX_LINE) {
@@ -320,7 +320,7 @@ fn historyUp() void {
     if (history_index == -1) {
         // First time entering history browsing
         saved_line_len = line_len;
-        @memcpy(saved_line[0..line_len], line_buffer[0..line_len]);
+        _ = mem.memcpy(saved_line[0..line_len].ptr, line_buffer[0..line_len].ptr, line_len);
         history_index = 0;
     } else if (history_index + 1 < history_len) {
         history_index += 1;
@@ -342,7 +342,7 @@ fn historyDown() void {
 
         line_len = saved_line_len;
         cursor_pos = line_len;
-        @memcpy(line_buffer[0..line_len], saved_line[0..line_len]);
+        _ = mem.memcpy(line_buffer[0..line_len].ptr, saved_line[0..line_len].ptr, line_len);
 
         // Redraw
         redrawLine();

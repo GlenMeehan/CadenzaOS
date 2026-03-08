@@ -18,6 +18,7 @@
 
 const vga = @import("vga.zig");
 const conv = @import("convert.zig");
+extern fn load_idt(ptr: *const IDTR) void;
 
 const IDTEntry = packed struct {
     offset_low: u16,
@@ -82,7 +83,7 @@ fn setIDTEntry(index: u8, handler: u64, selector: u16, flags: u8) void {
 }
 
 pub fn init() void {
-    const cs_selector: u16 = 0x18; // 64-bit kernel code segment
+    const cs_selector: u16 = 0x08; // 64-bit kernel code segment
     const flags: u8 = 0x8E;        // present, ring 0, 64-bit interrupt gate
 
     setIDTEntry(0,  @intFromPtr(&exception0_asm),  cs_selector, flags);
@@ -102,12 +103,8 @@ pub fn init() void {
         .base = @intFromPtr(&idt),
     };
 
-    const idtr_ptr = &idtr;
-    asm volatile (
-        \\lidt (%[ptr])
-    :
-    : [ptr] "r" (idtr_ptr),
-    );
+    // No more inline asm! Just call the function.
+    load_idt(&idtr);
 }
 
 fn exceptionHandler(num: u64, error_code: u64) noreturn {
@@ -144,78 +141,78 @@ fn exceptionHandler(num: u64, error_code: u64) noreturn {
 // (8, 13, 14), we rely on the CPU’s push and only add the number.
 // ------------------------------------------------------------
 
-comptime {
-    asm (
-        \\.global exception0_asm
-        \\exception0_asm:
-        \\  push $0          # dummy error code
-        \\  push $0          # exception number
-        \\  jmp exceptionCommonAsm
-        \\
-        \\.global exception1_asm
-        \\exception1_asm:
-        \\  push $0
-        \\  push $1
-        \\  jmp exceptionCommonAsm
-        \\
-        \\.global exception2_asm
-        \\exception2_asm:
-        \\  push $0
-        \\  push $2
-        \\  jmp exceptionCommonAsm
-        \\
-        \\.global exception3_asm
-        \\exception3_asm:
-        \\  push $0
-        \\  push $3
-        \\  jmp exceptionCommonAsm
-        \\
-        \\.global exception4_asm
-        \\exception4_asm:
-        \\  push $0
-        \\  push $4
-        \\  jmp exceptionCommonAsm
-        \\
-        \\.global exception5_asm
-        \\exception5_asm:
-        \\  push $0
-        \\  push $5
-        \\  jmp exceptionCommonAsm
-        \\
-        \\.global exception6_asm
-        \\exception6_asm:
-        \\  push $0
-        \\  push $6
-        \\  jmp exceptionCommonAsm
-        \\
-        \\.global exception7_asm
-        \\exception7_asm:
-        \\  push $0
-        \\  push $7
-        \\  jmp exceptionCommonAsm
-        \\
-        \\.global exception8_asm
-        \\exception8_asm:
-        \\  push $8          # exception number (CPU already pushed error code)
-    \\  jmp exceptionCommonAsm
-    \\
-    \\.global exception13_asm
-    \\exception13_asm:
-    \\  push $13         # exception number (CPU already pushed error code)
-    \\  jmp exceptionCommonAsm
-    \\
-    \\.global exception14_asm
-    \\exception14_asm:
-    \\  push $14         # exception number (CPU already pushed error code)
-    \\  jmp exceptionCommonAsm
-    \\
-    \\.global exceptionCommonAsm
-    \\exceptionCommonAsm:
-    \\  mov %rsp, %rdi   # pass stack pointer as first argument (SysV: rdi)
-    \\  call exceptionHandlerWrapper
-    \\
-    );
-}
+//comptime {
+    //asm (
+        //\\.global exception0_asm
+        //\\exception0_asm:
+        //\\  push $0          # dummy error code
+        //\\  push $0          # exception number
+        //\\  jmp exceptionCommonAsm
+        //\\
+        //\\.global exception1_asm
+        //\\exception1_asm:
+        //\\  push $0
+        //\\  push $1
+        //\\  jmp exceptionCommonAsm
+        //\\
+        //\\.global exception2_asm
+        //\\exception2_asm:
+        //\\  push $0
+        //\\  push $2
+        //\\  jmp exceptionCommonAsm
+        //\\
+        //\\.global exception3_asm
+        //\\exception3_asm:
+        //\\  push $0
+        //\\  push $3
+        //\\  jmp exceptionCommonAsm
+        //\\
+        //\\.global exception4_asm
+        //\\exception4_asm:
+        //\\  push $0
+        //\\  push $4
+        //\\  jmp exceptionCommonAsm
+        //\\
+        //\\.global exception5_asm
+        //\\exception5_asm:
+        //\\  push $0
+        //\\  push $5
+        //\\  jmp exceptionCommonAsm
+        //\\
+        //\\.global exception6_asm
+        //\\exception6_asm:
+        //\\  push $0
+        //\\  push $6
+        //\\  jmp exceptionCommonAsm
+        //\\
+        //\\.global exception7_asm
+        //\\exception7_asm:
+        //\\  push $0
+        //\\  push $7
+        //\\  jmp exceptionCommonAsm
+        //\\
+        //\\.global exception8_asm
+        //\\exception8_asm:
+        //\\  push $8          # exception number (CPU already pushed error code)
+    //\\  jmp exceptionCommonAsm
+    //\\
+    //\\.global exception13_asm
+    //\\exception13_asm:
+    //\\  push $13         # exception number (CPU already pushed error code)
+    //\\  jmp exceptionCommonAsm
+    //\\
+    //\\.global exception14_asm
+    //\\exception14_asm:
+    //\\  push $14         # exception number (CPU already pushed error code)
+    //\\  jmp exceptionCommonAsm
+    //\\
+    //\\.global exceptionCommonAsm
+    //\\exceptionCommonAsm:
+    //\\  mov %rsp, %rdi   # pass stack pointer as first argument (SysV: rdi)
+    //\\  call exceptionHandlerWrapper
+    //\\
+    //);
+//}
 
 extern fn exception0_asm() void;
 extern fn exception1_asm() void;
