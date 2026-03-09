@@ -268,35 +268,54 @@ fn cmd_stat(args: [][]const u8) void {
         return;
     }
 
-    // 1. Find the LBA
-    const lba = g_fs.findFile(g_allocator, args[1]) catch {
+    const filename = args[1];
+
+    const lba = g_fs.findFile(g_allocator, filename) catch {
         vga.writeString("File not found\n", 15, 0);
         return;
     };
 
-    // 2. Read the Metadata
+    // Make sure this 'const meta' (or 'var meta') exists!
     const meta = g_fs.readFileMeta(g_allocator, lba) catch {
         vga.writeString("Failed to read metadata\n", 15, 0);
         return;
     };
 
-    // 3. Print the info using the 'meta' variable so it's not "unused"
-    vga.writeString("File: ", 15, 0);
-    vga.writeString(args[1], 15, 0);
+    // --- Line 1: Filename ---
+    // Using a buffer to keep "File: name" on one line
+    var name_line: [64]u8 = undefined;
+    const name_full = std.fmt.bufPrint(&name_line, "File: {s}", .{filename}) catch "File: [name error]";
+    vga.writeString(name_full, 15, 0);
 
-    // Check type: 1 might be File, 2 might be Directory depending on your enum
+    // --- Line 2: Type ---
     if (meta.file_type == .File) {
-        vga.writeString("\nType: Regular File", 15, 0);
-        vga.writeString("\nSize: ", 15, 0);
-
-        // Since we might not have a number-to-string function yet,
-        // let's do a quick check to see if it's no longer zero:
-        if (meta.size_bytes > 0) {
-            vga.writeString("Data present (Updated)", 10, 0); // Green-ish if supported
-        } else {
-            vga.writeString("0 bytes (Empty)", 15, 0);
-        }
+        vga.writeString("Type: Regular File", 15, 0);
+    } else {
+        vga.writeString("Type: Directory", 15, 0);
     }
+
+    // --- Line 3: Size (Manual Stitching) ---
+    var size_num_buf: [16]u8 = undefined;
+    // Cast size_bytes to u32 for your conv function
+    const size_str = conv.u32ToStr(&size_num_buf, @intCast(meta.size_bytes));
+
+    var size_line: [64]u8 = undefined;
+    @memset(&size_line, 0);
+
+    const label = "Size: ";
+    const suffix = " bytes";
+
+    var cursor: usize = 0;
+    @memcpy(size_line[cursor..label.len], label);
+    cursor += label.len;
+
+    @memcpy(size_line[cursor .. cursor + size_str.len], size_str);
+    cursor += size_str.len;
+
+    @memcpy(size_line[cursor .. cursor + suffix.len], suffix);
+    cursor += suffix.len;
+
+    vga.writeString(size_line[0..cursor], 15, 0);
 }
 
 fn cmd_wf(args: [][]const u8) void {
@@ -307,7 +326,27 @@ fn cmd_wf(args: [][]const u8) void {
     }
 
     const filename = args[1];
-    const text = args[2];
+    // Create a buffer to hold the joined text (e.g., 256 bytes)
+    var text_buf: [256]u8 = undefined;
+    var current_pos: usize = 0;
+
+    for (args[2..], 0..) |arg, i| {
+        // Add a space between words, but not before the first word
+        if (i > 0 and current_pos < text_buf.len) {
+            text_buf[current_pos] = ' ';
+            current_pos += 1;
+        }
+
+        // Copy the argument into our buffer
+        for (arg) |char| {
+            if (current_pos < text_buf.len) {
+                text_buf[current_pos] = char;
+                current_pos += 1;
+            }
+        }
+    }
+    // This is the string we will actually write to disk
+    const text = text_buf[0..current_pos];
 
     // 2. Find the file's Metadata LBA
     const meta_lba = g_fs.findFile(g_allocator, filename) catch {
@@ -323,11 +362,20 @@ fn cmd_wf(args: [][]const u8) void {
 
     // 4. Allocate a data block (since it's a new file)
     // We use the helper we just wrote!
-    const data_lba = g_fs.appendBlockToFile(g_allocator, meta_lba, &meta) catch |err| {
-        vga.writeString("Allocation failed: ", 15, 0);
-        vga.writeString(@errorName(err), 15, 0);
-        return;
-    };
+    var data_lba: u64 = 0;
+
+    // Logic: Reuse the first block if it exists, otherwise allocate
+    if (meta.extent_count > 0) {
+        // We take the start block of the first existing extent
+        data_lba = meta.extents[0].start_block;
+    } else {
+        // The file is empty, so we must find fresh space
+        data_lba = g_fs.appendBlockToFile(g_allocator, meta_lba, &meta) catch |err| {
+            vga.writeString("Allocation failed: ", 15, 0);
+            vga.writeString(@errorName(err), 15, 0);
+            return;
+        };
+    }
 
     // 5. Write the text to that data block
     // We'll create a temporary buffer for the 512-byte block
