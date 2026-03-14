@@ -22,8 +22,6 @@ const shell = @import("shell.zig");
 pub const term = @import("terminal.zig");
 const conf = @import("config.zig");
 const CodaFs = @import("fs/coda_fs.zig").CodaFs;
-const ATA = @import("drivers/ata.zig");
-const bd = @import("fs/block_device.zig").BlockDevice;
 //const libc = @import("libc.zig");
 
 pub export fn memmove(dest: ?[*]u8, src: ?[*]const u8, n: usize) ?[*]u8 {
@@ -54,13 +52,13 @@ extern fn irq12_stub() void;
 var ticks: u64 = 0;
 
 // Early static heap used with FixedBufferAllocator (bootstrap heap)
-var heap_buffer: [1024 * 1024]u8 align(4096) = undefined;
+var heap_buffer: [4 * 1024 * 1024]u8 align(4096) = undefined;
 
 // Global FixedBufferAllocator — lifetime = whole kernel
 var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
 
 //RAM Disk Buffer
-var fs_ramdisk_buf: [4 * 1024 * 1024]u8 = undefined; // 1 MiB ramdisk
+var fs_ramdisk_buf: [1024 * 1024]u8 = undefined; // 1 MiB ramdisk
 
 var fs_global: CodaFs = undefined;
 
@@ -131,6 +129,7 @@ pub export fn kmain() noreturn {
 
     const welc_mess = "CadenzaOS 64 Bit";
     vga.writeString(welc_mess, 15, 0);
+
     // 1) Copy E820 entries into kernel-owned memory.
     E820Store.init();
     vga.step(1);
@@ -191,11 +190,13 @@ pub export fn kmain() noreturn {
 
         row2 += 1;
     }
+
     // --- IDT setup ---
     idt.init();
     idt.setGate(32, @intFromPtr(&irq0_stub));
     idt.setGate(33, @intFromPtr(&irq1_stub));
     idt.setGate(44, @intFromPtr(&irq12_stub));
+
     pic.remap(32, 40);
     pic.unmaskIrq(@as(u8, 0)); //timer
     pic.unmaskIrq(@as(u8, 1));//keyborad
@@ -203,10 +204,12 @@ pub export fn kmain() noreturn {
     pic.unmaskIrq(@as(u8, 12));//mouse
 
     mouse.initMouse();   // PS/2 controller + mouse
-
     asm volatile ("sti");
+
+
     vga.step(4);
     vga.writeStringAt(21, 0, "IDT + PIC remapped", 15, 0);
+
     // Display boot info again (for IDT debug)
     const idt_info = bi.get();
     var buf_idt: [16]u8 = undefined;
@@ -374,16 +377,16 @@ pub export fn kmain() noreturn {
     //while (true) asm volatile ("cli; hlt");
 
     // 3) Mount the filesystem
-    const fs = CodaFs.mount(allocator, &dev) catch |err| {
-        vga.writeString("mount failed\n", 12, 4);
-        @panic(@errorName(err));
-    };
+const fs = CodaFs.mount(allocator, &dev) catch |err| {
+    vga.writeString("mount failed\n", 12, 4);
+    @panic(@errorName(err));
+};
 
-    // Avoid implicit full-struct memcpy here
-    fs_global.device = fs.device;
-    fs_global.superblock = fs.superblock;
-    fs_global.space_manager = fs.space_manager;
-    fs_global.root_dir = fs.root_dir;
+// Avoid implicit full-struct memcpy here
+fs_global.device = fs.device;
+fs_global.superblock = fs.superblock;
+fs_global.space_manager = fs.space_manager;
+fs_global.root_dir = fs.root_dir;
 
 
     //var buftub: [32]u8 = undefined; // big enough for 64‑bit hex

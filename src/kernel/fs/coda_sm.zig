@@ -166,11 +166,16 @@ pub const SpaceManager = struct {
     }
 
     /// Free a previously allocated extent.
-    /// TODO: merge adjacent extents
-    pub fn free(self: *SpaceManager, extent: Extent) SpaceManagerError!void {
-        _ = self;
-        _ = extent;
-        // TODO: implement freeing an extent
+    pub fn free(self: *SpaceManager, allocator: std.mem.Allocator, extent: Extent) !void {
+        if (extent.block_count == 0) return;
+
+        // For now, we just append the freed extent to our list.
+        // We use the 'allocator' because the free_list might need to grow
+        // its capacity to store the new extent.
+        try self.free_list.append(allocator, extent);
+
+        // Optional: In the future, you could call a sort/merge function here
+        // to keep the free_list from getting too fragmented.
     }
 
     /// Optional: try to grow an extent in place.

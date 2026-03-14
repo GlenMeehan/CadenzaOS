@@ -22,3 +22,10 @@ pub fn outw(port: u16, value: u16) void {
                   [port] "{dx}" (port),
     );
 }
+
+pub fn inw(port: u16) u16 {
+    return asm volatile ("inw %[port], %[ret]"
+    : [ret] "={ax}" (-> u16),
+                         : [port] "{dx}" (port),
+    );
+}

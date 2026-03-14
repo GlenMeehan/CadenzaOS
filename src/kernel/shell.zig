@@ -14,16 +14,17 @@ const conv = @import("convert.zig");
 const root = @import("kernel.zig");
 const system = @import("system.zig");
 const term = root.term;
-const config = @import("config.zig");
+const conf = @import("config.zig");
 const codafs = @import("fs/coda_fs.zig");
 const CodaFs = @import("fs/coda_fs.zig").CodaFs;
 const bp = @import("fs/coda_fs.zig").breakpoint;
 const coda_file = @import("fs/coda_file.zig");
 
+
 const FG = 15;
 const BG = 0;
 
-var parse_tokens: [16][]const u8 = undefined;
+var parse_tokens: [conf.MAX_ARGS][]const u8 = undefined;
 var g_fs: *CodaFs = undefined;
 var g_allocator: std.mem.Allocator = undefined; // Add this line
 
@@ -63,6 +64,7 @@ const commands = [_]Command{
     .{ .name = "ls",       .desc = "List root directory",    .func = cmd_ls },
     .{ .name = "mf",       .desc = "Create a file",    .func = cmd_mf },
     .{ .name = "wf",       .desc = "Write data into file",    .func = cmd_wf },
+    .{ .name = "rm",       .desc = "Delete a file",    .func = cmd_rm },
     .{ .name = "stat",       .desc = "Read file details",    .func = cmd_stat },
     .{ .name = "cat",       .desc = "Print contents of a file",    .func = cmd_cat },
 };
@@ -237,9 +239,9 @@ fn cmd_reboot(_: [][]const u8) void {
 }
 
 fn cmd_mf(args: [][]const u8) void {
-    // 1. Validation: args[0] is "touch", args[1] should be the filename
+    // 1. Validation: args[0] is "mf", args[1] should be the filename
     if (args.len < 2) {
-        vga.writeString("Usage: touch <filename>\n", 15, 0);
+        vga.writeString("Usage: mf <filename>\n", FG, BG);
         return;
     }
 
@@ -249,35 +251,35 @@ fn cmd_mf(args: [][]const u8) void {
     g_fs.createFile(g_allocator, filename) catch |err| {
         // We use a different color (maybe 12 for red?) if your VGA supports it,
         // otherwise stay with 15/0
-        vga.writeString("Touch failed: ", 15, 0);
-        vga.writeString(@errorName(err), 15, 0);
-        vga.writeString("\n", 15, 0);
+        vga.writeString("mf failed: ", FG, BG);
+        vga.writeString(@errorName(err), FG, BG);
+        vga.writeString("\n", FG, BG);
         return;
     };
 
     // 3. Success feedback
-    vga.writeString("Created file: ", 15, 0);
+    vga.writeString("Created file: ", FG, BG);
     // Note: If filename is a slice, ensure your writeString handles slices
-    vga.writeString(filename, 15, 0);
-    vga.writeString("\n", 15, 0);
+    vga.writeString(filename, FG, BG);
+    vga.writeString("\n", FG, BG);
 }
 
 fn cmd_stat(args: [][]const u8) void {
     if (args.len < 2) {
-        vga.writeString("Usage: stat <filename>\n", 15, 0);
+        vga.writeString("Usage: stat <filename>\n", FG, BG);
         return;
     }
 
     const filename = args[1];
 
     const lba = g_fs.findFile(g_allocator, filename) catch {
-        vga.writeString("File not found\n", 15, 0);
+        vga.writeString("File not found\n", FG, BG);
         return;
     };
 
     // Make sure this 'const meta' (or 'var meta') exists!
     const meta = g_fs.readFileMeta(g_allocator, lba) catch {
-        vga.writeString("Failed to read metadata\n", 15, 0);
+        vga.writeString("Failed to read metadata\n", FG, BG);
         return;
     };
 
@@ -285,13 +287,13 @@ fn cmd_stat(args: [][]const u8) void {
     // Using a buffer to keep "File: name" on one line
     var name_line: [64]u8 = undefined;
     const name_full = std.fmt.bufPrint(&name_line, "File: {s}", .{filename}) catch "File: [name error]";
-    vga.writeString(name_full, 15, 0);
+    vga.writeString(name_full, FG, BG);
 
     // --- Line 2: Type ---
     if (meta.file_type == .File) {
-        vga.writeString("Type: Regular File", 15, 0);
+        vga.writeString("Type: Regular File", FG, BG);
     } else {
-        vga.writeString("Type: Directory", 15, 0);
+        vga.writeString("Type: Directory", FG, BG);
     }
 
     // --- Line 3: Size (Manual Stitching) ---
@@ -315,95 +317,104 @@ fn cmd_stat(args: [][]const u8) void {
     @memcpy(size_line[cursor .. cursor + suffix.len], suffix);
     cursor += suffix.len;
 
-    vga.writeString(size_line[0..cursor], 15, 0);
+    vga.writeString(size_line[0..cursor], FG, BG);
 }
 
 fn cmd_wf(args: [][]const u8) void {
-    // 1. Validation: wf <filename> <text>
     if (args.len < 3) {
         vga.writeString("Usage: wf <filename> <text>\n", 15, 0);
         return;
     }
 
     const filename = args[1];
-    // Create a buffer to hold the joined text (e.g., 256 bytes)
-    var text_buf: [256]u8 = undefined;
+
+    var text_buf: [conf.TERMINAL_LINE_SIZE]u8 align(16) = undefined;
     var current_pos: usize = 0;
 
     for (args[2..], 0..) |arg, i| {
-        // Add a space between words, but not before the first word
         if (i > 0 and current_pos < text_buf.len) {
             text_buf[current_pos] = ' ';
             current_pos += 1;
         }
-
-        // Copy the argument into our buffer
-        for (arg) |char| {
-            if (current_pos < text_buf.len) {
-                text_buf[current_pos] = char;
-                current_pos += 1;
-            }
-        }
+        const space_left = text_buf.len - current_pos;
+        const copy_len = if (arg.len > space_left) space_left else arg.len;
+        @memcpy(text_buf[current_pos .. current_pos + copy_len], arg[0..copy_len]);
+        current_pos += copy_len;
     }
-    // This is the string we will actually write to disk
-    const text = text_buf[0..current_pos];
+    const final_text = text_buf[0..current_pos];
 
-    // 2. Find the file's Metadata LBA
     const meta_lba = g_fs.findFile(g_allocator, filename) catch {
-        vga.writeString("File not found\n", 15, 0);
+        vga.writeString("Error: File not found\n", 12, 0);
         return;
     };
 
-    // 3. Load the Metadata struct
     var meta = g_fs.readFileMeta(g_allocator, meta_lba) catch {
-        vga.writeString("Error reading metadata\n", 15, 0);
+        vga.writeString("Error: Could not read metadata\n", 12, 0);
         return;
     };
 
-    // 4. Allocate a data block (since it's a new file)
-    // We use the helper we just wrote!
-    var data_lba: u64 = 0;
+    // --- 4. AUTO-GROWTH LOGIC ---
+    // Calculate how many blocks this text actually needs
+    const blocks_needed = (final_text.len + (conf.BASE_IO_BUF_SIZE - 1)) / conf.BASE_IO_BUF_SIZE;
 
-    // Logic: Reuse the first block if it exists, otherwise allocate
-    if (meta.extent_count > 0) {
-        // We take the start block of the first existing extent
-        data_lba = meta.extents[0].start_block;
-    } else {
-        // The file is empty, so we must find fresh space
-        data_lba = g_fs.appendBlockToFile(g_allocator, meta_lba, &meta) catch |err| {
-            vga.writeString("Allocation failed: ", 15, 0);
-            vga.writeString(@errorName(err), 15, 0);
+    // If we don't have enough blocks, ask the SpaceManager for more
+    while (meta.extent_count < blocks_needed) {
+        // We use the explicit Type.function(instance) call to avoid pointer ambiguity
+        codafs.addBlockToFile(g_fs, g_allocator, &meta) catch |err| {
+            if (err == error.FileAtMaximumSize) {
+                vga.writeString("Warning: Truncating to 4KB limit.\n", 14, 0);
+                break;
+            }
+            vga.writeString("Error: Disk full, growth failed.\n", 12, 0);
             return;
         };
     }
 
-    // 5. Write the text to that data block
-    // We'll create a temporary buffer for the 512-byte block
-    const block_buf = g_allocator.alloc(u8, 512) catch return;
+    // --- 5. UPDATE METADATA ---
+    meta.size_bytes = @intCast(final_text.len);
+
+    // --- 6. WRITE DATA BLOCKS ---
+    const block_buf = g_allocator.alloc(u8, conf.BASE_IO_BUF_SIZE) catch {
+        vga.writeString("Error: Out of memory\n", 12, 0);
+        return;
+    };
     defer g_allocator.free(block_buf);
-    @memset(block_buf, 0);
 
-    // Copy the text into the block (cap it at 512 bytes for now)
-    const write_len = if (text.len > 512) 512 else text.len;
-    @memcpy(block_buf[0..write_len], text[0..write_len]);
+    var bytes_written: usize = 0;
+    var block_idx: usize = 0;
 
-    g_fs.device.writeBlocks(g_fs.device.ctx, data_lba, block_buf) catch {
-        vga.writeString("Disk write failed\n", 15, 0);
+    // We loop through the text and map each block index to its specific extent
+    while (bytes_written < final_text.len and block_idx < meta.extent_count) {
+        @memset(block_buf, 0);
+        const remaining = final_text.len - bytes_written;
+        const copy_size = if (remaining > conf.BASE_IO_BUF_SIZE) conf.BASE_IO_BUF_SIZE else remaining;
+
+        @memcpy(block_buf[0..copy_size], final_text[bytes_written .. bytes_written + copy_size]);
+
+        // FIX: Look up the LBA from the correct extent
+        const target_lba = meta.extents[block_idx].start_block;
+
+        g_fs.device.writeBlocks(g_fs.device.ctx, target_lba, block_buf) catch {
+            vga.writeString("Error: Disk write failed\n", 12, 0);
+            return;
+        };
+
+        bytes_written += copy_size;
+        block_idx += 1;
+    }
+
+    // 7. Persist the updated Metadata (size AND new extent list)
+    g_fs.writeBlockStruct(meta_lba, &meta, @sizeOf(coda_file.FileMeta)) catch {
+        vga.writeString("Error: Failed to update metadata\n", 12, 0);
         return;
     };
 
-    // 6. Update the file size in the Metadata and save it
-    meta.size_bytes = write_len;
-    g_fs.writeBlockStruct(meta_lba, &meta, @sizeOf(coda_file.FileMeta)) catch {};
-
-    vga.writeString("Wrote to ", 15, 0);
-    vga.writeString(filename, 15, 0);
-    vga.writeString("\n", 15, 0);
+    vga.writeString("Success: File updated and grown.\n", 10, 0);
 }
 
 fn cmd_cat(args: [][]const u8) void {
     if (args.len < 2) {
-        vga.writeString("Usage: cat <filename>\n", 15, 0);
+        vga.writeString("Usage: cat <filename>\n", FG, BG);
         return;
     }
 
@@ -411,40 +422,68 @@ fn cmd_cat(args: [][]const u8) void {
 
     // 1. Find the file
     const meta_lba = g_fs.findFile(g_allocator, filename) catch {
-        vga.writeString("File not found\n", 15, 0);
+        vga.writeString("File not found\n", FG, BG);
         return;
     };
 
     // 2. Read the Metadata
     const meta = g_fs.readFileMeta(g_allocator, meta_lba) catch {
-        vga.writeString("Error reading metadata\n", 15, 0);
+        vga.writeString("Error reading metadata\n", FG, BG);
         return;
     };
 
     // 3. Check if there is actually data to read
-    if (meta.size_bytes == 0 or meta.extent_count == 0) {
-        vga.writeString("(File is empty)\n", 15, 0);
+    if (meta.size_bytes == 0) {
+        vga.writeString("(File is empty)\n", FG, BG);
         return;
     }
 
-    // 4. Read the first data block
-    // For now, we only support files that fit in one block (512 bytes)
-    const data_lba = meta.extents[0].start_block;
+    // 4. Read and Output data blocks in a loop
     const buf = g_allocator.alloc(u8, 512) catch return;
     defer g_allocator.free(buf);
 
-    g_fs.device.readBlocks(g_fs.device.ctx, data_lba, buf) catch {
-        vga.writeString("Error reading data block\n", 15, 0);
+    var bytes_remaining = meta.size_bytes;
+
+    // We loop through the extents (up to 8)
+    for (meta.extents[0..meta.extent_count]) |extent| {
+        if (bytes_remaining == 0) break;
+
+        // Read the current block
+        g_fs.device.readBlocks(g_fs.device.ctx, extent.start_block, buf) catch {
+            vga.writeString("\nError reading data block\n", FG, BG);
+            return;
+        };
+
+        // Calculate how much of this specific 512-byte block is actual file data
+        const chunk_size = if (bytes_remaining > 512) @as(usize, 512) else bytes_remaining;
+
+        // Output this chunk - we use a slice to ensure we don't print
+        // the trailing 0s (nulls) that exist in the remainder of the 512-byte buffer.
+        vga.writeRaw(buf[0..chunk_size], FG, BG);
+
+        // Update our counter
+        bytes_remaining -= chunk_size;
+    }
+
+    // Only add the newline once the entire file (all blocks) is finished
+    vga.writeString("\n", FG, BG);
+}
+fn cmd_rm(args: [][]const u8) void {
+    if (args.len < 2) {
+        vga.writeString("Usage: rm <filename>\n", FG, BG);
+        return;
+    }
+
+    const filename = args[1];
+
+    g_fs.deleteFile(g_allocator, filename) catch |err| {
+        if (err == error.FileNotFound) {
+            vga.writeString("Error: File not found.\n", 12, 0);
+        } else {
+            vga.writeString("Error: Could not delete file.\n", 12, 0);
+        }
         return;
     };
 
-    // 5. Output the data
-    // We only print up to size_bytes to avoid printing trailing zeros/garbage
-    const display_size = if (meta.size_bytes > 512) 512 else meta.size_bytes;
-
-    // Safety check: Ensure we don't try to print an empty slice
-    if (display_size > 0) {
-        vga.writeString(buf[0..display_size], 15, 0);
-        vga.writeString("\n", 15, 0);
-    }
+    vga.writeString("File deleted successfully.\n", 10, 0);
 }
