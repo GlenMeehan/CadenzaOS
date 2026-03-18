@@ -192,3 +192,18 @@ pub fn writeRaw(s: []const u8, fg: u8, bg: u8) void {
     }
 }
 
+pub fn hexDump(data: []const u16, words_to_show: usize) void {
+    var i: usize = 0;
+    var buf: [16]u8 = undefined;
+
+    writeString("\n--- Sector Hex Dump ---\n", 15, 0);
+
+    while (i < words_to_show) : (i += 1) {
+        const hex = conv.toHex(u16, data[i], &buf);
+        writeString(hex, 11, 0); // Cyan text
+        writeString(" ", 15, 0);
+
+        // New line every 8 words (16 bytes)
+        if ((i + 1) % 8 == 0) writeString("\n", 15, 0);
+    }
+}

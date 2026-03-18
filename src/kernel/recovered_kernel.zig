@@ -21,10 +21,7 @@ const keyboard = @import("inputs/keyboard.zig");
 const shell = @import("shell.zig");
 pub const term = @import("terminal.zig");
 const conf = @import("config.zig");
-const AtaDevice = @import("fs/ata_block_device.zig").AtaBlockDevice;
 const CodaFs = @import("fs/coda_fs.zig").CodaFs;
-const bd = @import("fs/block_device.zig").BlockDevice;
-const ata = @import("drivers/ata.zig");
 //const libc = @import("libc.zig");
 
 pub export fn memmove(dest: ?[*]u8, src: ?[*]const u8, n: usize) ?[*]u8 {
@@ -55,15 +52,15 @@ extern fn irq12_stub() void;
 var ticks: u64 = 0;
 
 // Early static heap used with FixedBufferAllocator (bootstrap heap)
-var heap_buffer: [1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
+var heap_buffer: [4 * 1024 * 1024]u8 align(4096) = undefined;
 
 // Global FixedBufferAllocator — lifetime = whole kernel
 var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
 
 //RAM Disk Buffer
-var fs_ramdisk_buf: [4 * 1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
+var fs_ramdisk_buf: [1024 * 1024]u8 = undefined; // 1 MiB ramdisk
 
-var fs_global: CodaFs align(4096) linksection(".bss") = undefined;
+var fs_global: CodaFs = undefined;
 
 
 /// Kernel panic handler.
@@ -125,36 +122,6 @@ export fn kernel_entry() void {
 /// Sets up memory info, basic heap, frame allocator, IDT, bitmap,
 /// and runs a few sanity tests (std allocator + frame allocator stress test).
 pub export fn kmain() noreturn {
-    // Clear the BSS as we discussed
-    @memset(&heap_buffer, 0);
-    @memset(&fs_ramdisk_buf, 0);
-
-    // Ensure IDT is init'd so the compiler doesn't prune it
-    idt.init();
-
-    vga.writeString("Probing Disk...\n", 15, 0);
-
-    // 1. Just check if the filesystem exists
-    const partition_start = 2048;
-
-if (ata.AtaDevice.checkFileSystem(partition_start)) {
-        vga.writeString("STATUS: System Partition Found!\n", 10, 0);
-    } else {
-        vga.writeString("STATUS: Disk is Blank.\n", 14, 0);
-
-        // ONLY write if we absolutely have to
-        vga.writeString("Initializing MBR...\n", 15, 0);
-        ata.initializePartitionTable(partition_start, 16384);
-
-        vga.writeString("Formatting Partition...\n", 15, 0);
-        ata.formatMyFileSystem(partition_start);
-
-        vga.writeString("Done. Please close QEMU and run ./build.sh run\n", 11, 0);
-    }
-
-
-    //io.pause(); // The code stops here!
-
     vga.step(0);
 
     // Optional debug pause
@@ -162,6 +129,7 @@ if (ata.AtaDevice.checkFileSystem(partition_start)) {
 
     const welc_mess = "CadenzaOS 64 Bit";
     vga.writeString(welc_mess, 15, 0);
+
     // 1) Copy E820 entries into kernel-owned memory.
     E820Store.init();
     vga.step(1);
@@ -222,10 +190,13 @@ if (ata.AtaDevice.checkFileSystem(partition_start)) {
 
         row2 += 1;
     }
+
     // --- IDT setup ---
+    idt.init();
     idt.setGate(32, @intFromPtr(&irq0_stub));
     idt.setGate(33, @intFromPtr(&irq1_stub));
     idt.setGate(44, @intFromPtr(&irq12_stub));
+
     pic.remap(32, 40);
     pic.unmaskIrq(@as(u8, 0)); //timer
     pic.unmaskIrq(@as(u8, 1));//keyborad
@@ -233,12 +204,12 @@ if (ata.AtaDevice.checkFileSystem(partition_start)) {
     pic.unmaskIrq(@as(u8, 12));//mouse
 
     mouse.initMouse();   // PS/2 controller + mouse
-
     asm volatile ("sti");
 
 
     vga.step(4);
     vga.writeStringAt(21, 0, "IDT + PIC remapped", 15, 0);
+
     // Display boot info again (for IDT debug)
     const idt_info = bi.get();
     var buf_idt: [16]u8 = undefined;
@@ -406,16 +377,16 @@ if (ata.AtaDevice.checkFileSystem(partition_start)) {
     //while (true) asm volatile ("cli; hlt");
 
     // 3) Mount the filesystem
-    const fs = CodaFs.mount(allocator, &dev) catch |err| {
-        vga.writeString("mount failed\n", 12, 4);
-        @panic(@errorName(err));
-    };
+const fs = CodaFs.mount(allocator, &dev) catch |err| {
+    vga.writeString("mount failed\n", 12, 4);
+    @panic(@errorName(err));
+};
 
-    // Avoid implicit full-struct memcpy here
-    fs_global.device = fs.device;
-    fs_global.superblock = fs.superblock;
-    fs_global.space_manager = fs.space_manager;
-    fs_global.root_dir = fs.root_dir;
+// Avoid implicit full-struct memcpy here
+fs_global.device = fs.device;
+fs_global.superblock = fs.superblock;
+fs_global.space_manager = fs.space_manager;
+fs_global.root_dir = fs.root_dir;
 
 
     //var buftub: [32]u8 = undefined; // big enough for 64‑bit hex

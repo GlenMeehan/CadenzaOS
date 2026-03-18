@@ -2,7 +2,7 @@ CodaOS
 A operating system built from scratch using the Zig programming language. CodaOS focuses on a clean, educational architecture with a custom filesystem and a responsive kernel-level shell.
 
 🚀 Current Features
-Micro-Kernel Foundation: Written in Zig, leveraging its type safety and manual memory management.
+Monolitic-Kernel Foundation: Written in Zig, leveraging its type safety and manual memory management.
 CodaFS: A custom-designed filesystem featuring:
 Bitmap-based Space Management: Tracking disk allocation.
 Extent-based Storage: Efficiently mapping file data to disk blocks.

@@ -29,3 +29,9 @@ pub fn inw(port: u16) u16 {
                          : [port] "{dx}" (port),
     );
 }
+
+pub fn pause() noreturn {
+    while (true) {
+        asm volatile ("hlt");
+    }
+}

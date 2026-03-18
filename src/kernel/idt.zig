@@ -226,7 +226,7 @@ extern fn exception8_asm() void;
 extern fn exception13_asm() void;
 extern fn exception14_asm() void;
 
-export fn exceptionHandlerWrapper(stack_ptr: u64) noreturn {
+pub export fn exceptionHandlerWrapper(stack_ptr: u64) noreturn {
     const num_ptr = @as(*const u64, @ptrFromInt(stack_ptr + 0));
     const err_ptr = @as(*const u64, @ptrFromInt(stack_ptr + 8));
     exceptionHandler(num_ptr.*, err_ptr.*);
