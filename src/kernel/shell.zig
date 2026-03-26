@@ -19,6 +19,7 @@ const codafs = @import("fs/coda_fs.zig");
 const CodaFs = @import("fs/coda_fs.zig").CodaFs;
 const bp = @import("fs/coda_fs.zig").breakpoint;
 const coda_file = @import("fs/coda_file.zig");
+const ata = @import("drivers/ata.zig");
 
 
 const FG = 15;

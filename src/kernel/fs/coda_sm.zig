@@ -6,6 +6,7 @@ const BlockDevice = @import("block_device.zig").BlockDevice;
 const vga = @import("../vga.zig");
 const conv = @import("../convert.zig");
 const memory = @import("../memory.zig");
+const port = @import("../port_io.zig");
 
 const ArrayList = std.ArrayList;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
@@ -64,36 +65,39 @@ pub const SpaceManager = struct {
         device: *BlockDevice,
         start_block: u64,
     ) !SpaceManager {
-        // 1. Read the header first to know how many extents we have
-        var header: SmHeader = undefined;
-        try readBlockStruct(device, start_block, &header, @sizeOf(SmHeader));
+        // 1. Prepare a sector-sized, 8-byte aligned buffer
+        var sector_buf: [512]u8 align(@alignOf(SmHeader)) = undefined;
+
+        // 2. Read the full first sector (avoids Index Out of Bounds)
+        try device.readBlocks(device.ctx, start_block, &sector_buf);
+
+        // 3. Extract the header safely
+        const header = @as(*const SmHeader, @ptrCast(&sector_buf)).*;
+
+        // 4. The Gatekeeper: Ensure the drive stays quiet for the rest of the task
+        port.outb(0x3F6, 0x02);
 
         if (header.magic != SM_MAGIC)
             return error.BadSpaceManagerMagic;
 
-        // 2. Allocate the exact memory needed for the items
+        // 5. Allocate memory for the actual data
         const slice = try allocator.alloc(Extent, header.free_extent_count);
         errdefer allocator.free(slice);
 
-        // 3. Calculate total bytes needed for extents AND total blocks on disk
+        // 6. Calculate how many full blocks we need to read the extents
         const total_bytes = header.free_extent_count * @sizeOf(Extent);
         const blocks_to_read = (total_bytes + device.block_size - 1) / device.block_size;
-
-        // 4. Create a buffer that is a MULTIPLE of block_size to satisfy the disk
-        // We use the already allocated slice, but we must ensure the read
-        // doesn't overflow the slice if the block alignment adds extra bytes.
         const read_size = blocks_to_read * device.block_size;
 
-        // SAFETY: If read_size > slice memory, we need a temporary
-        // block-aligned buffer, or to allocate the slice slightly larger.
+        // 7. Temporary aligned buffer for the data read
         var temp_buf = try allocator.alloc(u8, read_size);
         defer allocator.free(temp_buf);
 
+        // Read the data starting at the next block
         try device.readBlocks(device.ctx, start_block + 1, temp_buf);
 
-        // 5. Copy only the valid data into our actual slice
-        const byte_slice = mem.sliceAsBytes(slice);
-        @memcpy(byte_slice, temp_buf[0..total_bytes]);
+        // 8. Copy valid data into the final slice
+        @memcpy(std.mem.sliceAsBytes(slice), temp_buf[0..total_bytes]);
 
         return SpaceManager{
             .device = device,

@@ -21,8 +21,9 @@ const keyboard = @import("inputs/keyboard.zig");
 const shell = @import("shell.zig");
 pub const term = @import("terminal.zig");
 const conf = @import("config.zig");
-const AtaDevice = @import("fs/ata_block_device.zig").AtaBlockDevice;
-const CodaFs = @import("fs/coda_fs.zig").CodaFs;
+const AtaBD = @import("fs/ata_block_device.zig").AtaBlockDevice;
+const coda_fs = @import("fs/coda_fs.zig");
+const CodaFs = coda_fs.CodaFs;
 const bd = @import("fs/block_device.zig").BlockDevice;
 const ata = @import("drivers/ata.zig");
 //const libc = @import("libc.zig");
@@ -126,28 +127,70 @@ export fn kernel_entry() void {
 /// and runs a few sanity tests (std allocator + frame allocator stress test).
 pub export fn kmain() noreturn {
     // Clear the BSS as we discussed
+
     @memset(&heap_buffer, 0);
     @memset(&fs_ramdisk_buf, 0);
 
+
+
     // Ensure IDT is init'd so the compiler doesn't prune it
     idt.init();
-
     vga.writeString("Probing Disk...\n", 15, 0);
 
-    // 1. Just check if the filesystem exists
+
+    // 1. Identify the partition
+    var fs_exists: bool = false;
     const partition_start = 2048;
 
-if (ata.AtaDevice.checkFileSystem(partition_start)) {
+    if (ata.AtaDevice.checkFileSystem(partition_start)) {
+        fs_exists = true;
         vga.writeString("STATUS: System Partition Found!\n", 10, 0);
+        // 2. THE GATHER: Load the entire disk partition into your RAM buffer
+        // This restores your files, inodes, and superblock from the last session
+        vga.writeString("RESTORE: Populating RAM from Disk...\n", 11, 0);
+        ata.AtaDevice.readBlocks(null, partition_start, fs_ramdisk_buf[0..]) catch |err| {
+            vga.writeString("ERROR: Restoration failed! Type: ", 12, 0);
+            vga.writeString(@errorName(err), 12, 0);
+            // Optional: while(true) {} // Halt here if you don't want to boot with a broken FS
+        };
+
+        // 3. DIRTY BIT LOGIC
+        // We cast the start of our main RAM buffer as the Superblock
+        const sb = @as(*coda_fs.Superblock, @ptrCast(@alignCast(&fs_ramdisk_buf[0])));
+
+
+        // Check the FLAG_DIRTY using your defined constant
+        if ((sb.flags & coda_fs.FLAG_DIRTY) != 0) {
+            vga.writeString("WARNING: Last shutdown was UNCLEAN!\n", 14, 0);
+        } else {
+            vga.writeString("STATUS: Filesystem is healthy.\n", 10, 0);
+        }
+
+        // 4. LOCK: Mark the filesystem as dirty in RAM
+        sb.flags |= coda_fs.FLAG_DIRTY;
+
+        // 5. SYNC: Write just the Superblock sector back to disk to "lock" it
+        // We only write 512 bytes here for speed; the rest is already in RAM
+        ata.AtaDevice.writeBlocks(null, partition_start, fs_ramdisk_buf[0..512]) catch {
+            vga.writeString("ERROR: Could not mark disk as DIRTY!\n", 12, 0);
+        };
+
+        vga.writeString("STATUS: Filesystem Ready.\n", 10, 0);
+
     } else {
+        fs_exists = false;
         vga.writeString("STATUS: Disk is Blank.\n", 14, 0);
 
-        // ONLY write if we absolutely have to
         vga.writeString("Initializing MBR...\n", 15, 0);
         ata.initializePartitionTable(partition_start, 16384);
 
         vga.writeString("Formatting Partition...\n", 15, 0);
+        // This writes a clean Superblock (flags = 0) to the disk
         ata.formatMyFileSystem(partition_start);
+
+        // Now we read that fresh Superblock into our RAM buffer
+        // so the FS initialization sees the Magic Number we just wrote
+        ata.AtaDevice.readBlocks(null, partition_start, fs_ramdisk_buf[0..512]) catch {};
 
         vga.writeString("Done. Please close QEMU and run ./build.sh run\n", 11, 0);
     }
@@ -389,23 +432,24 @@ if (ata.AtaDevice.checkFileSystem(partition_start)) {
 
     // --- Filesystem bring-up ---
 
-    const RD = @import("fs/ramdisk.zig").RamDisk;
+    // 1) Replace RamDisk with ATA
+    // const RD = @import("fs/ramdisk.zig").RamDisk; <--- Comment this out
+    //const AtaBD = @import("drivers/ata_block_device.zig").AtaBlockDevice;
+
+    // Use the same partition start you used for the "Probing" step
+    //const partition_start = 2048;
+
+    var ata_dev = AtaBD.init(partition_start);
+    var dev = ata_dev.asBlockDevice(); // This 'dev' is now backed by the Hard Drive!
 
 
-    // 1) Create RamDisk over fs_ramdisk_buf
-    const block_size = conf.BASE_IO_BUF_SIZE;
-    var ramdisk = RD.init(fs_ramdisk_buf[0..], block_size);
-    var dev = ramdisk.asBlockDevice(); // OK
-
-    // 2) Format the filesystem (mkfs) — now requires allocator
+    // 2) The rest of your code remains UNCHANGED
+    if (!fs_exists) {
     CodaFs.mkfs(allocator, &dev) catch |err| {
         vga.writeString("mkfs failed\n", 12, 4);
         @panic(@errorName(err));
     };
 
-    //while (true) asm volatile ("cli; hlt");
-
-    // 3) Mount the filesystem
     const fs = CodaFs.mount(allocator, &dev) catch |err| {
         vga.writeString("mount failed\n", 12, 4);
         @panic(@errorName(err));
@@ -416,38 +460,20 @@ if (ata.AtaDevice.checkFileSystem(partition_start)) {
     fs_global.superblock = fs.superblock;
     fs_global.space_manager = fs.space_manager;
     fs_global.root_dir = fs.root_dir;
+    }
+    else {
+        const fs = CodaFs.mount(allocator, &dev) catch |err| {
+            vga.writeString("mount failed\n", 12, 4);
+            @panic(@errorName(err));
+        };
 
+        fs_global.device = fs.device;
+        fs_global.superblock = fs.superblock;
+        fs_global.space_manager = fs.space_manager;
+        fs_global.root_dir = fs.root_dir;
+    }
 
-    //var buftub: [32]u8 = undefined; // big enough for 64‑bit hex
-    //const addr = @intFromPtr(&fs_global);
-    //_ = addr;
-    //const hex = conv.toHex(usize, addr, &buftub);
-    //_ = hex;
-    //vga.writeString("fs_global @ 0x", 15, 0);
-    //vga.writeString(hex, 15, 0);
-    //vga.writeString("\n", 15, 0);
-    //while (true) asm volatile ("cli; hlt");
-
-    // To see where the POINTER ITSELF is stored:
-    // fs is a struct
-    // &fs is a pointer to the struct
-
-    //var p: *CodaFs = &fs_global;   // p is the pointer variable
-
-    //var buf_gfs: [16]u8 = undefined;
-    //vga.writeString("address of pointer p: ", 15, 0);
-    //vga.writeString(conv.toHex(usize, @intFromPtr(&p), &buf_gfs), 15, 0);
-
-
-
-
-    // 4) Optional: list root
-    // const entries = fs.listDir("/") catch |err| {
-    //     vga.writeString("listDir failed\n", 12, 4);
-    //     @panic(@errorName(err));
-    // };
-
-    // 5) Pass fs to the shell
+    // 4) Pass fs to the shell
     shell.run(&fs_global, allocator);
 
     // --- Optional allocator tests using bootstrap heap ---

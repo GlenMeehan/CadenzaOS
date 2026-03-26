@@ -10,17 +10,18 @@ const vga = @import("../vga.zig");
 const conf = @import("../config.zig");
 const Extent = @import("coda_sm.zig").Extent;
 const memory = @import("../memory.zig");
-
+const MAX_NAME = @import("coda_file.zig").MAX_NAME;
 
 pub const CODA_MAGIC: u64 = 0x434F44415F465331;
 pub const CODA_VERSION: u32 = 1;
+pub const FLAG_DIRTY: u64 = 1 << 0; // Value: 0x0000000000000001
 
 
-const MAX_NAME = @import("coda_file.zig").MAX_NAME;
 
 
 pub const Superblock = struct {
     magic: u64,
+    flags: u64,
     version: u32,
     block_size: u32,
     total_blocks: u64,
@@ -31,7 +32,6 @@ pub const Superblock = struct {
     root_dir_extent_start: u64,
     root_dir_extent_blocks: u64,
 
-    flags: u64,
     reserved: [64]u8,
 };
 
@@ -163,7 +163,6 @@ pub const CodaFs = struct {
             data_start_block,
             total_blocks - data_start_block,
         );
-
         // This will now correctly allocate block 2065 for your root dir
         const root_extent = try sm.allocate(1);
 
@@ -179,7 +178,6 @@ pub const CodaFs = struct {
             .flags = 0,
             .reserved = [_]u8{0} ** 64,
         };
-
         try sm.flushToDisk(allocator, sm_start_block, sm_block_count);
         try initEmptyRootDir(device, root_extent);
         try writeSuperblock(device, sb_block, &sb);
@@ -245,6 +243,10 @@ pub const CodaFs = struct {
         meta.extents[0] = data_extent;
 
         try fs.writeBlockStruct(meta_extent.start_block, &meta, @sizeOf(FileMeta));
+
+        // --- THE FIX: Explicitly flush this specific meta block to the ATA device ---
+        const meta_bytes = @as([*]const u8, @ptrCast(&meta))[0..@sizeOf(FileMeta)];
+        try fs.device.writeBlocks(fs.device.ctx, meta_extent.start_block, meta_bytes);
 
         // 5. Load the root directory block to add the entry
         const dir_buf = try allocator.alloc(u8, fs.device.block_size);

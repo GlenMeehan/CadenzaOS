@@ -63,7 +63,7 @@ echo "🆕 Creating new 10MB disk image..."
 dd if=/dev/zero of="$IMG" bs=512 count=20480 status=none
 
 echo "💾 Writing OS sectors..."
-# conv=notrunc is used here to ensure dd doesn't truncate the 10MB file we just created
+# We use conv=notrunc so dd doesn't wipe the rest of the 10MB image
 dd if="$BUILD/boot.bin" of="$IMG" bs=512 count=1 conv=notrunc status=none
 dd if="$BUILD/stage2.bin" of="$IMG" bs=512 seek=1 conv=notrunc status=none
 dd if="$BUILD/kernel.bin" of="$IMG" bs=512 seek=3 conv=notrunc status=none
@@ -72,5 +72,8 @@ echo "✅ Build & Update complete."
 
 # Launch QEMU automatically after build
 qemu-system-x86_64 \
-  -drive format=raw,file=$IMG \
-  -m 1024 -monitor stdio -no-reboot -no-shutdown -vga std
+      -drive format=raw,file=$IMG,cache=directsync,snapshot=off \
+      -m 1024 -monitor stdio -no-reboot -no-shutdown -vga std
+#qemu-system-x86_64 \
+  #-drive format=raw,file=$IMG \
+  #-m 1024 -monitor stdio -no-reboot -no-shutdown -vga std
