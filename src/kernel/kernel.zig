@@ -432,48 +432,40 @@ pub export fn kmain() noreturn {
 
     // --- Filesystem bring-up ---
 
-    // 1) Replace RamDisk with ATA
-    // const RD = @import("fs/ramdisk.zig").RamDisk; <--- Comment this out
-    //const AtaBD = @import("drivers/ata_block_device.zig").AtaBlockDevice;
+    // 1. ALWAYS initialize the RamDisk first.
+    // This points to your 4MB buffer (which was either zeroed or filled from ATA earlier)
+    var ram_disk = @import("fs/ramdisk.zig").RamDisk.init(fs_ramdisk_buf[0..], 512);
+    var dev = ram_disk.asBlockDevice();
 
-    // Use the same partition start you used for the "Probing" step
-    //const partition_start = 2048;
-
-    var ata_dev = AtaBD.init(partition_start);
-    var dev = ata_dev.asBlockDevice(); // This 'dev' is now backed by the Hard Drive!
-
-
-    // 2) The rest of your code remains UNCHANGED
+    // 2. Handle the two cases (New vs Existing)
     if (!fs_exists) {
-    CodaFs.mkfs(allocator, &dev) catch |err| {
-        vga.writeString("mkfs failed\n", 12, 4);
-        @panic(@errorName(err));
-    };
+        // CASE A: Blank Disk.
+        // We format the RAM Workspace directly.
+        vga.writeString("Creating new filesystem in RAM...\n", 15, 0);
+        CodaFs.mkfs(allocator, &dev) catch |err| {
+            @panic(@errorName(err));
+        };
+    }
 
+    // 3. Mount the filesystem.
+    // Whether we just formatted it or restored it from ATA,
+    // the 'truth' is now in the RAM Workspace.
     const fs = CodaFs.mount(allocator, &dev) catch |err| {
-        vga.writeString("mount failed\n", 12, 4);
+        vga.writeString("Mount failed: ", 12, 4);
         @panic(@errorName(err));
     };
 
-    // Avoid implicit full-struct memcpy here
+    // 4. Update the global pointer for the shell
     fs_global.device = fs.device;
     fs_global.superblock = fs.superblock;
     fs_global.space_manager = fs.space_manager;
     fs_global.root_dir = fs.root_dir;
-    }
-    else {
-        const fs = CodaFs.mount(allocator, &dev) catch |err| {
-            vga.writeString("mount failed\n", 12, 4);
-            @panic(@errorName(err));
-        };
 
-        fs_global.device = fs.device;
-        fs_global.superblock = fs.superblock;
-        fs_global.space_manager = fs.space_manager;
-        fs_global.root_dir = fs.root_dir;
-    }
+    vga.writeString("FS Engine Online (RAM-Backed).\n", 10, 0);
 
-    // 4) Pass fs to the shell
+    //vga.clearScreen(0, 0);
+
+    // 5. Pass to shell
     shell.run(&fs_global, allocator);
 
     // --- Optional allocator tests using bootstrap heap ---

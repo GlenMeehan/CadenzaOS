@@ -2,6 +2,9 @@
 
 const BlockDevice = @import("block_device.zig").BlockDevice;
 const mem = @import("../memory.zig");
+const ata = @import("../drivers/ata.zig"); // Import your driver
+
+const partition_start = 2048; // Your partition offset
 
 pub const RamDisk = struct {
     buffer: []u8,
@@ -43,23 +46,20 @@ pub const RamDisk = struct {
 
     fn writeBlocksImpl(ctx: *anyopaque, lba: u64, buf: []const u8) error{IoError, OutOfRange}!void {
         const self: *RamDisk = @ptrCast(@alignCast(ctx));
-
-        // 1. Force everything to u64 to prevent 32-bit overflow
         const b_size: u64 = @intCast(self.block_size);
-
-        // 2. Perform the calculation
-        // If lba is huge, this is where the panic happens.
-        // We use @intCast to ensure the result fits back into the slice index later.
         const offset = lba * b_size;
         const end = offset + @as(u64, buf.len);
 
-        // 3. Bounds check against the buffer
-        if (end > self.buffer.len) {
-            return error.OutOfRange;
-        }
+        if (end > self.buffer.len) return error.OutOfRange;
 
-        // 4. Use @intCast for the actual slicing
+        // 1. Update the RAM Buffer (The Workspace)
         @memcpy(self.buffer[@intCast(offset)..@intCast(end)], buf);
+
+        // 2. Immediately Update the Physical Disk (The Archive)
+        // We use the driver directly to bypass the BlockDevice interface overhead
+        ata.AtaDevice.writeBlocks(null, partition_start + lba, buf) catch {
+            return error.IoError;
+        };
     }
 };
 

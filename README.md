@@ -1,31 +1,32 @@
-CodaOS
-A operating system built from scratch using the Zig programming language. CodaOS focuses on a clean, educational architecture with a custom filesystem and a responsive kernel-level shell.
+# CodaOS
+An operating system built from scratch using the Zig programming language. CodaOS focuses on a clean, educational architecture with a custom filesystem and a responsive kernel-level shell.
 
-🚀 Current Features
-Monolitic-Kernel Foundation: Written in Zig, leveraging its type safety and manual memory management.
-CodaFS: A custom-designed filesystem featuring:
-Bitmap-based Space Management: Tracking disk allocation.
-Extent-based Storage: Efficiently mapping file data to disk blocks.
-Metadata Tagging: Detailed file information (size, type, and location).
-Interactive Shell: A built-in CLI for system interaction.
-VGA Driver: Direct hardware rendering for the console interface.
+## 🚀 Current Features
+- **Monolithic-Kernel Foundation**: Written in Zig, leveraging its type safety and manual memory management.
+- **CodaFS (High-Performance Version)**: A custom-designed, extent-based filesystem.
+    - **Write-Through Cache**: Uses a 4MB RAM workspace mirrored to physical ATA storage for instant performance and true persistence.
+    - **Extent-based Storage**: Efficiently maps file data to disk blocks.
+    - **Dynamic Directory Geometry**: Supports multi-block directory extents to prevent entry overflows.
+- **Interactive Shell**: A built-in CLI for system interaction.
+- **VGA Driver**: Direct hardware rendering for the console interface.
 
-📂 Filesystem Commands
+## 📂 Filesystem Commands
 CodaOS uses a unique set of commands for file manipulation:
-ls: List all files in the root directory.
-mf <filename>: Make File – Creates a new file entry and allocates metadata.
-wf <filename> "<text>": Write File – Allocates data blocks and commits text to disk.
-cat <filename>: Concatenate – Reads data blocks and outputs content to the screen.
-stat <filename>: Displays file metadata, including type, size, and LBA location.
+* `ls`: List all files in the root directory.
+* `mf <name>`: **Make File** – Creates a new file entry and allocates metadata.
+* `wf <name> "text"`: **Write File** – Allocates data blocks and commits text to disk.
+* `cat <name>`: **Concatenate** – Reads data blocks and outputs content to the screen.
+* `rm <name>`: **Remove File** – Deletes a file and returns its blocks to the Space Manager.
+* `stat <name>`: Displays file metadata, including type, size, and LBA location.
 
-🛠 Project Structure
-/src/kernel: The core kernel logic and entry point.
-/src/kernel/fs: The implementation of CodaFS, including the Space Manager and File structures.
-/src/kernel/drivers: Hardware abstraction layers (VGA, Keyboard, Block Devices).
-/src/kernel/shell.zig: The command-line interface logic.
+## 🏗 Project Structure
+* `/src/kernel`: The core kernel logic and entry point.
+* `/src/kernel/fs`: The implementation of CodaFS, including the Space Manager and Write-Through RamDisk.
+* `/src/kernel/drivers`: Hardware abstraction layers (VGA, Keyboard, ATA/IDE).
 
-🏗 Roadmap
-[ ] Fix: Prevent block leakage on file overwrite.
-[ ] Feature: Support for multi-block (large) files.
-[ ] Driver: IDE/ATA support for true disk persistence.
-[ ] Feature: df (Delete File) command.
+## 🛠 Roadmap
+- [x] **Persistence**: IDE/ATA support via Write-Through caching.
+- [x] **Deletion**: `rm` command with block reclamation.
+- [ ] **Feature**: `append` command to grow existing files.
+- [ ] **Feature**: Support for files larger than a single block (512 bytes).
+- [ ] **Optimization**: Extent merging in the Space Manager to reduce fragmentation.
