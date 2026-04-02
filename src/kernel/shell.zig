@@ -34,14 +34,31 @@ fn parseArgs(line: []const u8) [][]const u8 {
     var i: usize = 0;
 
     while (i < line.len) {
+        // 1. Skip any leading spaces between tokens
         while (i < line.len and line[i] == ' ') : (i += 1) {}
         if (i >= line.len) break;
 
-        const start = i;
+        if (line[i] == '"') {
+            // --- QUOTED TOKEN ---
+            i += 1; // Skip the opening quote
+            const start = i;
 
-        while (i < line.len and line[i] != ' ') : (i += 1) {}
+            // Consume everything until the closing quote or end of line
+            while (i < line.len and line[i] != '"') : (i += 1) {}
 
-        parse_tokens[count] = line[start..i];
+            parse_tokens[count] = line[start..i];
+
+            // Move past the closing quote if it exists
+            if (i < line.len and line[i] == '"') i += 1;
+        } else {
+            // --- NORMAL TOKEN ---
+            const start = i;
+            // Consume until the next space
+            while (i < line.len and line[i] != ' ') : (i += 1) {}
+
+            parse_tokens[count] = line[start..i];
+        }
+
         count += 1;
         if (count >= parse_tokens.len) break;
     }
@@ -329,14 +346,16 @@ fn cmd_wf(args: [][]const u8) void {
 
     const filename = args[1];
 
+    // --- 1. COLLECT TEXT FROM ARGS ---
     var text_buf: [conf.TERMINAL_LINE_SIZE]u8 align(16) = undefined;
     var current_pos: usize = 0;
-
     for (args[2..], 0..) |arg, i| {
+        // Add a space BEFORE every word except the very first one
         if (i > 0 and current_pos < text_buf.len) {
             text_buf[current_pos] = ' ';
             current_pos += 1;
         }
+
         const space_left = text_buf.len - current_pos;
         const copy_len = if (arg.len > space_left) space_left else arg.len;
         @memcpy(text_buf[current_pos .. current_pos + copy_len], arg[0..copy_len]);
@@ -344,73 +363,93 @@ fn cmd_wf(args: [][]const u8) void {
     }
     const final_text = text_buf[0..current_pos];
 
-    const meta_lba = g_fs.findFile(g_allocator, filename) catch {
-        vga.writeString("Error: File not found\n", 12, 0);
-        return;
-    };
+    // --- 2. FIND OR CREATE THE FILE ---
+    var meta_lba: u64 = 0;
 
+    // Try to find it first
+    if (g_fs.findFile(g_allocator, filename)) |found_lba| {
+        meta_lba = found_lba;
+    } else |_| {
+        // If not found, call your 3-argument createFile
+    g_fs.createFile(g_allocator, filename) catch {
+            vga.writeString("Error: Could not create file\n", 12, 0);
+            return;
+        };
+        // Now lookup the LBA of the file we just made
+        meta_lba = g_fs.findFile(g_allocator, filename) catch {
+            vga.writeString("Error: File created but not found\n", 12, 0);
+            return;
+        };
+    }
+
+    // Load the actual metadata structure
     var meta = g_fs.readFileMeta(g_allocator, meta_lba) catch {
         vga.writeString("Error: Could not read metadata\n", 12, 0);
         return;
     };
 
-    // --- 4. AUTO-GROWTH LOGIC ---
-    // Calculate how many blocks this text actually needs
-    const blocks_needed = (final_text.len + (conf.BASE_IO_BUF_SIZE - 1)) / conf.BASE_IO_BUF_SIZE;
+    // --- 3. AUTO-GROWTH (APPEND-AWARE) ---
+    const old_size = meta.size_bytes;
+    const total_new_size = old_size + final_text.len;
+    // Calculate total blocks needed for the combined data
+    const total_blocks_needed = (total_new_size + 511) / 512;
 
-    // If we don't have enough blocks, ask the SpaceManager for more
-    while (meta.extent_count < blocks_needed) {
-        // We use the explicit Type.function(instance) call to avoid pointer ambiguity
+    while (meta.extent_count < total_blocks_needed) {
         codafs.addBlockToFile(g_fs, g_allocator, &meta) catch |err| {
             if (err == error.FileAtMaximumSize) {
-                vga.writeString("Warning: Truncating to 4KB limit.\n", 14, 0);
+                vga.writeString("Warning: File capped at 4KB.\n", 14, 0);
                 break;
             }
-            vga.writeString("Error: Disk full, growth failed.\n", 12, 0);
+            vga.writeString("Error: Disk full.\n", 12, 0);
             return;
         };
     }
 
-    // --- 5. UPDATE METADATA ---
-    meta.size_bytes = @intCast(final_text.len);
-
-    // --- 6. WRITE DATA BLOCKS ---
-    const block_buf = g_allocator.alloc(u8, conf.BASE_IO_BUF_SIZE) catch {
-        vga.writeString("Error: Out of memory\n", 12, 0);
-        return;
-    };
+    // --- 4. DATA WRITE (READ-MODIFY-WRITE) ---
+    const block_buf = g_allocator.alloc(u8, 512) catch return;
     defer g_allocator.free(block_buf);
 
-    var bytes_written: usize = 0;
-    var block_idx: usize = 0;
+    var bytes_to_append = final_text.len;
+    var write_offset: usize = old_size;
 
-    // We loop through the text and map each block index to its specific extent
-    while (bytes_written < final_text.len and block_idx < meta.extent_count) {
-        @memset(block_buf, 0);
-        const remaining = final_text.len - bytes_written;
-        const copy_size = if (remaining > conf.BASE_IO_BUF_SIZE) conf.BASE_IO_BUF_SIZE else remaining;
+    while (bytes_to_append > 0) {
+        const block_idx = write_offset / 512;
+        const offset_in_block = write_offset % 512;
 
-        @memcpy(block_buf[0..copy_size], final_text[bytes_written .. bytes_written + copy_size]);
+        // Use your getLbaForBlock helper here
+        const target_lba = getLbaForBlock(meta, block_idx);
 
-        // FIX: Look up the LBA from the correct extent
-        const target_lba = meta.extents[block_idx].start_block;
-
-        g_fs.device.writeBlocks(g_fs.device.ctx, target_lba, block_buf) catch {
-            vga.writeString("Error: Disk write failed\n", 12, 0);
+        // READ the block so we don't destroy existing data
+        g_fs.device.readBlocks(g_fs.device.ctx, target_lba, block_buf) catch {
+            vga.writeString("Error: Read failed\n", 12, 0);
             return;
         };
 
-        bytes_written += copy_size;
-        block_idx += 1;
+        const space_in_block = 512 - offset_in_block;
+        const copy_size = if (bytes_to_append > space_in_block) space_in_block else bytes_to_append;
+
+        const source_start = final_text.len - bytes_to_append;
+        @memcpy(block_buf[offset_in_block .. offset_in_block + copy_size],
+                final_text[source_start .. source_start + copy_size]);
+
+        // WRITE the updated block back to disk
+        g_fs.device.writeBlocks(g_fs.device.ctx, target_lba, block_buf) catch {
+            vga.writeString("Error: Write failed\n", 12, 0);
+            return;
+        };
+
+        write_offset += copy_size;
+        bytes_to_append -= copy_size;
     }
 
-    // 7. Persist the updated Metadata (size AND new extent list)
+    // --- 5. FINALIZE ---
+    meta.size_bytes = @intCast(total_new_size);
     g_fs.writeBlockStruct(meta_lba, &meta, @sizeOf(coda_file.FileMeta)) catch {
-        vga.writeString("Error: Failed to update metadata\n", 12, 0);
+        vga.writeString("Error: Metadata sync failed\n", 12, 0);
         return;
     };
 
-    vga.writeString("Success: File updated and grown.\n", 10, 0);
+    vga.writeString("Success: Data appended to Coda FS.\n", 10, 0);
 }
 
 fn cmd_cat(args: [][]const u8) void {
@@ -439,31 +478,35 @@ fn cmd_cat(args: [][]const u8) void {
         return;
     }
 
-    // 4. Read and Output data blocks in a loop
+    // 4. Read and Output data blocks using nested loops
     const buf = g_allocator.alloc(u8, 512) catch return;
     defer g_allocator.free(buf);
 
     var bytes_remaining = meta.size_bytes;
 
-    // We loop through the extents (up to 8)
+    // Outer Loop: Iterate through the Extents
     for (meta.extents[0..meta.extent_count]) |extent| {
         if (bytes_remaining == 0) break;
 
-        // Read the current block
-        g_fs.device.readBlocks(g_fs.device.ctx, extent.start_block, buf) catch {
-            vga.writeString("\nError reading data block\n", FG, BG);
-            return;
-        };
+        // Inner Loop: Iterate through the Blocks within this specific Extent
+        var block_idx: u64 = 0;
+        while (block_idx < extent.block_count and bytes_remaining > 0) : (block_idx += 1) {
 
-        // Calculate how much of this specific 512-byte block is actual file data
-        const chunk_size = if (bytes_remaining > 512) @as(usize, 512) else bytes_remaining;
+            // Read exactly one block at a time into our 512-byte buffer
+            const current_lba = extent.start_block + block_idx;
+            g_fs.device.readBlocks(g_fs.device.ctx, current_lba, buf) catch {
+                vga.writeString("\nError reading data block\n", FG, BG);
+                return;
+            };
 
-        // Output this chunk - we use a slice to ensure we don't print
-        // the trailing 0s (nulls) that exist in the remainder of the 512-byte buffer.
-        vga.writeRaw(buf[0..chunk_size], FG, BG);
+            // Calculate how much of THIS block is data
+            const chunk_size = if (bytes_remaining > 512) @as(usize, 512) else @as(usize, @intCast(bytes_remaining));
 
-        // Update our counter
-        bytes_remaining -= chunk_size;
+            // Output ONLY the data part
+            vga.writeRaw(buf[0..chunk_size], FG, BG);
+
+            bytes_remaining -= chunk_size;
+        }
     }
 
     // Only add the newline once the entire file (all blocks) is finished
@@ -487,4 +530,16 @@ fn cmd_rm(args: [][]const u8) void {
     };
 
     vga.writeString("File deleted successfully.\n", 10, 0);
+}
+
+fn getLbaForBlock(meta: coda_file.FileMeta, block_index: u64) u64 {
+    var blocks_seen: u64 = 0;
+    for (meta.extents[0..meta.extent_count]) |extent| {
+        if (block_index < blocks_seen + extent.block_count) {
+            const offset_in_extent = block_index - blocks_seen;
+            return extent.start_block + offset_in_extent;
+        }
+        blocks_seen += extent.block_count;
+    }
+    return 0;
 }

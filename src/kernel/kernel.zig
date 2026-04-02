@@ -441,7 +441,7 @@ pub export fn kmain() noreturn {
     if (!fs_exists) {
         // CASE A: Blank Disk.
         // We format the RAM Workspace directly.
-        vga.writeString("Creating new filesystem in RAM...\n", 15, 0);
+        //vga.writeString("Creating new filesystem in RAM...\n", 15, 0);
         CodaFs.mkfs(allocator, &dev) catch |err| {
             @panic(@errorName(err));
         };
@@ -461,7 +461,7 @@ pub export fn kmain() noreturn {
     fs_global.space_manager = fs.space_manager;
     fs_global.root_dir = fs.root_dir;
 
-    vga.writeString("FS Engine Online (RAM-Backed).\n", 10, 0);
+    //vga.writeString("FS Engine Online (RAM-Backed).\n", 10, 0);
 
     //vga.clearScreen(0, 0);
 
