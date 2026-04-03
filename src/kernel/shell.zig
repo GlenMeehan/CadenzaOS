@@ -22,6 +22,9 @@ const coda_file = @import("fs/coda_file.zig");
 const ata = @import("drivers/ata.zig");
 
 
+const DirEntry = coda_file.DirEntry;
+const Directory = coda_file.Directory; // Do this for Directory too!
+
 const FG = 15;
 const BG = 0;
 
@@ -85,6 +88,8 @@ const commands = [_]Command{
     .{ .name = "rm",       .desc = "Delete a file",    .func = cmd_rm },
     .{ .name = "stat",       .desc = "Read file details",    .func = cmd_stat },
     .{ .name = "cat",       .desc = "Print contents of a file",    .func = cmd_cat },
+    .{ .name = "rename",       .desc = "Rename a file",    .func = cmd_rename },
+    .{ .name = "mkdir",       .desc = "Create a directory / folder",    .func = cmd_mkdir },
 };
 
 pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
@@ -139,10 +144,28 @@ fn cmd_ls(_: [][]const u8) void {
     }
 
     for (entries) |entry| {
+        // 1. Fetch the metadata to check the type
+        // If this fails, we just skip this entry and move to the next
+        const meta = g_fs.readFileMeta(g_allocator, entry.meta_extent.start_block) catch continue;
+
+        // 2. Print a prefix based on the type
+        if (meta.file_type == .Directory) {
+            vga.writeString("[DIR]  ", 11, BG); // 11 is usually Cyan/Light Blue
+        } else {
+            vga.writeString("[FILE] ", FG, BG);
+        }
+
+        // 3. Print the name (your existing logic)
         const name = entry.name[0..entry.name_len];
         for (name) |c| {
-            vga.putChar(c, FG, BG);
+            vga.putChar(c, (if (meta.file_type == .Directory) @as(u8, 11) else FG), BG);
         }
+
+        // 4. Add a trailing slash for directories to make it extra clear
+        if (meta.file_type == .Directory) {
+            vga.putChar('/', 11, BG);
+        }
+
         vga.putChar('\n', FG, BG);
     }
 }
@@ -530,6 +553,74 @@ fn cmd_rm(args: [][]const u8) void {
     };
 
     vga.writeString("File deleted successfully.\n", 10, 0);
+}
+
+fn cmd_rename(args: [][]const u8) void {
+    if (args.len < 3) {
+        vga.writeString("Usage: rename <old_name> <new_name>\n", 15, 0);
+        return;
+    }
+
+    const old_name = args[1];
+    const new_name = args[2];
+
+    // 1. LOAD: Allocate a buffer for the root directory blocks
+    const dir_size = g_fs.superblock.root_dir_extent_blocks * g_fs.device.block_size;
+    const dir_buf = g_allocator.alloc(u8, dir_size) catch return;
+    defer g_allocator.free(dir_buf);
+
+    // 2. READ: Pull the actual directory data from the disk
+    const root_lba = g_fs.superblock.root_dir_extent_start;
+    g_fs.device.readBlocks(g_fs.device.ctx, root_lba, dir_buf) catch {
+        vga.writeString("Error: Failed to read directory from disk.\n", 12, 0);
+        return;
+    };
+
+    // 3. MAP: Create the 'dir' variable the compiler was looking for
+    const entry_count = dir_size / @sizeOf(DirEntry);
+    const entries = @as([*]DirEntry, @ptrCast(@alignCast(dir_buf.ptr)))[0..entry_count];
+    var dir = Directory{ .entries = entries };
+
+    // 4. MODIFY: Perform the rename in memory
+    dir.renameEntry(old_name, new_name) catch |err| {
+        if (err == error.FileNotFound) {
+            vga.writeString("Error: File not found.\n", 12, 0);
+        } else if (err == error.NameAlreadyExists) {
+            vga.writeString("Error: New name already exists.\n", 12, 0);
+        } else {
+            vga.writeString("Error: Rename failed.\n", 12, 0);
+        }
+        return;
+    };
+
+    // 5. FLUSH: Save the modified 'dir' back to the disk
+    g_fs.flushDirectory(g_allocator, dir) catch {
+        vga.writeString("Error: Failed to sync changes to disk.\n", 12, 0);
+        return;
+    };
+
+    vga.writeString("Successfully renamed file.\n", 10, 0);
+}
+
+fn cmd_mkdir(args: [][]const u8) void {
+    if (args.len < 2) {
+        vga.writeString("Usage: mkdir <dirname>\n", 15, 0);
+        return;
+    }
+
+    const dir_name = args[1];
+
+    // We call the new generalized function with the Directory type
+    g_fs.createEntry(g_allocator, dir_name, .Directory) catch |err| {
+        if (err == error.AlreadyExists) {
+            vga.writeString("Error: Name already taken.\n", 12, 0);
+        } else {
+            vga.writeString("Error: Could not create directory.\n", 12, 0);
+        }
+        return;
+    };
+
+    vga.writeString("Directory created successfully.\n", 10, 0);
 }
 
 fn getLbaForBlock(meta: coda_file.FileMeta, block_index: u64) u64 {

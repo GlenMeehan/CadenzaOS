@@ -11,6 +11,7 @@ const conf = @import("../config.zig");
 const Extent = @import("coda_sm.zig").Extent;
 const memory = @import("../memory.zig");
 const MAX_NAME = @import("coda_file.zig").MAX_NAME;
+const FileType = @import("coda_file.zig").FileType;
 
 pub const CODA_MAGIC: u64 = 0x434F44415F465331;
 pub const CODA_VERSION: u32 = 1;
@@ -209,44 +210,47 @@ pub const CodaFs = struct {
 
 
 
-    pub fn createFile(fs: *CodaFs, allocator: std.mem.Allocator, name: []const u8) !void {
+    // 1. The new Generalized Function
+    pub fn createEntry(fs: *CodaFs, allocator: std.mem.Allocator, name: []const u8, file_type: FileType) !void {
         if (name.len > MAX_NAME) return error.NameTooLong;
 
-        // 1. Check if the file already exists
+        // 1. Check if the entry already exists
         if (fs.findFile(allocator, name)) |_| {
-            // If findFile succeeds, the file EXISTS. Stop here.
-            vga.writeString("Error: File already exists\n", 12, 0);
+            vga.writeString("Error: Name already exists\n", 12, 0);
             return error.AlreadyExists;
         } else |err| {
-            // If findFile failed, we check WHY.
-            // If it's anything OTHER than FileNotFound, it's a real disk error.
             if (err != error.FileNotFound) return err;
-
-            // If it WAS FileNotFound, we just continue normally!
         }
 
-        // 2. Allocate a block for the FileMeta (The header)
+        // 2. Allocate blocks
         const meta_extent = try fs.space_manager.allocate(1);
-
-        // 3. Allocate a starting block for the actual DATA
         const data_extent = try fs.space_manager.allocate(1);
 
-        // 4. Initialize FileMeta (Zero out the extents)
+        // 3. Initialize FileMeta
         var meta = FileMeta{
-            .file_type = .File,
+            .file_type = file_type, // Now dynamic!
             .size_bytes = 0,
             .extent_count = 1,
             .extents = [_]Extent{.{ .start_block = 0, .block_count = 0 }} ** 8,
         };
         meta.extents[0] = data_extent;
 
-        try fs.writeBlockStruct(meta_extent.start_block, &meta, @sizeOf(FileMeta));
+        // 4. NEW: Format the data block if it's a Directory
+        if (file_type == .Directory) {
+            const dir_init_buf = try allocator.alloc(u8, fs.device.block_size);
+            defer allocator.free(dir_init_buf);
+            @memset(dir_init_buf, 0); // Ensure the directory starts with 0 entries
 
-        // --- THE FIX: Explicitly flush this specific meta block to the ATA device ---
+            try fs.device.writeBlocks(fs.device.ctx, data_extent.start_block, dir_init_buf);
+            meta.size_bytes = fs.device.block_size;
+        }
+
+        // 5. Write and Flush FileMeta
+        try fs.writeBlockStruct(meta_extent.start_block, &meta, @sizeOf(FileMeta));
         const meta_bytes = @as([*]const u8, @ptrCast(&meta))[0..@sizeOf(FileMeta)];
         try fs.device.writeBlocks(fs.device.ctx, meta_extent.start_block, meta_bytes);
 
-        // 5. Load the ENTIRE root directory extent
+        // 6. Load the Parent Directory (Currently hardcoded to Root)
         const dir_size = fs.superblock.root_dir_extent_blocks * fs.device.block_size;
         const dir_buf = try allocator.alloc(u8, dir_size);
         defer allocator.free(dir_buf);
@@ -258,7 +262,7 @@ pub const CodaFs = struct {
         const entries = @as([*]DirEntry, @ptrCast(@alignCast(dir_buf.ptr)))[0..entry_count];
         var dir = Directory{ .entries = entries };
 
-        // 6. Create and add the new entry (Your existing logic is fine here)
+        // 7. Add the new entry to the directory table
         var new_entry = DirEntry{
             .name = [_]u8{0} ** MAX_NAME,
             .name_len = @as(u8, @intCast(name.len)),
@@ -268,9 +272,14 @@ pub const CodaFs = struct {
 
         try dir.addEntry(new_entry);
 
-        // 7. Write the FULL directory back to disk
+        // 8. Write the directory back to disk
         try fs.device.writeBlocks(fs.device.ctx, root_lba, dir_buf);
-        //try fs.space_manager.flushToDisk(allocator, fs.superblock.sm_start_block, fs.superblock.sm_block_count);
+    }
+
+    // 2. The Compatibility Wrapper
+    pub fn createFile(fs: *CodaFs, allocator: std.mem.Allocator, name: []const u8) !void {
+        // Simply redirects to the new function with the .File type
+        return fs.createEntry(allocator, name, .File);
     }
 
     pub fn readFile(fs: *CodaFs, path: []const u8, out: []u8) !usize {
@@ -358,6 +367,20 @@ pub const CodaFs = struct {
         }
 
         return results;
+    }
+
+    pub fn flushDirectory(self: *CodaFs, allocator: std.mem.Allocator, dir: Directory) !void {
+        const dir_size = self.superblock.root_dir_extent_blocks * self.device.block_size;
+        const root_lba = self.superblock.root_dir_extent_start;
+
+        // Modern Zig @ptrCast: only 1 argument.
+        // We cast the pointer to a many-item constant u8 pointer.
+        const ptr: [*]const u8 = @ptrCast(dir.entries.ptr);
+        const raw_bytes = ptr[0..dir_size];
+
+        try self.device.writeBlocks(self.device.ctx, root_lba, raw_bytes);
+
+        try self.space_manager.flushToDisk(allocator, self.superblock.sm_start_block, self.superblock.sm_block_count);
     }
 
 };
