@@ -31,6 +31,11 @@ const BG = 0;
 var parse_tokens: [conf.MAX_ARGS][]const u8 = undefined;
 var g_fs: *CodaFs = undefined;
 var g_allocator: std.mem.Allocator = undefined; // Add this line
+var g_cwd_lba: u64 = 0;
+var g_cwd_blocks: u32 = 0;
+var g_cwd_name: [32]u8 = undefined;
+var g_cwd_name_len: usize = 1; // Start with "/"
+
 
 fn parseArgs(line: []const u8) [][]const u8 {
     var count: usize = 0;
@@ -90,15 +95,34 @@ const commands = [_]Command{
     .{ .name = "cat",       .desc = "Print contents of a file",    .func = cmd_cat },
     .{ .name = "rename",       .desc = "Rename a file",    .func = cmd_rename },
     .{ .name = "mkdir",       .desc = "Create a directory / folder",    .func = cmd_mkdir },
+    .{ .name = "cd",       .desc = "Navigate to a new folder",    .func = cmd_cd },
 };
 
 pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
     g_fs = fs;
     g_allocator = allocator;
+    g_cwd_lba = fs.superblock.root_dir_extent_start;
+    g_cwd_blocks = @intCast(fs.superblock.root_dir_extent_blocks);
+
+    // Initialize the name to root
+    g_cwd_name[0] = '/';
+    g_cwd_name_len = 1;
+
     while (true) {
-        vga.writeString("Cadenza> ",3, 0);
+        // 1. Prepare a buffer for the prompt
+        var prompt_buf: [64]u8 = undefined;
+
+        // 2. Format the string: "Cadenza [/FolderLBA]> "
+        // If you haven't implemented path strings yet, LBA is a great "Pro" view
+        const current_dir = g_cwd_name[0..g_cwd_name_len];
+        const prompt = std.fmt.bufPrint(&prompt_buf, "Cadenza {s}> ", .{current_dir}) catch "Cadenza> ";
+
+        // 3. Write the dynamic prompt
+        vga.writeString(prompt, 3, 0);
+
         vga.updateCursorHardware();
         term.startNewLine();
+
         while (true) {
             if (term.takeLine()) |line| {
                 term.commitHistory();
@@ -129,7 +153,7 @@ fn execute(line: []const u8) void {
 }
 
 fn cmd_ls(_: [][]const u8) void {
-    const entries = g_fs.listDir(g_allocator, "/") catch |err| {
+    const entries = g_fs.listDir(g_allocator, g_cwd_lba, g_cwd_blocks) catch |err| {
         vga.writeString("ls failed: ", FG, BG);
         vga.writeString(@errorName(err), FG, BG);
         vga.putChar('\n', FG, BG);
@@ -289,7 +313,7 @@ fn cmd_mf(args: [][]const u8) void {
     const filename = args[1];
 
     // 2. Call the filesystem
-    g_fs.createFile(g_allocator, filename) catch |err| {
+    g_fs.createFile(g_allocator, g_cwd_lba, g_cwd_blocks, filename) catch |err| {
         // We use a different color (maybe 12 for red?) if your VGA supports it,
         // otherwise stay with 15/0
         vga.writeString("mf failed: ", FG, BG);
@@ -313,7 +337,7 @@ fn cmd_stat(args: [][]const u8) void {
 
     const filename = args[1];
 
-    const lba = g_fs.findFile(g_allocator, filename) catch {
+    const lba = g_fs.findFile(g_allocator, g_cwd_lba, filename) catch {
         vga.writeString("File not found\n", FG, BG);
         return;
     };
@@ -390,16 +414,16 @@ fn cmd_wf(args: [][]const u8) void {
     var meta_lba: u64 = 0;
 
     // Try to find it first
-    if (g_fs.findFile(g_allocator, filename)) |found_lba| {
+    if (g_fs.findFile(g_allocator, g_cwd_lba, filename)) |found_lba| {
         meta_lba = found_lba;
     } else |_| {
         // If not found, call your 3-argument createFile
-    g_fs.createFile(g_allocator, filename) catch {
+    g_fs.createFile(g_allocator, g_cwd_lba, g_cwd_blocks, filename) catch {
             vga.writeString("Error: Could not create file\n", 12, 0);
             return;
         };
         // Now lookup the LBA of the file we just made
-        meta_lba = g_fs.findFile(g_allocator, filename) catch {
+        meta_lba = g_fs.findFile(g_allocator, g_cwd_lba, filename) catch {
             vga.writeString("Error: File created but not found\n", 12, 0);
             return;
         };
@@ -484,7 +508,7 @@ fn cmd_cat(args: [][]const u8) void {
     const filename = args[1];
 
     // 1. Find the file
-    const meta_lba = g_fs.findFile(g_allocator, filename) catch {
+    const meta_lba = g_fs.findFile(g_allocator, g_cwd_lba, filename) catch {
         vga.writeString("File not found\n", FG, BG);
         return;
     };
@@ -543,7 +567,7 @@ fn cmd_rm(args: [][]const u8) void {
 
     const filename = args[1];
 
-    g_fs.deleteFile(g_allocator, filename) catch |err| {
+    g_fs.deleteFile(g_allocator, g_cwd_lba, filename) catch |err| {
         if (err == error.FileNotFound) {
             vga.writeString("Error: File not found.\n", 12, 0);
         } else {
@@ -564,19 +588,18 @@ fn cmd_rename(args: [][]const u8) void {
     const old_name = args[1];
     const new_name = args[2];
 
-    // 1. LOAD: Allocate a buffer for the root directory blocks
-    const dir_size = g_fs.superblock.root_dir_extent_blocks * g_fs.device.block_size;
+    // 1. LOAD: Use g_cwd_blocks instead of root_dir_extent_blocks
+    const dir_size = g_cwd_blocks * g_fs.device.block_size;
     const dir_buf = g_allocator.alloc(u8, dir_size) catch return;
     defer g_allocator.free(dir_buf);
 
-    // 2. READ: Pull the actual directory data from the disk
-    const root_lba = g_fs.superblock.root_dir_extent_start;
-    g_fs.device.readBlocks(g_fs.device.ctx, root_lba, dir_buf) catch {
+    // 2. READ: Pull from g_cwd_lba, NOT root_lba
+    g_fs.device.readBlocks(g_fs.device.ctx, g_cwd_lba, dir_buf) catch {
         vga.writeString("Error: Failed to read directory from disk.\n", 12, 0);
         return;
     };
 
-    // 3. MAP: Create the 'dir' variable the compiler was looking for
+    // 3. MAP: (Same logic, now mapped to the correct buffer)
     const entry_count = dir_size / @sizeOf(DirEntry);
     const entries = @as([*]DirEntry, @ptrCast(@alignCast(dir_buf.ptr)))[0..entry_count];
     var dir = Directory{ .entries = entries };
@@ -593,8 +616,10 @@ fn cmd_rename(args: [][]const u8) void {
         return;
     };
 
-    // 5. FLUSH: Save the modified 'dir' back to the disk
-    g_fs.flushDirectory(g_allocator, dir) catch {
+    // 5. FLUSH: Manual write-back
+    // Note: We avoid g_fs.flushDirectory because that likely still targets Root.
+    // Writing directly to g_cwd_lba ensures the change stays in this folder.
+    g_fs.device.writeBlocks(g_fs.device.ctx, g_cwd_lba, dir_buf) catch {
         vga.writeString("Error: Failed to sync changes to disk.\n", 12, 0);
         return;
     };
@@ -611,7 +636,7 @@ fn cmd_mkdir(args: [][]const u8) void {
     const dir_name = args[1];
 
     // We call the new generalized function with the Directory type
-    g_fs.createEntry(g_allocator, dir_name, .Directory) catch |err| {
+    g_fs.createEntry(g_allocator, g_cwd_lba, g_cwd_blocks, dir_name, .Directory) catch |err| {
         if (err == error.AlreadyExists) {
             vga.writeString("Error: Name already taken.\n", 12, 0);
         } else {
@@ -622,6 +647,60 @@ fn cmd_mkdir(args: [][]const u8) void {
 
     vga.writeString("Directory created successfully.\n", 10, 0);
 }
+fn cmd_cd(args: [][]const u8) void {
+    if (args.len < 2) {
+        vga.writeString("Usage: cd <directory>\n", 14, 0);
+        return;
+    }
+    const target_name = args[1];
+
+    // --- Special Case: Go Home ---
+    if (std.mem.eql(u8, target_name, "/")) {
+        g_cwd_lba = g_fs.superblock.root_dir_extent_start;
+        g_cwd_blocks = @intCast(g_fs.superblock.root_dir_extent_blocks);
+        g_cwd_name[0] = '/';
+        g_cwd_name_len = 1;
+        vga.writeString("Returned to Root.\n", 10, 0);
+        return;
+    }
+
+    const entries = g_fs.listDir(g_allocator, g_cwd_lba, g_cwd_blocks) catch {
+        vga.writeString("Error: Could not read directory.\n", 12, 0);
+        return;
+    };
+    defer g_allocator.free(entries);
+
+    for (entries) |entry| {
+        const name = entry.name[0..entry.name_len];
+        if (std.mem.eql(u8, name, target_name)) {
+            const meta = g_fs.readFileMeta(g_allocator, entry.meta_extent.start_block) catch {
+                vga.writeString("Error: Could not read metadata.\n", 12, 0);
+                return;
+            };
+
+            if (meta.file_type == .Directory) {
+                // Update LBA
+                g_cwd_lba = meta.extents[0].start_block;
+                g_cwd_blocks = @intCast(meta.extents[0].block_count);
+
+                // --- NEW: Update the Name for the Prompt ---
+                g_cwd_name[0] = '/';
+                const copy_len = if (target_name.len > 30) 30 else target_name.len;
+                @memcpy(g_cwd_name[1..1 + copy_len], target_name[0..copy_len]);
+                g_cwd_name_len = 1 + copy_len;
+
+                vga.writeString("Changed directory.\n", 10, 0);
+                return;
+            } else {
+                vga.writeString("Error: Target is a file, not a directory.\n", 12, 0);
+                return;
+            }
+        }
+    }
+
+    vga.writeString("Error: Directory not found.\n", 12, 0);
+}
+
 
 fn getLbaForBlock(meta: coda_file.FileMeta, block_index: u64) u64 {
     var blocks_seen: u64 = 0;
