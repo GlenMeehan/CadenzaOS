@@ -35,6 +35,7 @@ var g_cwd_lba: u64 = 0;
 var g_cwd_blocks: u32 = 0;
 var g_cwd_name: [32]u8 = undefined;
 var g_cwd_name_len: usize = 1; // Start with "/"
+var last_latency: u64 = 0;
 
 
 fn parseArgs(line: []const u8) [][]const u8 {
@@ -96,6 +97,8 @@ const commands = [_]Command{
     .{ .name = "rename",       .desc = "Rename a file",    .func = cmd_rename },
     .{ .name = "mkdir",       .desc = "Create a directory / folder",    .func = cmd_mkdir },
     .{ .name = "cd",       .desc = "Navigate to a new folder",    .func = cmd_cd },
+    .{ .name = "mv",       .desc = "Move a file from one existing folder to another existing folder",    .func = cmd_mv },
+    .{ .name = "policy", .desc = "View or set system policy", .func = cmd_policy },
 };
 
 pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
@@ -136,61 +139,98 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
 
 fn execute(line: []const u8) void {
     const tokens = parseArgs(line);
-
     if (tokens.len == 0) return;
 
     const cmd = tokens[0];
+    var found = false;
 
+    // 1. Find and run the command
     for (commands) |c| {
-        //while (true) asm volatile ("cli; hlt");
         if (mem.eqlNoSimd(u8, c.name, cmd)) {
-            c.func(tokens);
+            c.func(tokens); // The command runs here (e.g., mkdir)
+            found = true;
+            break; // Stop looking once found
+        }
+    }
+
+    if (!found) {
+        vga.writeString("Unknown command\n", 12, 0);
+        return; // Exit early if command wasn't found
+    }
+
+    // 2. PHASE 3: The Heuristic Suggestion
+    // This runs only if a valid command was executed.
+    showSuggestion(tokens);
+    // After a command runs:
+    if (g_fs.superblock.policy == .Dev) {
+        // If the last disk operation was abnormally slow (Sentinel logic)
+        // For now, use a dummy threshold like 10,000,000 cycles
+        if (last_latency > 10_000_000) {
+            vga.writeString("!! Sentinel: High Disk Latency detected. Policy: Dev !!\n", 14, 0);
+        }
+    }
+}
+
+fn cmd_ls(args: [][]const u8) void {
+    var target_lba = g_cwd_lba;
+    var target_blocks = g_cwd_blocks;
+
+    if (args.len > 1) {
+        // 1. Resolve the path the user provided
+        const result = g_fs.resolvePath(g_allocator, g_cwd_lba, args[1]) catch |err| {
+            vga.writeString("Error: ", 12, 0);
+            vga.writeString(@errorName(err), 12, 0); // Uses the captured 'err'
+            vga.writeString("\n", 12, 0);
+            return;
+        };
+
+        target_lba = result.lba;
+        target_blocks = @intCast(result.blocks);
+
+        if (!result.is_directory) {
+            vga.writeString("Error: Path is a file, not a directory.\n", 12, 0);
             return;
         }
     }
 
-    vga.writeString("Unknown command\n", FG, BG);
-}
-
-fn cmd_ls(_: [][]const u8) void {
-    const entries = g_fs.listDir(g_allocator, g_cwd_lba, g_cwd_blocks) catch |err| {
-        vga.writeString("ls failed: ", FG, BG);
-        vga.writeString(@errorName(err), FG, BG);
-        vga.putChar('\n', FG, BG);
+    // 2. Fetch the entries (listDir now jumps from 817 to 818 automatically)
+    const entries = g_fs.listDir(g_allocator, target_lba, target_blocks) catch |err| {
+        vga.writeString("ls failed: ", 12, 0);
+        vga.writeString(@errorName(err), 12, 0);
+        vga.putChar('\n', 15, 0);
         return;
     };
-
     defer g_allocator.free(entries);
 
     if (entries.len == 0) {
-        vga.writeString("(empty)\n", FG, BG);
+        vga.writeString("(empty)\n", 7, 0);
         return;
     }
 
+    // 3. Display entries
     for (entries) |entry| {
-        // 1. Fetch the metadata to check the type
-        // If this fails, we just skip this entry and move to the next
+        // Fetch metadata of the CHILD to see if it's a file or folder
         const meta = g_fs.readFileMeta(g_allocator, entry.meta_extent.start_block) catch continue;
 
-        // 2. Print a prefix based on the type
         if (meta.file_type == .Directory) {
-            vga.writeString("[DIR]  ", 11, BG); // 11 is usually Cyan/Light Blue
+            vga.writeString("[DIR]  ", 11, 0); // Cyan
         } else {
-            vga.writeString("[FILE] ", FG, BG);
+            vga.writeString("[FILE] ", 15, 0); // White
         }
 
-        // 3. Print the name (your existing logic)
+        // Print the name
         const name = entry.name[0..entry.name_len];
+        const color: u8 = if (meta.file_type == .Directory) 11 else 15;
+
         for (name) |c| {
-            vga.putChar(c, (if (meta.file_type == .Directory) @as(u8, 11) else FG), BG);
+            vga.putChar(c, color, 0);
         }
 
-        // 4. Add a trailing slash for directories to make it extra clear
         if (meta.file_type == .Directory) {
-            vga.putChar('/', 11, BG);
+            vga.putChar('/', 11, 0);
         }
 
-        vga.putChar('\n', FG, BG);
+        vga.putChar('\n', 15, 0);
     }
 }
 
@@ -304,29 +344,36 @@ fn cmd_reboot(_: [][]const u8) void {
 }
 
 fn cmd_mf(args: [][]const u8) void {
-    // 1. Validation: args[0] is "mf", args[1] should be the filename
     if (args.len < 2) {
-        vga.writeString("Usage: mf <filename>\n", FG, BG);
+        vga.writeString("Usage: mf <path>\n", 0x07, 0);
         return;
     }
 
-    const filename = args[1];
+    const full_path = args[1];
+    const last_slash_idx = std.mem.lastIndexOfScalar(u8, full_path, '/');
 
-    // 2. Call the filesystem
-    g_fs.createFile(g_allocator, g_cwd_lba, g_cwd_blocks, filename) catch |err| {
-        // We use a different color (maybe 12 for red?) if your VGA supports it,
-        // otherwise stay with 15/0
-        vga.writeString("mf failed: ", FG, BG);
-        vga.writeString(@errorName(err), FG, BG);
-        vga.writeString("\n", FG, BG);
-        return;
+    var parent_lba: u64 = g_cwd_lba;
+    var parent_blocks: u64 = g_cwd_blocks; // We need this now!
+    var filename: []const u8 = full_path;
+
+    if (last_slash_idx) |idx| {
+        const dir_part = if (idx == 0) "/" else full_path[0..idx];
+        filename = full_path[idx + 1 ..];
+
+        const result = g_fs.resolvePath(g_allocator, g_cwd_lba, dir_part) catch {
+            vga.writeString("Error: Parent directory not found.\n", 0x0C, 0);
+            return;
+        };
+        parent_lba = result.lba;
+        parent_blocks = @intCast(result.blocks); // Capture the block count
+    }
+
+    // Now call with all 4 arguments (allocator, lba, blocks, name)
+    g_fs.createFile(g_allocator, parent_lba, parent_blocks, filename) catch |err| {
+        vga.writeString("Failed to create file: ", 0x0C, 0);
+        vga.writeString(@errorName(err), 0x0C, 0);
+        vga.writeString("\n", 0x07, 0);
     };
-
-    // 3. Success feedback
-    vga.writeString("Created file: ", FG, BG);
-    // Note: If filename is a slice, ensure your writeString handles slices
-    vga.writeString(filename, FG, BG);
-    vga.writeString("\n", FG, BG);
 }
 
 fn cmd_stat(args: [][]const u8) void {
@@ -652,55 +699,154 @@ fn cmd_cd(args: [][]const u8) void {
         vga.writeString("Usage: cd <directory>\n", 14, 0);
         return;
     }
-    const target_name = args[1];
+    const path_str = args[1];
 
-    // --- Special Case: Go Home ---
-    if (std.mem.eql(u8, target_name, "/")) {
-        g_cwd_lba = g_fs.superblock.root_dir_extent_start;
-        g_cwd_blocks = @intCast(g_fs.superblock.root_dir_extent_blocks);
-        g_cwd_name[0] = '/';
-        g_cwd_name_len = 1;
-        vga.writeString("Returned to Root.\n", 10, 0);
-        return;
-    }
-
-    const entries = g_fs.listDir(g_allocator, g_cwd_lba, g_cwd_blocks) catch {
-        vga.writeString("Error: Could not read directory.\n", 12, 0);
+    // 1. Use the resolver to find the physical location
+    const result = g_fs.resolvePath(g_allocator, g_cwd_lba, path_str) catch |err| {
+        if (err == error.PathNotFound) {
+            vga.writeString("Error: Directory not found.\n", 12, 0);
+        } else {
+            vga.writeString("Error: Invalid path.\n", 12, 0);
+        }
         return;
     };
-    defer g_allocator.free(entries);
 
-    for (entries) |entry| {
-        const name = entry.name[0..entry.name_len];
-        if (std.mem.eql(u8, name, target_name)) {
-            const meta = g_fs.readFileMeta(g_allocator, entry.meta_extent.start_block) catch {
-                vga.writeString("Error: Could not read metadata.\n", 12, 0);
-                return;
-            };
+    // 2. Ensure we aren't trying to 'cd' into a text file
+    if (result.is_directory) {
+        // Update the actual kernel location
+        g_cwd_lba = result.lba;
+        g_cwd_blocks = @intCast(result.blocks);
 
-            if (meta.file_type == .Directory) {
-                // Update LBA
-                g_cwd_lba = meta.extents[0].start_block;
-                g_cwd_blocks = @intCast(meta.extents[0].block_count);
-
-                // --- NEW: Update the Name for the Prompt ---
-                g_cwd_name[0] = '/';
-                const copy_len = if (target_name.len > 30) 30 else target_name.len;
-                @memcpy(g_cwd_name[1..1 + copy_len], target_name[0..copy_len]);
+        // 3. Smart Prompt Update Logic
+        if (path_str[0] == '/') {
+            // CASE: Absolute Path (e.g., cd /dev)
+            // We just replace the prompt entirely with the path provided
+            const copy_len = if (path_str.len > 30) 30 else path_str.len;
+            @memcpy(g_cwd_name[0..copy_len], path_str[0..copy_len]);
+            g_cwd_name_len = copy_len;
+        } else if (std.mem.eql(u8, path_str, ".") or std.mem.eql(u8, path_str, "..")) {
+            // CASE: Dots
+            // We changed LBA, but we don't change the string (to avoid "Cadenza .>")
+        } else {
+            // CASE: Relative Path (e.g., cd projects)
+            // Check if we are at root to avoid "//projects"
+            if (g_cwd_name_len == 1 and g_cwd_name[0] == '/') {
+                // Just copy the name immediately after the existing slash
+                const copy_len = if (path_str.len > 29) 29 else path_str.len;
+                @memcpy(g_cwd_name[1 .. 1 + copy_len], path_str[0..copy_len]);
                 g_cwd_name_len = 1 + copy_len;
-
-                vga.writeString("Changed directory.\n", 10, 0);
-                return;
             } else {
-                vga.writeString("Error: Target is a file, not a directory.\n", 12, 0);
-                return;
+                // We are in a subfolder, so we need to add a separator slash
+                if (g_cwd_name_len + path_str.len + 1 < 31) {
+                    g_cwd_name[g_cwd_name_len] = '/';
+                    @memcpy(g_cwd_name[g_cwd_name_len + 1 .. g_cwd_name_len + 1 + path_str.len], path_str);
+                    g_cwd_name_len += (1 + path_str.len);
+                }
             }
         }
-    }
 
-    vga.writeString("Error: Directory not found.\n", 12, 0);
+        vga.writeString("Changed directory.\n", 10, 0);
+    } else {
+        vga.writeString("Error: Target is a file, not a directory.\n", 12, 0);
+    }
 }
 
+fn cmd_mv(args: [][]const u8) void {
+    if (args.len < 3) {
+        vga.writeString("Usage: mv <source_path> <dest_dir>\n", 15, 0);
+        return;
+    }
+
+    const src_path = args[1];
+    const dest_path = args[2];
+
+    // 1. Path Splitting
+    var src_dir_path: []const u8 = ".";
+    var src_filename: []const u8 = src_path;
+
+    if (std.mem.lastIndexOfScalar(u8, src_path, '/')) |idx| {
+        src_dir_path = src_path[0..idx];
+        src_filename = src_path[idx + 1 ..];
+        if (src_dir_path.len == 0) src_dir_path = "/";
+    }
+
+    // 2. Resolve Source Parent
+    const src_parent = g_fs.resolvePath(g_allocator, g_cwd_lba, src_dir_path) catch {
+        vga.writeString("Error: Source directory not found.\n", 12, 0);
+        return;
+    };
+
+    // 3. Find and Remove (The "Cut")
+    const entry_to_move = g_fs.findAndRemoveEntry(
+        g_allocator,
+        src_parent.lba,
+        @intCast(src_parent.blocks),
+                                                  src_filename
+    ) catch |err| {
+        vga.writeString("Error: Could not find source file: ", 12, 0);
+        vga.writeString(@errorName(err), 12, 0);
+        vga.putChar('\n', 15, 0);
+        return;
+    };
+
+    // 4. Resolve Destination
+    const dest_resolve = g_fs.resolvePath(g_allocator, g_cwd_lba, dest_path) catch |err| {
+        // Fallback
+        _ = g_fs.insertEntry(g_allocator, src_parent.lba, @intCast(src_parent.blocks), entry_to_move) catch {};
+        vga.writeString("Error: Dest resolution failed: ", 12, 0);
+        vga.writeString(@errorName(err), 12, 0);
+        vga.putChar('\n', 15, 0);
+        return;
+    };
+
+    // --- DEBUG START ---
+    // If you don't see this on screen, the function returned earlier!
+    vga.writeString("DEBUG: is_dir = ", 14, 0);
+    if (dest_resolve.is_directory) {
+        vga.writeString("TRUE\n", 10, 0);
+    } else {
+        vga.writeString("FALSE\n", 12, 0);
+    }
+    // --- DEBUG END ---
+
+    // 5. Perform the Move (The "Paste")
+    if (dest_resolve.is_directory) {
+        g_fs.insertEntry(
+            g_allocator,
+            dest_resolve.lba,
+            @intCast(dest_resolve.blocks),
+                         entry_to_move
+        ) catch |err| {
+            _ = g_fs.insertEntry(g_allocator, src_parent.lba, @intCast(src_parent.blocks), entry_to_move) catch {};
+            vga.writeString("Insert failed: ", 12, 0);
+            vga.writeString(@errorName(err), 12, 0);
+            vga.putChar('\n', 15, 0);
+            return;
+        };
+        vga.writeString("Move successful!\n", 10, 0);
+    } else {
+        // Fallback
+        _ = g_fs.insertEntry(g_allocator, src_parent.lba, @intCast(src_parent.blocks), entry_to_move) catch {};
+        vga.writeString("Error: Target is a file.\n", 12, 0);
+    }
+}
+
+fn cmd_policy(args: [][]const u8) void {
+    if (args.len < 2) {
+        vga.writeString("Current Policy: ", 15, 0);
+        // Print the current policy name based on the enum value
+        switch (g_fs.superblock.policy) {
+            .Admin => vga.writeString("Admin\n", 14, 0),
+            .Dev => vga.writeString("Dev\n", 10, 0),
+            .Gaming => vga.writeString("Gaming\n", 13, 0),
+            .AI_Guided => vga.writeString("AI_Guided\n", 11, 0),
+        }
+        return;
+    }
+
+    // Optional: Add logic here to CHANGE the policy
+    // e.g., if (mem.eql(u8, args[1], "gaming")) g_fs.superblock.policy = .Gaming;
+}
 
 fn getLbaForBlock(meta: coda_file.FileMeta, block_index: u64) u64 {
     var blocks_seen: u64 = 0;
@@ -712,4 +858,25 @@ fn getLbaForBlock(meta: coda_file.FileMeta, block_index: u64) u64 {
         blocks_seen += extent.block_count;
     }
     return 0;
+}
+
+fn showSuggestion(tokens: [][]const u8) void {
+    if (tokens.len == 0) return;
+    const cmd = tokens[0];
+
+    // 1. Create a buffer to hold the final string
+    var buffer: [80]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    const allocator = fba.allocator();
+
+    // 2. Build the string logic
+    const suggestion = if (std.mem.eql(u8, cmd, "mkdir") and tokens.len > 1)
+    std.fmt.allocPrint(allocator, " [Heuristic: try 'cd {s}']\n", .{tokens[1]}) catch " [Heuristic: try cd]\n"
+    else if (std.mem.eql(u8, cmd, "ls"))
+        " [Heuristic: use 'stat' for latency]\n"
+        else
+            " [Heuristic: system optimal]\n";
+
+    // 3. Output the final unified string in ONE call
+    vga.writeString(suggestion, 10, 0);
 }
