@@ -30,6 +30,17 @@ var history_index: isize = -1;
 var saved_line: [MAX_LINE]u8 = undefined;
 var saved_line_len: usize = 0;
 
+// Define the shape of a prediction function
+pub const PredictorFn = *const fn (input: []const u8) []const u8;
+
+// This is the "slot" where the shell will plug in its brain
+var external_predictor: ?PredictorFn = null;
+
+// Public function for the shell to register itself
+pub fn setPredictor(func: PredictorFn) void {
+    external_predictor = func;
+}
+
 
 pub fn processChar(ch: u8) void {
     // Backspace
@@ -60,9 +71,10 @@ pub fn processChar(ch: u8) void {
         line_buffer[line_len] = ch;
         line_len += 1;
         cursor_pos = line_len;
+        redrawLine(); // Update the ghost text!
 
         // DO NOT TOUCH vga.cursor_col HERE
-        vga.putChar(ch, 15, 0);
+        //vga.putChar(ch, 15, 0);
     }
 }
 
@@ -140,21 +152,44 @@ fn setCursorToLogical() void {
 }
 
 fn redrawLine() void {
-    // 1. Clear only the visible part of the line
-    var i: usize = 0;
-    while (i < line_len + 1) : (i += 1) { // +1 clears leftover char
-        vga.setCursor(cursor_row, prompt_start + i);
+    // 1. Determine the row. If we are somehow beyond the 25-row limit, stop.
+    // Standard VGA is 0-24.
+    if (cursor_row > 24) return;
+
+    // 2. Clear only the necessary area, staying AWAY from the last column.
+    // We clear from prompt_start to column 78 (avoiding 79/80).
+    var col: usize = prompt_start;
+    while (col < 79) : (col += 1) {
+        vga.setCursor(cursor_row, col);
         vga.putChar(' ', 15, 0);
     }
 
-    // 2. Draw the current buffer
-    i = 0;
+    // 3. Draw the User Input
+    var i: usize = 0;
     while (i < line_len) : (i += 1) {
-        vga.setCursor(cursor_row, prompt_start + i);
+        const target_col = prompt_start + i;
+        if (target_col >= 79) break; // Hard boundary
+
+        vga.setCursor(cursor_row, target_col);
         vga.putChar(line_buffer[i], 15, 0);
     }
 
-    // 3. Restore cursor position
+    // 4. Draw Ghost Text (The hardcoded version you reverted to)
+    if (cursor_pos == line_len) {
+        const prediction = getPrediction(line_buffer[0..line_len]);
+        if (prediction.len > 0) {
+            var j: usize = 0;
+            while (j < prediction.len) : (j += 1) {
+                const ghost_col = prompt_start + line_len + j;
+                if (ghost_col >= 79) break; // Hard boundary
+
+                vga.setCursor(cursor_row, ghost_col);
+                vga.putChar(prediction[j], 8, 0);
+            }
+        }
+    }
+
+    // 5. Final Cursor Sync
     setCursorToLogical();
 }
 
@@ -166,10 +201,25 @@ fn moveLeft() void {
 }
 
 fn moveRight() void {
-    if (cursor_pos == line_len) return;
-
-    cursor_pos += 1;
-    vga.setCursor(vga.cursor_row, prompt_start + cursor_pos);
+    if (cursor_pos < line_len) {
+        // Normal movement
+        cursor_pos += 1;
+    } else {
+        // At the end of the line? Check for prediction!
+        const prediction = getPrediction(line_buffer[0..line_len]);
+        if (prediction.len > 0) {
+            // Copy prediction into the real buffer
+            for (prediction) |char| {
+                if (line_len < MAX_LINE) {
+                    line_buffer[line_len] = char;
+                    line_len += 1;
+                    cursor_pos += 1;
+                }
+            }
+        }
+    }
+    setCursorToLogical();
+    redrawLine();
 }
 
 fn cancelLine() void {
@@ -179,14 +229,21 @@ fn cancelLine() void {
 }
 
 fn insertTab() void {
-    const TAB_SIZE: u8 = 4;
-    var i: u8 = 0;
-    while (i < TAB_SIZE and line_len < MAX_LINE) : (i += 1) {
-        vga.putChar(' ', 15, 0);
-        line_buffer[line_len] = ' ';
-        line_len += 1;
-        cursor_pos += 1;
-        vga.cursor_col = prompt_start + cursor_pos;
+    const prediction = getPrediction(line_buffer[0..line_len]);
+
+    // If a prediction exists, Tab accepts it instead of indenting
+    if (prediction.len > 0) {
+        acceptPrediction(prediction);
+    } else {
+        // Fallback to your original tab logic (4 spaces)
+        const TAB_SIZE: u8 = 4;
+        var i: u8 = 0;
+        while (i < TAB_SIZE and line_len < MAX_LINE) : (i += 1) {
+            line_buffer[line_len] = ' ';
+            line_len += 1;
+            cursor_pos += 1;
+        }
+        redrawLine();
     }
 }
 
@@ -410,4 +467,30 @@ pub fn getHistoryEntry(n: usize) ?[]const u8 {
     while (len < MAX_LINE and entry[len] != 0) : (len += 1) {}
 
     return entry[0..len];
+}
+
+fn getPrediction(input: []const u8) []const u8 {
+    // Removed the if (input.len == 0) return "";
+
+    // If the shell has registered a predictor, use it!
+    if (external_predictor) |predict| {
+        return predict(input);
+    }
+
+    return "";
+}
+
+fn acceptPrediction(prediction: []const u8) void {
+    for (prediction) |char| {
+        if (line_len < MAX_LINE) {
+            line_buffer[line_len] = char;
+            line_len += 1;
+            cursor_pos += 1;
+        }
+    }
+    redrawLine();
+}
+
+pub fn refresh() void {
+    redrawLine();
 }

@@ -36,6 +36,9 @@ var g_cwd_blocks: u32 = 0;
 var g_cwd_name: [32]u8 = undefined;
 var g_cwd_name_len: usize = 1; // Start with "/"
 var last_latency: u64 = 0;
+// There are about 6 commands, so a 10x10 table is plenty of room to grow.
+var transition_table: [10][10]u16 = [_][10]u16{ [_]u16{0} ** 10 } ** 10;
+var last_command: CommandID = .UNKNOWN;
 
 
 fn parseArgs(line: []const u8) [][]const u8 {
@@ -79,26 +82,50 @@ const Command = struct {
     name: []const u8,
     desc: []const u8,
     func: *const fn([][]const u8) void,
+    id: CommandID = .UNKNOWN,
+    needs_arg: bool = false,
 };
 
+pub const CommandID = enum(u8) {
+    UNKNOWN = 0,
+    LS      = 1,
+    CD      = 2,
+    MKDIR   = 3,
+    STAT    = 4,
+    CAT     = 5,
+    POLICY  = 6,  // Add this
+    TOUCH      = 7,  // Add this
+    EDIT = 8,
+};
+
+fn getCmdId(name: []const u8) CommandID {
+    for (commands) |c| {
+        if (mem.eqlNoSimd(u8, c.name, name)) return c.id;
+    }
+    return .UNKNOWN;
+}
+
 const commands = [_]Command{
-    .{ .name = "help",    .desc = "Show this help message", .func = cmd_help },
-    .{ .name = "clear",   .desc = "Clear the screen",       .func = cmd_clear },
-    .{ .name = "echo",    .desc = "Print arguments",        .func = cmd_echo },
-    .{ .name = "history", .desc = "Show command history",   .func = cmd_history },
-    .{ .name = "shutdown", .desc = "Power off the machine", .func = cmd_shutdown },
-    .{ .name = "reboot",   .desc = "Reboot the machine",    .func = cmd_reboot },
-    .{ .name = "ls",       .desc = "List root directory",    .func = cmd_ls },
-    .{ .name = "mf",       .desc = "Create a file",    .func = cmd_mf },
-    .{ .name = "wf",       .desc = "Write data into file",    .func = cmd_wf },
-    .{ .name = "rm",       .desc = "Delete a file",    .func = cmd_rm },
-    .{ .name = "stat",       .desc = "Read file details",    .func = cmd_stat },
-    .{ .name = "cat",       .desc = "Print contents of a file",    .func = cmd_cat },
-    .{ .name = "rename",       .desc = "Rename a file",    .func = cmd_rename },
-    .{ .name = "mkdir",       .desc = "Create a directory / folder",    .func = cmd_mkdir },
-    .{ .name = "cd",       .desc = "Navigate to a new folder",    .func = cmd_cd },
-    .{ .name = "mv",       .desc = "Move a file from one existing folder to another existing folder",    .func = cmd_mv },
-    .{ .name = "policy", .desc = "View or set system policy", .func = cmd_policy },
+    // Utility commands (Automatically .id = .UNKNOWN)
+    .{ .name = "help",     .desc = "Show this help message", .func = cmd_help },
+    .{ .name = "clear",    .desc = "Clear the screen",        .func = cmd_clear },
+    .{ .name = "echo",     .desc = "Print arguments",         .func = cmd_echo },
+    .{ .name = "history",  .desc = "Show command history",    .func = cmd_history },
+    .{ .name = "shutdown", .desc = "Power off the machine",  .func = cmd_shutdown },
+    .{ .name = "reboot",   .desc = "Reboot the machine",     .func = cmd_reboot },
+
+    // Brain-tracked commands
+    .{ .name = "ls",       .desc = "List root directory",     .func = cmd_ls,     .id = .LS },
+    .{ .name = "touch",       .desc = "Create a file",           .func = cmd_touch,     .id = .TOUCH,    .needs_arg = true },
+    .{ .name = "edit",       .desc = "Write data into file",    .func = cmd_edit, .id = .EDIT, .needs_arg = true },
+    .{ .name = "del",       .desc = "Delete a file",           .func = cmd_del },
+    .{ .name = "stat",     .desc = "Read file details",       .func = cmd_stat,   .id = .STAT,  .needs_arg = true },
+    .{ .name = "cat",      .desc = "Print contents of file",  .func = cmd_cat,    .id = .CAT,   .needs_arg = true },
+    .{ .name = "rename",   .desc = "Rename a file",           .func = cmd_rename },
+    .{ .name = "mkdir",    .desc = "Create a directory",      .func = cmd_mkdir,  .id = .MKDIR, .needs_arg = true },
+    .{ .name = "cd",       .desc = "Navigate to a folder",    .func = cmd_cd,     .id = .CD,    .needs_arg = true },
+    .{ .name = "mv",       .desc = "Move a file",             .func = cmd_mv },
+    .{ .name = "policy",   .desc = "View/set system policy",  .func = cmd_policy, .id = .POLICY },
 };
 
 pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
@@ -111,25 +138,31 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
     g_cwd_name[0] = '/';
     g_cwd_name_len = 1;
 
-    while (true) {
-        // 1. Prepare a buffer for the prompt
-        var prompt_buf: [64]u8 = undefined;
+    // --- 1. PLUG IN THE BRAIN ---
+    // This tells terminal.zig to call shellPredictor() whenever a key is pressed
+    term.setPredictor(shellPredictor);
 
-        // 2. Format the string: "Cadenza [/FolderLBA]> "
-        // If you haven't implemented path strings yet, LBA is a great "Pro" view
+    // --- 2. INITIAL STATE ---
+    // We start at UNKNOWN. The first command you run will be recorded
+    // as UNKNOWN -> YOUR_COMMAND.
+    last_command = .UNKNOWN;
+
+    while (true) {
+        var prompt_buf: [64]u8 = undefined;
         const current_dir = g_cwd_name[0..g_cwd_name_len];
         const prompt = std.fmt.bufPrint(&prompt_buf, "Cadenza {s}> ", .{current_dir}) catch "Cadenza> ";
 
-        // 3. Write the dynamic prompt
         vga.writeString(prompt, 3, 0);
-
         vga.updateCursorHardware();
+
+        // Ensure terminal knows where the prompt ends so ghost text doesn't overlap
         term.startNewLine();
+        term.refresh();
 
         while (true) {
             if (term.takeLine()) |line| {
                 term.commitHistory();
-                execute(line);
+                execute(line);    // This is where learning happens!
                 term.consumeLine();
                 break;
             }
@@ -142,29 +175,33 @@ fn execute(line: []const u8) void {
     if (tokens.len == 0) return;
 
     const cmd = tokens[0];
+    const current_cmd_id = getCmdId(cmd);
+
     var found = false;
 
     // 1. Find and run the command
     for (commands) |c| {
         if (mem.eqlNoSimd(u8, c.name, cmd)) {
-            c.func(tokens); // The command runs here (e.g., mkdir)
+            c.func(tokens);
             found = true;
-            break; // Stop looking once found
+            break;
         }
     }
 
-    if (!found) {
-        vga.writeString("Unknown command\n", 12, 0);
-        return; // Exit early if command wasn't found
+    // 2. PHASE 4: Update the Markov "Brain"
+    if (found and current_cmd_id != .UNKNOWN) {
+        const prev_idx = @intFromEnum(last_command);
+        const curr_idx = @intFromEnum(current_cmd_id);
+
+        if (transition_table[prev_idx][curr_idx] < 65535) {
+            transition_table[prev_idx][curr_idx] += 1;
+        }
+
+        last_command = current_cmd_id;
     }
 
-    // 2. PHASE 3: The Heuristic Suggestion
-    // This runs only if a valid command was executed.
-    showSuggestion(tokens);
-    // After a command runs:
+    // 3. PHASE 2/3: Sentinel and Policy logic
     if (g_fs.superblock.policy == .Dev) {
-        // If the last disk operation was abnormally slow (Sentinel logic)
-        // For now, use a dummy threshold like 10,000,000 cycles
         if (last_latency > 10_000_000) {
             vga.writeString("!! Sentinel: High Disk Latency detected. Policy: Dev !!\n", 14, 0);
         }
@@ -343,9 +380,9 @@ fn cmd_reboot(_: [][]const u8) void {
     system.reboot();
 }
 
-fn cmd_mf(args: [][]const u8) void {
+fn cmd_touch(args: [][]const u8) void {
     if (args.len < 2) {
-        vga.writeString("Usage: mf <path>\n", 0x07, 0);
+        vga.writeString("Usage: touch <path>\n", 0x07, 0);
         return;
     }
 
@@ -390,7 +427,7 @@ fn cmd_stat(args: [][]const u8) void {
     };
 
     // Make sure this 'const meta' (or 'var meta') exists!
-    const meta = g_fs.readFileMeta(g_allocator, lba) catch {
+    const meta = g_fs.readFileMeta(g_allocator, lba.meta_extent.start_block) catch {
         vga.writeString("Failed to read metadata\n", FG, BG);
         return;
     };
@@ -432,9 +469,9 @@ fn cmd_stat(args: [][]const u8) void {
     vga.writeString(size_line[0..cursor], FG, BG);
 }
 
-fn cmd_wf(args: [][]const u8) void {
+fn cmd_edit(args: [][]const u8) void {
     if (args.len < 3) {
-        vga.writeString("Usage: wf <filename> <text>\n", 15, 0);
+        vga.writeString("Usage: edit <filename> <text>\n", 15, 0);
         return;
     }
 
@@ -460,30 +497,33 @@ fn cmd_wf(args: [][]const u8) void {
     // --- 2. FIND OR CREATE THE FILE ---
     var meta_lba: u64 = 0;
 
-    // Try to find it first
-    if (g_fs.findFile(g_allocator, g_cwd_lba, filename)) |found_lba| {
-        meta_lba = found_lba;
+    // Try to find it
+    if (g_fs.findFile(g_allocator, g_cwd_lba, filename)) |entry| {
+        meta_lba = entry.meta_extent.start_block;
     } else |_| {
-        // If not found, call your 3-argument createFile
-    g_fs.createFile(g_allocator, g_cwd_lba, g_cwd_blocks, filename) catch {
+        // If not found, create it
+        g_fs.createFile(g_allocator, g_cwd_lba, g_cwd_blocks, filename) catch {
             vga.writeString("Error: Could not create file\n", 12, 0);
             return;
         };
-        // Now lookup the LBA of the file we just made
-        meta_lba = g_fs.findFile(g_allocator, g_cwd_lba, filename) catch {
+        // Look it up again to get the new metadata LBA
+        const new_entry = g_fs.findFile(g_allocator, g_cwd_lba, filename) catch {
             vga.writeString("Error: File created but not found\n", 12, 0);
             return;
         };
+        meta_lba = new_entry.meta_extent.start_block;
     }
 
-    // Load the actual metadata structure
+    // NOW read the metadata using the LBA we just resolved
     var meta = g_fs.readFileMeta(g_allocator, meta_lba) catch {
         vga.writeString("Error: Could not read metadata\n", 12, 0);
         return;
     };
 
-    // --- 3. AUTO-GROWTH (APPEND-AWARE) ---
+    // Now 'meta' is in scope for the rest of the function!
     const old_size = meta.size_bytes;
+
+    // --- 3. AUTO-GROWTH (APPEND-AWARE) ---
     const total_new_size = old_size + final_text.len;
     // Calculate total blocks needed for the combined data
     const total_blocks_needed = (total_new_size + 511) / 512;
@@ -554,61 +594,68 @@ fn cmd_cat(args: [][]const u8) void {
 
     const filename = args[1];
 
-    // 1. Find the file
-    const meta_lba = g_fs.findFile(g_allocator, g_cwd_lba, filename) catch {
-        vga.writeString("File not found\n", FG, BG);
+    // 1. Find the entry on disk
+    const entry = g_fs.findFile(g_allocator, g_cwd_lba, filename) catch {
+        vga.writeString("Error: File not found\n", FG, BG);
         return;
     };
 
-    // 2. Read the Metadata
-    const meta = g_fs.readFileMeta(g_allocator, meta_lba) catch {
-        vga.writeString("Error reading metadata\n", FG, BG);
+    // 2. Read the actual Metadata block
+    const meta = g_fs.readFileMeta(g_allocator, entry.meta_extent.start_block) catch {
+        vga.writeString("Error: Could not read metadata\n", FG, BG);
         return;
     };
 
-    // 3. Check if there is actually data to read
+    // 3. NOW check the type (since file_type is in FileMeta, not DirEntry)
+    if (meta.file_type == .Directory) {
+        vga.writeString("Error: Cannot 'cat' a directory.\n", FG, BG);
+        return;
+    }
+
+    // 4. Check for empty file
     if (meta.size_bytes == 0) {
         vga.writeString("(File is empty)\n", FG, BG);
         return;
     }
 
-    // 4. Read and Output data blocks using nested loops
+    // ... rest of your loop (Step 4 from previous message) ...
     const buf = g_allocator.alloc(u8, 512) catch return;
     defer g_allocator.free(buf);
 
     var bytes_remaining = meta.size_bytes;
 
-    // Outer Loop: Iterate through the Extents
+    // Iterate through the extents (the pieces of the file)
     for (meta.extents[0..meta.extent_count]) |extent| {
         if (bytes_remaining == 0) break;
 
-        // Inner Loop: Iterate through the Blocks within this specific Extent
+        // Iterate through the blocks inside each extent
         var block_idx: u64 = 0;
         while (block_idx < extent.block_count and bytes_remaining > 0) : (block_idx += 1) {
 
-            // Read exactly one block at a time into our 512-byte buffer
             const current_lba = extent.start_block + block_idx;
+
             g_fs.device.readBlocks(g_fs.device.ctx, current_lba, buf) catch {
-                vga.writeString("\nError reading data block\n", FG, BG);
+                vga.writeString("\nError: Disk read failure\n", FG, BG);
                 return;
             };
 
-            // Calculate how much of THIS block is data
+            // Calculate how much data is in this specific block
             const chunk_size = if (bytes_remaining > 512) @as(usize, 512) else @as(usize, @intCast(bytes_remaining));
 
-            // Output ONLY the data part
+            // Output the raw bytes to the VGA terminal
             vga.writeRaw(buf[0..chunk_size], FG, BG);
 
             bytes_remaining -= chunk_size;
         }
     }
 
-    // Only add the newline once the entire file (all blocks) is finished
+    // Add a newline at the end for clean terminal output
     vga.writeString("\n", FG, BG);
 }
-fn cmd_rm(args: [][]const u8) void {
+
+fn cmd_del(args: [][]const u8) void {
     if (args.len < 2) {
-        vga.writeString("Usage: rm <filename>\n", FG, BG);
+        vga.writeString("Usage: del <filename>\n", FG, BG);
         return;
     }
 
@@ -635,38 +682,43 @@ fn cmd_rename(args: [][]const u8) void {
     const old_name = args[1];
     const new_name = args[2];
 
-    // 1. LOAD: Use g_cwd_blocks instead of root_dir_extent_blocks
-    const dir_size = g_cwd_blocks * g_fs.device.block_size;
-    const dir_buf = g_allocator.alloc(u8, dir_size) catch return;
-    defer g_allocator.free(dir_buf);
-
-    // 2. READ: Pull from g_cwd_lba, NOT root_lba
-    g_fs.device.readBlocks(g_fs.device.ctx, g_cwd_lba, dir_buf) catch {
-        vga.writeString("Error: Failed to read directory from disk.\n", 12, 0);
+    // 1. Use the new listDir to get all entries (handles multiple blocks/extents)
+    // We pass g_cwd_blocks, but your new listDir likely uses the meta internally now.
+    const entries = g_fs.listDir(g_allocator, g_cwd_lba, g_cwd_blocks) catch {
+        vga.writeString("Error: Could not read directory.\n", 12, 0);
         return;
     };
+    defer g_allocator.free(entries);
 
-    // 3. MAP: (Same logic, now mapped to the correct buffer)
-    const entry_count = dir_size / @sizeOf(DirEntry);
-    const entries = @as([*]DirEntry, @ptrCast(@alignCast(dir_buf.ptr)))[0..entry_count];
-    var dir = Directory{ .entries = entries };
+    // 2. Find the entry and update its name
+    var found = false;
+    for (entries) |*e| {
+        // Compare names (ensure you use the name_len)
+        if (std.mem.eql(u8, e.name[0..e.name_len], old_name)) {
+            // Check if new name is too long
+            if (new_name.len > 64) { // MAX_NAME
+                vga.writeString("Error: New name too long.\n", 12, 0);
+                return;
+            }
 
-    // 4. MODIFY: Perform the rename in memory
-    dir.renameEntry(old_name, new_name) catch |err| {
-        if (err == error.FileNotFound) {
-            vga.writeString("Error: File not found.\n", 12, 0);
-        } else if (err == error.NameAlreadyExists) {
-            vga.writeString("Error: New name already exists.\n", 12, 0);
-        } else {
-            vga.writeString("Error: Rename failed.\n", 12, 0);
+            // Update the entry in our memory slice
+            @memset(e.name[0..], 0);
+            @memcpy(e.name[0..new_name.len], new_name);
+            e.name_len = @intCast(new_name.len);
+            found = true;
+            break;
         }
-        return;
-    };
+    }
 
-    // 5. FLUSH: Manual write-back
-    // Note: We avoid g_fs.flushDirectory because that likely still targets Root.
-    // Writing directly to g_cwd_lba ensures the change stays in this folder.
-    g_fs.device.writeBlocks(g_fs.device.ctx, g_cwd_lba, dir_buf) catch {
+    if (!found) {
+        vga.writeString("Error: File not found.\n", 12, 0);
+        return;
+    }
+
+    // 3. Write back.
+    // Since entries are now spread across blocks, we need a way to save.
+    // The easiest way is a new helper in CodaFs, but for now:
+    g_fs.saveDirectoryEntries(g_allocator, g_cwd_lba, entries) catch {
         vga.writeString("Error: Failed to sync changes to disk.\n", 12, 0);
         return;
     };
@@ -792,7 +844,7 @@ fn cmd_mv(args: [][]const u8) void {
     // 4. Resolve Destination
     const dest_resolve = g_fs.resolvePath(g_allocator, g_cwd_lba, dest_path) catch |err| {
         // Fallback
-        _ = g_fs.insertEntry(g_allocator, src_parent.lba, @intCast(src_parent.blocks), entry_to_move) catch {};
+        _ = g_fs.insertEntry(g_allocator, src_parent.lba, entry_to_move) catch {};
         vga.writeString("Error: Dest resolution failed: ", 12, 0);
         vga.writeString(@errorName(err), 12, 0);
         vga.putChar('\n', 15, 0);
@@ -814,10 +866,9 @@ fn cmd_mv(args: [][]const u8) void {
         g_fs.insertEntry(
             g_allocator,
             dest_resolve.lba,
-            @intCast(dest_resolve.blocks),
                          entry_to_move
         ) catch |err| {
-            _ = g_fs.insertEntry(g_allocator, src_parent.lba, @intCast(src_parent.blocks), entry_to_move) catch {};
+            _ = g_fs.insertEntry(g_allocator, src_parent.lba, entry_to_move) catch {};
             vga.writeString("Insert failed: ", 12, 0);
             vga.writeString(@errorName(err), 12, 0);
             vga.putChar('\n', 15, 0);
@@ -826,7 +877,7 @@ fn cmd_mv(args: [][]const u8) void {
         vga.writeString("Move successful!\n", 10, 0);
     } else {
         // Fallback
-        _ = g_fs.insertEntry(g_allocator, src_parent.lba, @intCast(src_parent.blocks), entry_to_move) catch {};
+        _ = g_fs.insertEntry(g_allocator, src_parent.lba, entry_to_move) catch {};
         vga.writeString("Error: Target is a file.\n", 12, 0);
     }
 }
@@ -879,4 +930,107 @@ fn showSuggestion(tokens: [][]const u8) void {
 
     // 3. Output the final unified string in ONE call
     vga.writeString(suggestion, 10, 0);
+}
+pub fn predictNextCommand() []const u8 {
+    const prev_idx = @intFromEnum(last_command);
+    var best_weight: u16 = 0;
+    var best_id_val: u8 = 0;
+
+    for (transition_table[prev_idx], 0..) |weight, i| {
+        if (weight > best_weight) {
+            best_weight = weight;
+            best_id_val = @intCast(i);
+        }
+    }
+
+    // Fallback if the brain is empty
+    if (best_weight == 0) return "help";
+
+    const best_id = @as(CommandID, @enumFromInt(best_id_val));
+
+    // Search our command array for the name matching this ID
+    for (commands) |c| {
+        if (c.id == best_id and c.id != .UNKNOWN) {
+            return c.name;
+        }
+    }
+
+    return "help";
+}
+
+// This matches the PredictorFn signature in terminal.zig
+// Add this to shell.zig
+fn shellPredictor(input: []const u8) []const u8 {
+    if (input.len == 0) {
+        // DEBUG: Does this message appear as soon as a new prompt shows up?
+        // vga.writeString("Predictor called for empty line!", 11, 0);
+
+        const next_id = getHighestTransition(last_command);
+        if (next_id != .UNKNOWN) {
+            return getNameFromId(next_id) orelse "";
+        }
+    }
+    const input_len = input.len;
+
+    if (input_len == 0) {
+        const next_id = getHighestTransition(last_command);
+        if (next_id != .UNKNOWN) {
+            return getNameFromId(next_id) orelse "";
+        }
+        return "";
+    }
+
+    var best_match: []const u8 = "";
+    var highest_weight: u32 = 0;
+
+    for (commands) |cmd| {
+        if (std.mem.startsWith(u8, cmd.name, input)) {
+            const cmd_idx = @intFromEnum(cmd.id);
+            const prev_idx = @intFromEnum(last_command);
+            const weight = transition_table[prev_idx][cmd_idx];
+
+            if (weight >= highest_weight) {
+                highest_weight = weight;
+                best_match = cmd.name;
+            }
+        }
+    }
+
+    // --- THE FIX IS HERE ---
+    // If we found a match (e.g., "mkdir") and the user typed "mk",
+    // we only want to return the "dir" part.
+    if (best_match.len >= input_len) {
+        return best_match[input_len..];
+    }
+
+    return "";
+}
+
+fn getHighestTransition(prev: CommandID) CommandID {
+    const prev_idx = @intFromEnum(prev);
+    var best_id: CommandID = .UNKNOWN;
+    var max_val: u16 = 0;
+
+    // Set a minimum threshold (e.g., 2 or 3)
+    // This prevents "fluke" predictions from appearing
+    const threshold: u16 = 2;
+
+    for (transition_table[prev_idx], 0..) |weight, i| {
+        // We only update if the weight is the highest AND
+        // exceeds our minimum confidence threshold
+        if (weight > max_val and weight >= threshold) {
+            max_val = weight;
+            best_id = @enumFromInt(i);
+        }
+    }
+
+    return best_id;
+}
+
+fn getNameFromId(id: CommandID) ?[]const u8 {
+    // Search our commands array for the name matching this ID
+    for (commands) |cmd| {
+        if (cmd.id == id) return cmd.name;
+    }
+    return null;
 }

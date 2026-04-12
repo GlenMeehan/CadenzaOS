@@ -63,16 +63,26 @@ pub const CodaFs = struct {
     space_manager: SpaceManager,
     root_dir: Directory,
     // Searches the root directory for a filename and returns its metadata LBA
-    pub fn findFile(fs: *CodaFs, allocator: std.mem.Allocator, dir_lba: u64, name: []const u8) !u64 {
-        // 1. Get the entries for this specific directory
-        // We assume directories are 1 block for now; otherwise, pass dir_blocks too
-        const entries = try fs.listDir(allocator, dir_lba, 1);
+    pub fn findFile(fs: *CodaFs, allocator: std.mem.Allocator, dir_lba: u64, name: []const u8) !DirEntry {
+        // 1. Determine how many blocks to search
+        var blocks_to_search: u64 = 1;
+        if (dir_lba == fs.superblock.root_dir_extent_start) {
+            blocks_to_search = fs.superblock.root_dir_extent_blocks;
+        } else {
+            const meta = try fs.readFileMeta(allocator, dir_lba);
+            blocks_to_search = meta.extent_count;
+        }
+
+        // 2. Load ALL entries using the actual size
+        const entries = try fs.listDir(allocator, dir_lba, blocks_to_search);
         defer allocator.free(entries);
 
         for (entries) |entry| {
+            if (entry.name_len == 0) continue;
+
             const entry_name = entry.name[0..entry.name_len];
             if (std.mem.eql(u8, entry_name, name)) {
-                return entry.meta_extent.start_block;
+                return entry; // Return the whole struct, not just the u64
             }
         }
 
@@ -232,20 +242,22 @@ pub const CodaFs = struct {
         fs: *CodaFs,
         allocator: std.mem.Allocator,
         dir_lba: u64,     // The LBA of the parent (Metadata LBA or Superblock)
-    dir_blocks: u64,  // Size of the parent directory
+    dir_blocks: u64,  // We'll keep this for the signature, but we'll use dir_lba to grow
     name: []const u8,
     file_type: FileType
     ) !void {
+        _ = dir_blocks; // Mark as unused if your compiler complains
+
         if (name.len > MAX_NAME) return error.NameTooLong;
 
-        // 1. Check if file already exists in this specific directory
+        // 1. Check if file already exists
         if (fs.findFile(allocator, dir_lba, name)) |_| {
             return error.AlreadyExists;
         } else |err| {
             if (err != error.FileNotFound) return err;
         }
 
-        // 2. Allocate space for the new item's metadata and data
+        // 2. Allocate space for the new item's metadata and its first data block
         const meta_extent = try fs.space_manager.allocate(1);
         const data_extent = try fs.space_manager.allocate(1);
 
@@ -258,7 +270,7 @@ pub const CodaFs = struct {
         };
         meta.extents[0] = data_extent;
 
-        // 4. If creating a directory, format its data block with zeros (no entries)
+        // 4. If it's a directory, clear its data block (no junk entries)
         if (file_type == .Directory) {
             const dir_init_buf = try allocator.alloc(u8, fs.device.block_size);
             defer allocator.free(dir_init_buf);
@@ -269,39 +281,11 @@ pub const CodaFs = struct {
         }
 
         // 5. Write the new FileMeta to disk
-        const meta_bytes = @as([*]const u8, @ptrCast(&meta))[0..@sizeOf(FileMeta)];
-        // We need a full block buffer to ensure we don't write "short" to disk
-        const block_buf = try allocator.alloc(u8, fs.device.block_size);
-        defer allocator.free(block_buf);
-        @memset(block_buf, 0);
-        @memcpy(block_buf[0..@sizeOf(FileMeta)], meta_bytes);
+        try fs.writeBlockStruct(meta_extent.start_block, &meta, @sizeOf(FileMeta));
 
-        try fs.device.writeBlocks(fs.device.ctx, meta_extent.start_block, block_buf);
+        // --- THE FIX: USE THE GROWABLE INSERT LOGIC ---
 
-        // --- 6. Resolve the Parent's DATA LBA ---
-        // If dir_lba is the root, its entries are at root_dir_extent_start.
-        // Otherwise, it's a subfolder, so we find its data extent via its metadata.
-
-        var parent_data_lba: u64 = 0;
-        if (dir_lba == fs.superblock.root_dir_extent_start) {
-            parent_data_lba = dir_lba;
-        } else {
-            const parent_meta = try fs.readFileMeta(allocator, dir_lba);
-            parent_data_lba = parent_meta.extents[0].start_block;
-        }
-
-        // 7. Load the Parent Directory's Entries
-        const dir_size = dir_blocks * fs.device.block_size;
-        const dir_buf = try allocator.alloc(u8, dir_size);
-        defer allocator.free(dir_buf);
-
-        try fs.device.readBlocks(fs.device.ctx, parent_data_lba, dir_buf);
-
-        const entry_count = dir_size / @sizeOf(DirEntry);
-        const entries = @as([*]DirEntry, @ptrCast(@alignCast(dir_buf.ptr)))[0..entry_count];
-        var dir = Directory{ .entries = entries };
-
-        // 8. Add the new entry to the parent's list
+        // 6. Prepare the DirEntry structure
         var new_entry = DirEntry{
             .name = [_]u8{0} ** MAX_NAME,
             .name_len = @as(u8, @intCast(name.len)),
@@ -309,10 +293,10 @@ pub const CodaFs = struct {
         };
         @memcpy(new_entry.name[0..name.len], name);
 
-        try dir.addEntry(new_entry);
-
-        // 9. Write the updated entry list back to the DATA LBA
-        try fs.device.writeBlocks(fs.device.ctx, parent_data_lba, dir_buf);
+        // 7. Insert into the parent.
+        // This will now automatically allocate a new block if the parent is full!
+        try fs.insertEntry(allocator, dir_lba, new_entry);
+        try fs.space_manager.flushToDisk(allocator, fs.superblock.sm_start_block, fs.superblock.sm_block_count);
     }
 
     // The Compatibility Wrapper
@@ -335,22 +319,26 @@ pub const CodaFs = struct {
     }
 
     pub fn deleteFile(fs: *CodaFs, allocator: std.mem.Allocator, dir_lba: u64, name: []const u8) !void {
-        // 1. Use 'fs' instead of 'self' here:
-        const meta_lba = try fs.findFile(allocator, dir_lba, name);
+        // 1. Find the entry in the specified directory
+        // This gives us the 'entry' struct containing the metadata LBA
+        const entry = try fs.findFile(allocator, dir_lba, name);
 
-        // 2. And use 'fs' instead of 'self' here:
-        var meta = try fs.readFileMeta(allocator, meta_lba);
+        // 2. Read the Metadata using the address from the entry
+        var meta = try fs.readFileMeta(allocator, entry.meta_extent.start_block);
 
-        // 3. Free all data extents
+        // 3. Free all data extents (the actual file content)
         for (meta.extents[0..meta.extent_count]) |extent| {
-            // Pass the allocator down to the space manager
             try fs.space_manager.free(allocator, extent);
         }
 
         // 4. Free the metadata block itself
-        try fs.space_manager.free(allocator, Extent{ .start_block = meta_lba, .block_count = 1 });
+        // We use entry.meta_extent.start_block because meta_lba didn't exist
+        try fs.space_manager.free(allocator, Extent{
+            .start_block = entry.meta_extent.start_block,
+            .block_count = 1
+        });
 
-        // 5. Remove the entry from the directory
+        // 5. Remove the entry from the directory block
         const dir_buf = try allocator.alloc(u8, fs.device.block_size);
         defer allocator.free(dir_buf);
 
@@ -358,12 +346,11 @@ pub const CodaFs = struct {
 
         const entries = @as([*]DirEntry, @ptrCast(@alignCast(dir_buf.ptr)))[0 .. fs.device.block_size / @sizeOf(DirEntry)];
 
-        // Look for the entry and "zero it out"
         var found = false;
-        for (entries) |*entry| {
-            if (entry.name_len == name.len and std.mem.eql(u8, entry.name[0..name.len], name)) {
-                // Found it! Clear the entry
-                @memset(std.mem.asBytes(entry), 0);
+        for (entries) |*e| {
+            if (e.name_len == name.len and std.mem.eql(u8, e.name[0..name.len], name)) {
+                // Clear the entry (mark it as empty)
+                @memset(std.mem.asBytes(e), 0);
                 found = true;
                 break;
             }
@@ -371,49 +358,57 @@ pub const CodaFs = struct {
 
         if (!found) return error.FileNotFound;
 
-        // 6. Write changes back to disk
+        // 6. Write directory changes and space manager state back to disk
         try fs.device.writeBlocks(fs.device.ctx, dir_lba, dir_buf);
         try fs.space_manager.flushToDisk(allocator, fs.superblock.sm_start_block, fs.superblock.sm_block_count);
     }
 
     pub fn listDir(fs: *CodaFs, allocator: std.mem.Allocator, dir_lba: u64, dir_blocks: u64) ![]DirEntry {
-        // 1. RESOLVE DATA LBA
-        // If we are at the root, the entries are at the root start.
-        // Otherwise, dir_lba is a Metadata block, and we must find the Data block.
-        var data_lba = dir_lba;
-        if (dir_lba != fs.superblock.root_dir_extent_start) {
-            const meta = try fs.readFileMeta(allocator, dir_lba);
+        _ = dir_blocks;
+
+        const is_root = (dir_lba == fs.superblock.root_dir_extent_start);
+
+        var meta: FileMeta = undefined;
+        if (!is_root) {
+            meta = try fs.readFileMeta(allocator, dir_lba);
             if (meta.file_type != .Directory) return error.NotADirectory;
-            data_lba = meta.extents[0].start_block;
         }
 
-        // 2. ALLOCATE AND READ
-        const dir_size = dir_blocks * fs.device.block_size;
-        const buf = try allocator.alloc(u8, dir_size);
-        defer allocator.free(buf);
+        // 1. Calculate how many blocks we actually need to read
+        const total_blocks = if (is_root) fs.superblock.root_dir_extent_blocks else meta.extent_count;
 
-        // Read from the DATA block, not the Metadata block
-        try fs.device.readBlocks(fs.device.ctx, data_lba, buf);
+        // 2. Calculate max possible entries to create a temporary workspace
+        const entries_per_block = fs.device.block_size / @sizeOf(DirEntry);
+        const max_entries = total_blocks * entries_per_block;
 
-        // 3. PARSE ENTRIES
-        const total_possible_entries = dir_size / @sizeOf(DirEntry);
-        const raw_entries = @as([*]DirEntry, @ptrCast(@alignCast(buf.ptr)))[0..total_possible_entries];
+        const workspace = try allocator.alloc(DirEntry, max_entries);
+        defer allocator.free(workspace);
 
-        // Count valid entries (where name_len > 0)
-        var count: usize = 0;
-        for (raw_entries) |e| {
-            if (e.name_len > 0) count += 1;
-        }
+        var valid_count: usize = 0;
 
-        // Allocate the result slice for the shell
-        const result = try allocator.alloc(DirEntry, count);
-        var index: usize = 0;
-        for (raw_entries) |e| {
-            if (e.name_len > 0) {
-                result[index] = e;
-                index += 1;
+        // 3. Loop through the blocks and collect valid entries
+        var b: u32 = 0;
+        while (b < total_blocks) : (b += 1) {
+            const current_lba = if (is_root) dir_lba + b else meta.extents[b].start_block;
+            if (current_lba == 0) continue;
+
+            const buf = try allocator.alloc(u8, fs.device.block_size);
+            defer allocator.free(buf);
+            _ = try fs.device.readBlocks(fs.device.ctx, current_lba, buf);
+
+            const raw_entries = @as([*]DirEntry, @ptrCast(@alignCast(buf.ptr)))[0..entries_per_block];
+
+            for (raw_entries) |e| {
+                if (e.name_len > 0) {
+                    workspace[valid_count] = e;
+                    valid_count += 1;
+                }
             }
         }
+
+        // 4. Create the final result slice with the exact size needed
+        const result = try allocator.alloc(DirEntry, valid_count);
+        @memcpy(result[0..valid_count], workspace[0..valid_count]);
 
         return result;
     }
@@ -474,12 +469,12 @@ pub const CodaFs = struct {
             if (std.mem.eql(u8, segment, "..")) continue; // Add parent logic later
 
             // Search for the actual file/folder name
-            const found_lba = fs.findFile(allocator, current_lba, segment) catch |err| {
+            const entry = fs.findFile(allocator, current_lba, segment) catch |err| {
                 if (err == error.FileNotFound) return error.PathNotFound;
                 return err;
             };
 
-            const meta = try fs.readFileMeta(allocator, found_lba);
+            const meta = try fs.readFileMeta(allocator, entry.meta_extent.start_block);
 
             if (it.peek() != null) {
                 // Not at the end yet, so this MUST be a directory
@@ -488,7 +483,7 @@ pub const CodaFs = struct {
             } else {
                 // We reached the final segment!
                 return PathResult{
-                    .lba = found_lba,
+                    .lba = entry.meta_extent.start_block,
                     .blocks = meta.extent_count,
                     .is_directory = (meta.file_type == .Directory),
                 };
@@ -527,36 +522,72 @@ pub const CodaFs = struct {
     pub fn insertEntry(
         fs: *CodaFs,
         allocator: std.mem.Allocator,
-        dest_dir_lba: u64,
-        dest_dir_blocks: u64,
+        dest_meta_lba: u64,
         entry: DirEntry
     ) !void {
-        // 1. Resolve Data LBA for destination
-        var data_lba = dest_dir_lba;
-        if (dest_dir_lba != fs.superblock.root_dir_extent_start) {
-            const meta = try fs.readFileMeta(allocator, dest_dir_lba);
-            data_lba = meta.extents[0].start_block;
-        }
+        const is_root = (dest_meta_lba == fs.superblock.root_dir_extent_start);
 
-        // 2. Read the destination directory data
-        const dir_size = dest_dir_blocks * fs.device.block_size;
-        const buf = try allocator.alloc(u8, dir_size);
-        defer allocator.free(buf);
-        try fs.device.readBlocks(fs.device.ctx, data_lba, buf);
+        if (is_root) {
+            // --- ROOT DIRECTORY LOGIC ---
+            // Root is a contiguous stretch of blocks (usually 4)
+            var b: u64 = 0;
+            while (b < fs.superblock.root_dir_extent_blocks) : (b += 1) {
+                const current_lba = dest_meta_lba + b;
+                const buf = try allocator.alloc(u8, fs.device.block_size);
+                defer allocator.free(buf);
 
-        const entry_count = dir_size / @sizeOf(DirEntry);
-        const entries = @as([*]DirEntry, @ptrCast(@alignCast(buf.ptr)))[0..entry_count];
+                try fs.device.readBlocks(fs.device.ctx, current_lba, buf);
+                const entries = @as([*]DirEntry, @ptrCast(@alignCast(buf.ptr)))[0 .. fs.device.block_size / @sizeOf(DirEntry)];
 
-        // 3. Find an empty slot
-        for (entries) |*e| {
-            if (e.name_len == 0) {
-                e.* = entry; // Paste the entire struct (name, meta_extent, etc.)
-                try fs.device.writeBlocks(fs.device.ctx, data_lba, buf);
-                return;
+                for (entries) |*e| {
+                    if (e.name_len == 0) {
+                        e.* = entry;
+                        try fs.device.writeBlocks(fs.device.ctx, current_lba, buf);
+                        return;
+                    }
+                }
             }
-        }
+            return error.DirectoryFull; // Root is currently fixed-size in mkfs
+        } else {
+            // --- SUBDIRECTORY LOGIC (Your existing code) ---
+            var meta = try fs.readFileMeta(allocator, dest_meta_lba);
 
-        return error.NoSpaceInDirectory;
+            var i: u32 = 0;
+            while (i < meta.extent_count) : (i += 1) {
+                const extent = meta.extents[i];
+                const buf = try allocator.alloc(u8, fs.device.block_size);
+                defer allocator.free(buf);
+
+                try fs.device.readBlocks(fs.device.ctx, extent.start_block, buf);
+                const entries = @as([*]DirEntry, @ptrCast(@alignCast(buf.ptr)))[0 .. fs.device.block_size / @sizeOf(DirEntry)];
+
+                for (entries) |*e| {
+                    if (e.name_len == 0) {
+                        e.* = entry;
+                        try fs.device.writeBlocks(fs.device.ctx, extent.start_block, buf);
+                        return;
+                    }
+                }
+            }
+
+            // GROW logic (only for subdirectories)
+            if (meta.extent_count >= 8) return error.DirectoryPhysicallyFull;
+            const new_block_extent = try fs.space_manager.allocate(1);
+
+            const zero_buf = try allocator.alloc(u8, fs.device.block_size);
+            defer allocator.free(zero_buf);
+            @memset(zero_buf, 0);
+
+            const new_entries = @as([*]DirEntry, @ptrCast(@alignCast(zero_buf.ptr)))[0 .. fs.device.block_size / @sizeOf(DirEntry)];
+            new_entries[0] = entry;
+            try fs.device.writeBlocks(fs.device.ctx, new_block_extent.start_block, zero_buf);
+
+            meta.extents[meta.extent_count] = new_block_extent;
+            meta.extent_count += 1;
+            meta.size_bytes += fs.device.block_size;
+
+            try fs.writeBlockStruct(dest_meta_lba, &meta, @sizeOf(FileMeta));
+        }
     }
 
     pub fn readBlocksWithTelemetry(self: *CodaFs, lba: u64, buf: []u8) !u64 {
@@ -574,7 +605,47 @@ pub const CodaFs = struct {
         return duration;
     }
 
+    pub fn saveDirectoryEntries(fs: *CodaFs, allocator: std.mem.Allocator, dir_lba: u64, entries: []DirEntry) !void {
+        const is_root = (dir_lba == fs.superblock.root_dir_extent_start);
 
+        // 1. Resolve how many blocks we have to work with
+        var total_blocks: u64 = 0;
+        var meta: FileMeta = undefined;
+
+        if (is_root) {
+            total_blocks = fs.superblock.root_dir_extent_blocks;
+        } else {
+            meta = try fs.readFileMeta(allocator, dir_lba);
+            total_blocks = meta.extent_count;
+        }
+
+        const entries_per_block = fs.device.block_size / @sizeOf(DirEntry);
+        var entry_index: usize = 0;
+
+        // 2. Iterate through the blocks and pack the entries back in
+        var b: u32 = 0;
+        while (b < total_blocks) : (b += 1) {
+            const current_lba = if (is_root) dir_lba + b else meta.extents[b].start_block;
+            if (current_lba == 0) continue;
+
+            const buf = try allocator.alloc(u8, fs.device.block_size);
+            defer allocator.free(buf);
+            @memset(buf, 0);
+
+            const block_entries = @as([*]DirEntry, @ptrCast(@alignCast(buf.ptr)))[0..entries_per_block];
+
+            // Fill this block with entries from our list until the block is full
+            // or we run out of entries.
+            var i: usize = 0;
+            while (i < entries_per_block and entry_index < entries.len) : (i += 1) {
+                block_entries[i] = entries[entry_index];
+                entry_index += 1;
+            }
+
+            // 3. Write this specific block back to the disk
+            _ = try fs.device.writeBlocks(fs.device.ctx, current_lba, buf);
+        }
+    }
 
 };
 
@@ -596,7 +667,7 @@ pub fn breakpoint(msg: []const u8) void {
 }
 
 pub fn addBlockToFile(fs: *CodaFs, allocator: std.mem.Allocator, meta: *FileMeta) !void {
-    _ = allocator; // Explicitly discard the unused parameter
+    //_ = allocator; // Explicitly discard the unused parameter
 
     if (meta.extent_count >= 8) return error.FileAtMaximumSize;
 
@@ -608,6 +679,7 @@ pub fn addBlockToFile(fs: *CodaFs, allocator: std.mem.Allocator, meta: *FileMeta
     // 2. Add it to the metadata's extent array
     meta.extents[meta.extent_count] = new_extent;
     meta.extent_count += 1;
+    try fs.space_manager.flushToDisk(allocator, fs.superblock.sm_start_block, fs.superblock.sm_block_count);
 }
 
 pub fn getCycles() u64 {
