@@ -62,6 +62,8 @@ pub const CodaFs = struct {
     superblock: Superblock,
     space_manager: SpaceManager,
     root_dir: Directory,
+    brain_ptr: ?*anyopaque = null,
+    on_telemetry: ?*const fn(ctx: ?*anyopaque, policy: SystemPolicy, cycles: u64) void = null,
     // Searches the root directory for a filename and returns its metadata LBA
     pub fn findFile(fs: *CodaFs, allocator: std.mem.Allocator, dir_lba: u64, name: []const u8) !DirEntry {
         // 1. Determine how many blocks to search
@@ -131,7 +133,7 @@ pub const CodaFs = struct {
         _ = memory.memcpy(buf[0..size].ptr, src.ptr, size);
 
         // Use self.device here
-        try self.device.writeBlocks(self.device.ctx, lba, buf[0..self.device.block_size]);
+        _ = try self.writeBlocksWithTelemetry(lba, buf[0..self.device.block_size]);
     }
 
     pub fn mount(allocator: std.mem.Allocator, device: *BlockDevice) !CodaFs {
@@ -226,16 +228,6 @@ pub const CodaFs = struct {
         const dst = @as([*]u8, @ptrCast(sb))[0..@sizeOf(Superblock)];
         _ = memory.memcpy(dst.ptr, buf[0..dst.len].ptr, dst.len);
     }
-
-    pub fn readBlockStruct(device: *BlockDevice, lba: u64, ptr: *anyopaque, size: usize) !void {
-        var buf: [conf.BASE_IO_BUF_SIZE]u8 = undefined;
-        try device.readBlocks(device.ctx, lba, buf[0..device.block_size]);
-
-        const dst = @as([*]u8, @ptrCast(ptr))[0..size];
-        _ = memory.memcpy(dst.ptr, buf[0..size].ptr, size);
-    }
-
-
 
     // 1. The new Generalized Function
     pub fn createEntry(
@@ -479,7 +471,10 @@ pub const CodaFs = struct {
             if (it.peek() != null) {
                 // Not at the end yet, so this MUST be a directory
                 if (meta.file_type != .Directory) return error.NotADirectory;
-                current_lba = meta.extents[0].start_block;
+
+                // Descend using the *metadata* LBA of the child directory
+                current_lba = entry.meta_extent.start_block;
+                current_blocks = meta.extent_count;
             } else {
                 // We reached the final segment!
                 return PathResult{
@@ -593,15 +588,34 @@ pub const CodaFs = struct {
     pub fn readBlocksWithTelemetry(self: *CodaFs, lba: u64, buf: []u8) !u64 {
         const start = getCycles();
 
-        // Call the actual hardware driver
+        // 1. Hardware Read
         try self.device.readBlocks(self.device.ctx, lba, buf);
 
         const end = getCycles();
         const duration = end - start;
 
-        // This is Phase 2 logic:
-        // In a real OS, we might store this in a circular buffer
-        // for the AI to analyze later.
+        // 2. Feed the Brain (if hooked up)
+        if (self.on_telemetry) |callback| {
+            callback(self.brain_ptr, self.superblock.policy, duration);
+        }
+
+        // 3. Sentinel Logic: If disk is 10x slower than threshold, pivot policy
+        if (duration > self.superblock.latency_threshold_ns * 10) {
+            self.superblock.policy = .Admin;
+        }
+
+        return duration;
+    }
+
+    pub fn writeBlocksWithTelemetry(self: *CodaFs, lba: u64, buf: []const u8) !u64 {
+        const start = getCycles();
+        try self.device.writeBlocks(self.device.ctx, lba, buf);
+        const end = getCycles();
+        const duration = end - start;
+
+        // TODO: Feed 'duration' to your Markov Brain here!
+        // e.g., g_brain.addObservation(self.superblock.policy, duration);
+
         return duration;
     }
 

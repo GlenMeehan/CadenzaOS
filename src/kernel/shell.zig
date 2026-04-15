@@ -37,7 +37,7 @@ var g_cwd_name: [32]u8 = undefined;
 var g_cwd_name_len: usize = 1; // Start with "/"
 var last_latency: u64 = 0;
 // There are about 6 commands, so a 10x10 table is plenty of room to grow.
-var transition_table: [10][10]u16 = [_][10]u16{ [_]u16{0} ** 10 } ** 10;
+pub var transition_table: [10][10]u16 = [_][10]u16{ [_]u16{0} ** 10 } ** 10;
 var last_command: CommandID = .UNKNOWN;
 
 
@@ -138,8 +138,12 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
     g_cwd_name[0] = '/';
     g_cwd_name_len = 1;
 
+
+
     // --- 1. PLUG IN THE BRAIN ---
     // This tells terminal.zig to call shellPredictor() whenever a key is pressed
+    //Load save Brain before plugging in
+    loadBrain();
     term.setPredictor(shellPredictor);
 
     // --- 2. INITIAL STATE ---
@@ -184,6 +188,11 @@ fn execute(line: []const u8) void {
         if (mem.eqlNoSimd(u8, c.name, cmd)) {
             c.func(tokens);
             found = true;
+            saveBrain() catch |err| {
+                vga.writeString("Save Error: ", 4, 0);
+                vga.writeString(@errorName(err), 4, 0);
+                vga.writeString("\n", 4, 0);
+            };
             break;
         }
     }
@@ -1033,4 +1042,59 @@ fn getNameFromId(id: CommandID) ?[]const u8 {
         if (cmd.id == id) return cmd.name;
     }
     return null;
+}
+
+fn saveBrain() !void {
+    const root_lba = g_fs.superblock.root_dir_extent_start;
+
+    const sys_entry = g_fs.findFile(g_allocator, root_lba, "sys") catch |err| blk: {
+        if (err == error.FileNotFound) {
+            try g_fs.createEntry(g_allocator, root_lba, 1, "sys", .Directory);
+            break :blk try g_fs.findFile(g_allocator, root_lba, "sys");
+        }
+        return err;
+    };
+
+    const sys_meta = try g_fs.readFileMeta(g_allocator, sys_entry.meta_extent.start_block);
+    if (sys_meta.file_type != .Directory) return error.NotADirectory;
+
+    const sys_meta_lba = sys_entry.meta_extent.start_block;
+
+    const brain_entry = g_fs.findFile(g_allocator, sys_meta_lba, "brain.dat") catch |err| blk: {
+        if (err == error.FileNotFound) {
+            try g_fs.createFile(g_allocator, sys_meta_lba, 4, "brain.dat");
+            break :blk try g_fs.findFile(g_allocator, sys_meta_lba, "brain.dat");
+        }
+        return err;
+    };
+
+    var brain_meta = try g_fs.readFileMeta(g_allocator, brain_entry.meta_extent.start_block);
+    const data_lba = brain_meta.extents[0].start_block;
+
+    const bytes = std.mem.sliceAsBytes(&transition_table);
+    try g_fs.device.writeBlocks(g_fs.device.ctx, data_lba, bytes);
+
+    // Update metadata so stat/cat see the correct size
+    brain_meta.size_bytes = bytes.len;
+    brain_meta.extents[0].block_count = 1;
+
+    try g_fs.writeBlockStruct(
+        brain_entry.meta_extent.start_block,
+        &brain_meta,
+        @sizeOf(@TypeOf(brain_meta)) // avoids needing FileMeta import
+    );
+}
+
+
+
+fn loadBrain() void {
+    const path_res = g_fs.resolvePath(g_allocator, g_fs.superblock.root_dir_extent_start, "/sys/brain.dat") catch return;
+
+    const meta = g_fs.readFileMeta(g_allocator, path_res.lba) catch return;
+    const data_lba = meta.extents[0].start_block;
+
+    const bytes = std.mem.sliceAsBytes(&transition_table);
+
+    // Read directly from the device into the table's memory
+    g_fs.device.readBlocks(g_fs.device.ctx, data_lba, bytes) catch return;
 }
