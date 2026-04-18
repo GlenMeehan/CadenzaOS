@@ -12,6 +12,7 @@ const Extent = @import("coda_sm.zig").Extent;
 const memory = @import("../memory.zig");
 const MAX_NAME = @import("coda_file.zig").MAX_NAME;
 const FileType = @import("coda_file.zig").FileType;
+const vitals = @import("../vitals.zig");
 
 pub const CODA_MAGIC: u64 = 0x434F44415F465331;
 pub const CODA_VERSION: u32 = 1;
@@ -197,7 +198,7 @@ pub const CodaFs = struct {
             .total_blocks = total_blocks,
             // --- Policy awareness fields ---
             .policy = .Dev,                // Default to Dev mode
-            .latency_threshold_ns = 1000,  // A placeholder baseline
+            .latency_threshold_ns = 22000,  // A placeholder baseline
             // ----------------------------
             .sm_start_block = sm_start_block,
             .sm_block_count = sm_block_count,
@@ -586,24 +587,33 @@ pub const CodaFs = struct {
     }
 
     pub fn readBlocksWithTelemetry(self: *CodaFs, lba: u64, buf: []u8) !u64 {
+        // 1. Capture precise start time
         const start = getCycles();
 
-        // 1. Hardware Read
+        // 2. Perform the actual Hardware/RAM Disk Read
         try self.device.readBlocks(self.device.ctx, lba, buf);
 
+        // 3. Capture end time and calculate delta
         const end = getCycles();
         const duration = end - start;
 
-        // 2. Feed the Brain (if hooked up)
+        vitals.current_vitals.disk_cycles += duration;
+        vitals.current_vitals.last_read_latency = duration;
+
+        // 4. Update internal state (The Callback)
+        // This "Pushes" the data to the Markov Brain if initialized
         if (self.on_telemetry) |callback| {
             callback(self.brain_ptr, self.superblock.policy, duration);
         }
 
-        // 3. Sentinel Logic: If disk is 10x slower than threshold, pivot policy
+        // 5. Sentinel Logic: Immediate defensive reaction
+        // Note: Ensure latency_threshold_ns is scaled to cycles or vice-versa
         if (duration > self.superblock.latency_threshold_ns * 10) {
             self.superblock.policy = .Admin;
         }
 
+        // 6. Return the duration
+        // This "Pulls" the data back to the Shell/Caller for display or vitals
         return duration;
     }
 

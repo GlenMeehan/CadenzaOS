@@ -5,6 +5,10 @@ KERNEL_OFFSET = 0xFFFFFF8000000000;
 /* Physical Address (1MiB) */
 KERNEL_PHYS   = 0x00100000;
 
+/* Define the Disk Anchor (Physical: 16MB) */
+DISK_PHYS = 0x01000000;
+DISK_VIRT = KERNEL_OFFSET + DISK_PHYS;
+
 SECTIONS {
     /* Set the location counter to the Virtual Address */
     . = KERNEL_OFFSET + KERNEL_PHYS;
@@ -33,4 +37,8 @@ SECTIONS {
     }
 
     _kernel_end = .;
+
+/* Check to ensure the kernel hasn't grown into the disk space */
+    ASSERT(. < DISK_VIRT, "Error: Kernel has grown too large and is overlapping the RAM disk area!")
+
 }

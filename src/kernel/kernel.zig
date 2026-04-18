@@ -62,7 +62,16 @@ var heap_buffer: [1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
 var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
 
 //RAM Disk Buffer
-var fs_ramdisk_buf: [4 * 1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
+//const RamDiskType = [4 * 1024 * 1024]u8;
+//var fs_ramdisk_buf: [4 * 1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
+
+
+// Use the exact virtual address defined by our linker math
+pub const RAMDISK_VIRT_ADDR: usize = 0xFFFFFF8001000000;
+pub const RAMDISK_SIZE: usize = 4 * 1024 * 1024;
+
+// Anchor the buffer as a pointer to the array at that fixed virtual address
+pub const fs_ramdisk_buf: *[RAMDISK_SIZE]u8 = @ptrFromInt(RAMDISK_VIRT_ADDR);
 
 var fs_global: CodaFs align(4096) linksection(".bss") = undefined;
 
@@ -129,7 +138,8 @@ pub export fn kmain() noreturn {
     // Clear the BSS as we discussed
 
     @memset(&heap_buffer, 0);
-    @memset(&fs_ramdisk_buf, 0);
+    @memset(fs_ramdisk_buf, 0);
+    //@memset(&fs_ramdisk_buf, 0);
 
 
 

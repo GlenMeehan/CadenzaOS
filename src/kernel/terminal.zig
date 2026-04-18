@@ -67,14 +67,20 @@ pub fn processChar(ch: u8) void {
     if (isPrintable(ch)) {
         if (line_len >= MAX_LINE) return;
 
-        // Insert at end only (for now)
         line_buffer[line_len] = ch;
         line_len += 1;
         cursor_pos = line_len;
-        redrawLine(); // Update the ghost text!
 
-        // DO NOT TOUCH vga.cursor_col HERE
-        //vga.putChar(ch, 15, 0);
+        // 1. Check if we are still on the "Primary" line (where Ghosting works)
+        if (prompt_start + line_len < 79) {
+            // Use the "Canvas" approach: Redraw the whole line + Ghost text
+            redrawLine();
+        } else {
+            // 2. We have wrapped or are about to wrap.
+            // Switch to "Stream" approach: Just let the hardware pour text.
+            // This prevents the double-character bug.
+            vga.putChar(ch, 15, 0);
+        }
     }
 }
 

@@ -21,6 +21,23 @@ const bp = @import("fs/coda_fs.zig").breakpoint;
 const coda_file = @import("fs/coda_file.zig");
 const ata = @import("drivers/ata.zig");
 
+pub const CommandID = enum(u8) {
+    UNKNOWN = 0,
+    LS      = 1,
+    CD      = 2,
+    MKDIR   = 3,
+    STAT    = 4,
+    CAT     = 5,
+    POLICY  = 6,
+    TOUCH      = 7,
+    EDIT = 8,
+    VITALS = 9,
+    DEL = 10,
+    RENAME = 11,
+    MOVE = 12,
+    VERSION = 13,
+};
+
 
 const DirEntry = coda_file.DirEntry;
 const Directory = coda_file.Directory; // Do this for Directory too!
@@ -37,7 +54,9 @@ var g_cwd_name: [32]u8 = undefined;
 var g_cwd_name_len: usize = 1; // Start with "/"
 var last_latency: u64 = 0;
 // There are about 6 commands, so a 10x10 table is plenty of room to grow.
-pub var transition_table: [10][10]u16 = [_][10]u16{ [_]u16{0} ** 10 } ** 10;
+const cmd_count = std.enums.values(CommandID).len;
+pub var transition_table: [cmd_count][cmd_count]u16 = .{.{0} ** cmd_count} ** cmd_count;
+
 var last_command: CommandID = .UNKNOWN;
 
 
@@ -86,17 +105,7 @@ const Command = struct {
     needs_arg: bool = false,
 };
 
-pub const CommandID = enum(u8) {
-    UNKNOWN = 0,
-    LS      = 1,
-    CD      = 2,
-    MKDIR   = 3,
-    STAT    = 4,
-    CAT     = 5,
-    POLICY  = 6,  // Add this
-    TOUCH      = 7,  // Add this
-    EDIT = 8,
-};
+
 
 fn getCmdId(name: []const u8) CommandID {
     for (commands) |c| {
@@ -108,6 +117,7 @@ fn getCmdId(name: []const u8) CommandID {
 const commands = [_]Command{
     // Utility commands (Automatically .id = .UNKNOWN)
     .{ .name = "help",     .desc = "Show this help message", .func = cmd_help },
+    .{ .name = "keys",     .desc = "Show key and control functions help", .func = cmd_keys },
     .{ .name = "clear",    .desc = "Clear the screen",        .func = cmd_clear },
     .{ .name = "echo",     .desc = "Print arguments",         .func = cmd_echo },
     .{ .name = "history",  .desc = "Show command history",    .func = cmd_history },
@@ -118,14 +128,16 @@ const commands = [_]Command{
     .{ .name = "ls",       .desc = "List root directory",     .func = cmd_ls,     .id = .LS },
     .{ .name = "touch",       .desc = "Create a file",           .func = cmd_touch,     .id = .TOUCH,    .needs_arg = true },
     .{ .name = "edit",       .desc = "Write data into file",    .func = cmd_edit, .id = .EDIT, .needs_arg = true },
-    .{ .name = "del",       .desc = "Delete a file",           .func = cmd_del },
+    .{ .name = "del",       .desc = "Delete a file",           .func = cmd_del , .id = .DEL },
     .{ .name = "stat",     .desc = "Read file details",       .func = cmd_stat,   .id = .STAT,  .needs_arg = true },
     .{ .name = "cat",      .desc = "Print contents of file",  .func = cmd_cat,    .id = .CAT,   .needs_arg = true },
-    .{ .name = "rename",   .desc = "Rename a file",           .func = cmd_rename },
+    .{ .name = "rename",   .desc = "Rename a file",           .func = cmd_rename, .id = .RENAME },
     .{ .name = "mkdir",    .desc = "Create a directory",      .func = cmd_mkdir,  .id = .MKDIR, .needs_arg = true },
     .{ .name = "cd",       .desc = "Navigate to a folder",    .func = cmd_cd,     .id = .CD,    .needs_arg = true },
-    .{ .name = "mv",       .desc = "Move a file",             .func = cmd_mv },
+    .{ .name = "mv",       .desc = "Move a file",             .func = cmd_mv, .id = .MOVE },
     .{ .name = "policy",   .desc = "View/set system policy",  .func = cmd_policy, .id = .POLICY },
+    .{ .name = "vitals", .desc = "Display vitals", .func = cmd_vitals, .id = .VITALS },
+    .{ .name = "version", .desc = "Display system version information", .func = cmd_vitals, .id = .VERSION },
 };
 
 pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
@@ -293,6 +305,9 @@ fn cmd_help(_: [][]const u8) void {
 
     vga.putChar('\n', FG, BG);
     vga.putChar('\n', FG, BG);
+}
+
+fn cmd_keys(_: [][]const u8) void {
 
     vga.writeString("Keyboard shortcuts:", FG, BG);
 
@@ -332,6 +347,8 @@ fn cmd_help(_: [][]const u8) void {
 
     vga.putChar('\n', FG, BG);
 }
+
+
 
 fn cmd_clear(_: [][]const u8) void {
     vga.clearScreen(FG, BG);
@@ -894,7 +911,6 @@ fn cmd_mv(args: [][]const u8) void {
 fn cmd_policy(args: [][]const u8) void {
     if (args.len < 2) {
         vga.writeString("Current Policy: ", 15, 0);
-        // Print the current policy name based on the enum value
         switch (g_fs.superblock.policy) {
             .Admin => vga.writeString("Admin\n", 14, 0),
             .Dev => vga.writeString("Dev\n", 10, 0),
@@ -904,8 +920,27 @@ fn cmd_policy(args: [][]const u8) void {
         return;
     }
 
-    // Optional: Add logic here to CHANGE the policy
-    // e.g., if (mem.eql(u8, args[1], "gaming")) g_fs.superblock.policy = .Gaming;
+    const new_policy = args[1];
+
+    if (std.mem.eql(u8, new_policy, "admin")) {
+        g_fs.superblock.policy = .Admin;
+        vga.writeString("Policy switched to Admin\n", 14, 0);
+    } else if (std.mem.eql(u8, new_policy, "dev")) {
+        g_fs.superblock.policy = .Dev;
+        vga.writeString("Policy switched to Dev\n", 10, 0);
+    } else if (std.mem.eql(u8, new_policy, "gaming")) {
+        g_fs.superblock.policy = .Gaming;
+        vga.writeString("Policy switched to Gaming\n", 13, 0);
+    } else if (std.mem.eql(u8, new_policy, "ai")) {
+        g_fs.superblock.policy = .AI_Guided;
+        vga.writeString("Policy switched to AI_Guided\n", 11, 0);
+    } else {
+        vga.writeString("Unknown policy. Use: admin, dev, gaming, or ai\n", 12, 0);
+        return;
+    }
+
+    // Since we changed the superblock, we should save it to the anchored disk
+    saveBrain() catch {};
 }
 
 fn getLbaForBlock(meta: coda_file.FileMeta, block_index: u64) u64 {
@@ -996,8 +1031,20 @@ fn shellPredictor(input: []const u8) []const u8 {
         if (std.mem.startsWith(u8, cmd.name, input)) {
             const cmd_idx = @intFromEnum(cmd.id);
             const prev_idx = @intFromEnum(last_command);
-            const weight = transition_table[prev_idx][cmd_idx];
 
+            // 1. Get the existing weight from your table
+            var weight: u32 = transition_table[prev_idx][cmd_idx];
+
+            // 2. Add ONLY this logic:
+            // If the anchored filesystem says we are in Admin mode,
+            // boost the weight of the "vitals" command.
+            if (g_fs.superblock.policy == .Admin) {
+                if (cmd.id == .VITALS) {
+                    weight += 20000;
+                }
+            }
+
+            // 3. The rest of your existing logic stays the same
             if (weight >= highest_weight) {
                 highest_weight = weight;
                 best_match = cmd.name;
@@ -1097,4 +1144,27 @@ fn loadBrain() void {
 
     // Read directly from the device into the table's memory
     g_fs.device.readBlocks(g_fs.device.ctx, data_lba, bytes) catch return;
+}
+
+const vitals = @import("vitals.zig");
+
+fn cmd_vitals(tokens: [][]const u8) void {
+    _ = tokens; // unused for now
+
+    var buf: [128]u8 = undefined;
+
+    // Print total cycles accumulated
+    const line1 = std.fmt.bufPrint(&buf, "Total Disk Cycles: {d}\n", .{vitals.current_vitals.disk_cycles}) catch "Error\n";
+    vga.writeString(line1, 15, 0); // Write to a specific line on VGA
+
+    // Print the latency of the very last read
+    const line2 = std.fmt.bufPrint(&buf, "Last Read Latency: {d} cycles\n", .{vitals.current_vitals.last_read_latency}) catch "Error\n";
+    vga.writeString(line2, 16, 0);
+}
+
+fn cmd_version(args: [][]const u8) void {
+    _ = args; // We don't need arguments for this
+    vga.writeString("Cadenza OS - Version 0.1.0 (Dev Build)\n", 11, 0); // Light Cyan
+    vga.writeString("Kernel: Zig 0.16-dev\n", 7, 0); // Gray
+    vga.writeString("Predictive Shell: Phase 1 Context-Aware\n", 10, 0); // Green
 }
