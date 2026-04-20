@@ -1,11 +1,12 @@
 // src/kernel/panic.zig
 //
 // Kernel panic handler.
-// This function is called when the kernel encounters an unrecoverable error.
-// It clears the screen, prints a panic banner + message, optionally prints
-// the return address, and halts the CPU forever.
-//
-// This overrides Zig's default panic handler.
+// This overrides Zig's default panic function.
+// Behaviour:
+//   • Clear screen to red background
+//   • Print panic banner + message
+//   • Optionally print return address
+//   • Halt CPU forever (cli + hlt)
 
 const std = @import("std");
 const vga = @import("vga.zig");
@@ -13,14 +14,14 @@ const conv = @import("convert.zig");
 
 pub fn panic(
     message: []const u8,
-    _: ?*std.builtin.StackTrace, // ignored: stack traces not supported yet
+    _: ?*std.builtin.StackTrace, // stack traces not supported yet
     ret_addr: ?usize,
 ) noreturn {
     // VGA text buffer at physical address 0xB8000
     const vga_ptr = @as([*]volatile u16, @ptrFromInt(0xB8000));
 
-    // Clear screen to red background with spaces
-    // 0x4F20 = bg red (4), fg bright white (F), char ' ' (0x20)
+    // Clear screen to red background with bright white text.
+    // 0x4F20 = (bg=4 red, fg=F bright white, char=' ')
     var i: usize = 0;
     while (i < 80 * 25) : (i += 1) {
         vga_ptr[i] = 0x4F20;
@@ -39,7 +40,7 @@ pub fn panic(
         vga.writeStringAt(14, 12, conv.toHex(u64, addr, &buf), 0x0F, 0x04);
     }
 
-    // Halt the CPU forever
+    // Halt CPU forever
     while (true) {
         asm volatile ("cli; hlt");
     }

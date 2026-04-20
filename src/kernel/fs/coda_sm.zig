@@ -1,44 +1,78 @@
-//src/kernel/fs/coda_sm.zig
+// src/kernel/fs/coda_sm.zig
+//
+// CODA Space Manager
+// ------------------
+// Tracks free disk extents for the CODA filesystem.
+// Responsibilities:
+//   • On-disk header and extent list serialisation
+//   • Extent allocation (first-fit) and freeing
+//   • Flush to / restore from disk
+//
+// The on-disk layout within the SM region is:
+//   [sm_start_block + 0]  SmHeader  (magic, extent count)
+//   [sm_start_block + 1]  Extent[]  (packed array of free extents)
+//
+// NOTE: Multi-block metadata and best-fit allocation are not yet implemented.
 
-const std = @import("std");
-const mem = std.mem;
-const BlockDevice = @import("block_device.zig").BlockDevice;
-const vga = @import("../vga.zig");
-const conv = @import("../convert.zig");
-const memory = @import("../memory.zig");
-const port = @import("../port_io.zig");
-
-const ArrayList = std.ArrayList;
+const std           = @import("std");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
+const BlockDevice   = @import("block_device.zig").BlockDevice;
+const conv          = @import("../convert.zig");
+const memory        = @import("../memory.zig");
+const vga           = @import("../vga.zig");
 
-pub const SM_MAGIC: u64 = 0x434F44415F534D31; // "CODA_SM1"
+// --------------------------------
+// On-disk constants and structures
+// --------------------------------
 
+pub const SM_MAGIC: u64 = 0x434F44415F534D31;  // "CODA_SM1"
+
+/// A contiguous range of disk blocks.
+/// Used both as a free-list entry and as a file extent descriptor.
+///
+/// start_block  — first LBA in the range (inclusive)
+/// block_count  — number of consecutive blocks
 pub const Extent = struct {
-    start_block: u64, // inclusive LBA
-    block_count: u64, // number of blocks in this extent
+    start_block: u64,
+    block_count: u64,
 };
 
+/// On-disk header written at the first block of the SM region.
+/// Followed immediately (next block) by the packed Extent array.
+///
+/// Layout is fixed at 64 bytes; reserved[] provides forward-compatibility padding.
 pub const SmHeader = struct {
-    magic: u64,              // "CODA_SM1"
-    free_extent_count: u32,
-    reserved: [52]u8,        // pad to 64 bytes
+    magic:             u64,      // Must equal SM_MAGIC
+    free_extent_count: u32,      // Number of Extent entries that follow
+    reserved:          [52]u8,   // Pad to 64 bytes; must remain zeroed
 };
 
+/// Errors specific to SpaceManager operations.
 pub const SpaceManagerError = error{
     OutOfSpace,
     InvalidExtent,
     IoError,
 };
 
+// --------------------------------
+// SpaceManager
+// --------------------------------
+
 pub const SpaceManager = struct {
-    device: *BlockDevice,
+    device:    *BlockDevice,
     free_list: ArrayListUnmanaged(Extent),
 
-    /// Initialise from a fresh device (e.g. during mkfs).
-    /// TODO: mark everything free except reserved regions (superblock, etc.)
+    // ----------------------------------------------------------------
+    // Initialisation
+    // ----------------------------------------------------------------
+
+    /// Initialise a fresh SpaceManager for a newly formatted device.
+    /// Registers a single free extent covering [start_block, start_block + block_count).
+    ///
+    /// TODO: mark reserved regions (superblock, SM blocks) as already used.
     pub fn initFresh(
-        allocator: std.mem.Allocator,
-        device: *BlockDevice,
+        allocator:   std.mem.Allocator,
+        device:      *BlockDevice,
         start_block: u64,
         block_count: u64,
     ) !SpaceManager {
@@ -51,65 +85,64 @@ pub const SpaceManager = struct {
         return SpaceManager{
             .device = device,
             .free_list = .{
-                .items = slice[0..1],   // slice of length 1
+                .items    = slice[0..1],
                 .capacity = 1,
             },
         };
     }
 
-    /// Load existing space metadata from disk (e.g. during mount).
-    /// TODO: real on-disk metadata format
-
+    /// Load SpaceManager state from disk (e.g. during mount).
+    /// Reads the SmHeader from `start_block`, then loads the Extent array
+    /// from the following block(s).
+    ///
+    /// TODO: real multi-block on-disk metadata format.
     pub fn initFromDisk(
-        allocator: std.mem.Allocator,
-        device: *BlockDevice,
+        allocator:   std.mem.Allocator,
+        device:      *BlockDevice,
         start_block: u64,
     ) !SpaceManager {
-        // 1. Prepare a sector-sized, 8-byte aligned buffer
+        // 1. Read the first sector into an aligned buffer and extract the header
         var sector_buf: [512]u8 align(@alignOf(SmHeader)) = undefined;
-
-        // 2. Read the full first sector (avoids Index Out of Bounds)
         try device.readBlocks(device.ctx, start_block, &sector_buf);
-
-        // 3. Extract the header safely
         const header = @as(*const SmHeader, @ptrCast(&sector_buf)).*;
 
-        // 4. The Gatekeeper: Ensure the drive stays quiet for the rest of the task
-        port.outb(0x3F6, 0x02);
+        if (header.magic != SM_MAGIC) return error.BadSpaceManagerMagic;
 
-        if (header.magic != SM_MAGIC)
-            return error.BadSpaceManagerMagic;
-
-        // 5. Allocate memory for the actual data
+        // 2. Allocate the extent slice
         const slice = try allocator.alloc(Extent, header.free_extent_count);
         errdefer allocator.free(slice);
 
-        // 6. Calculate how many full blocks we need to read the extents
-        const total_bytes = header.free_extent_count * @sizeOf(Extent);
+        // 3. Calculate how many full blocks cover all extents
+        const total_bytes   = header.free_extent_count * @sizeOf(Extent);
         const blocks_to_read = (total_bytes + device.block_size - 1) / device.block_size;
-        const read_size = blocks_to_read * device.block_size;
+        const read_size     = blocks_to_read * device.block_size;
 
-        // 7. Temporary aligned buffer for the data read
+        // 4. Read extent data from the block immediately following the header
         var temp_buf = try allocator.alloc(u8, read_size);
         defer allocator.free(temp_buf);
-
-        // Read the data starting at the next block
         try device.readBlocks(device.ctx, start_block + 1, temp_buf);
 
-        // 8. Copy valid data into the final slice
+        // 5. Copy valid extent bytes into the final slice
         @memcpy(std.mem.sliceAsBytes(slice), temp_buf[0..total_bytes]);
 
         return SpaceManager{
             .device = device,
             .free_list = .{
-                .items = slice,
+                .items    = slice,
                 .capacity = header.free_extent_count,
             },
         };
     }
 
-    /// Allocate an extent with at least `min_blocks` blocks.
-    /// TODO: better allocation strategy (best-fit, extent merging)
+    // ----------------------------------------------------------------
+    // Allocation and freeing
+    // ----------------------------------------------------------------
+
+    /// Allocate an extent of exactly `min_blocks` blocks (first-fit).
+    /// Shrinks the matched free extent in place; removes it if exhausted.
+    /// Returns the allocated Extent.
+    ///
+    /// TODO: better strategy (best-fit, extent merging, coalescing).
     pub fn allocate(self: *SpaceManager, min_blocks: u64) !Extent {
         for (self.free_list.items, 0..) |*ext, i| {
             if (ext.block_count >= min_blocks) {
@@ -118,11 +151,9 @@ pub const SpaceManager = struct {
                     .block_count = min_blocks,
                 };
 
-                // Shrink the free extent
                 ext.start_block += min_blocks;
                 ext.block_count -= min_blocks;
 
-                // If it becomes empty, remove it
                 if (ext.block_count == 0) {
                     _ = self.free_list.swapRemove(i);
                 }
@@ -134,11 +165,27 @@ pub const SpaceManager = struct {
         return error.OutOfSpace;
     }
 
-    /// Write space-manager metadata to disk.
-    /// TODO: support multi-block metadata
+    /// Return a previously allocated extent to the free list.
+    /// The allocator may be used if the free_list needs to grow its backing store.
+    ///
+    /// TODO: coalesce adjacent free extents to reduce fragmentation.
+    pub fn free(self: *SpaceManager, allocator: std.mem.Allocator, extent: Extent) !void {
+        if (extent.block_count == 0) return;
+        try self.free_list.append(allocator, extent);
+    }
+
+    // ----------------------------------------------------------------
+    // Persistence
+    // ----------------------------------------------------------------
+
+    /// Serialise SpaceManager state to disk.
+    ///   Block sm_start_block + 0  → SmHeader
+    ///   Block sm_start_block + 1  → packed Extent array
+    ///
+    /// TODO: support extent lists that span more than one data block.
     pub fn flushToDisk(
-        self: *SpaceManager,
-        allocator: std.mem.Allocator,
+        self:        *SpaceManager,
+        allocator:   std.mem.Allocator,
         start_block: u64,
         block_count: u64,
     ) !void {
@@ -147,17 +194,16 @@ pub const SpaceManager = struct {
 
         const blkdev = self.device;
 
-        // Block 0 of SM region = header
+        // Write the header to the first SM block
         var header = SmHeader{
-            .magic = SM_MAGIC,
+            .magic             = SM_MAGIC,
             .free_extent_count = @as(u32, @intCast(self.free_list.items.len)),
-            .reserved = [_]u8{0} ** 52,
+            .reserved          = [_]u8{0} ** 52,
         };
-
         try writeBlockStruct(blkdev, start_block, &header, @sizeOf(SmHeader));
 
-        // Next blocks = extents
-        var buf: [4096]u8 = undefined; // TODO: use device.block_size
+        // Pack all extents into a buffer and write to the following block
+        var buf: [4096]u8 = undefined;  // TODO: derive from device.block_size
         var offset: usize = 0;
 
         for (self.free_list.items) |ext| {
@@ -169,53 +215,39 @@ pub const SpaceManager = struct {
         try blkdev.writeBlocks(blkdev.ctx, start_block + 1, buf[0..]);
     }
 
-    /// Free a previously allocated extent.
-    pub fn free(self: *SpaceManager, allocator: std.mem.Allocator, extent: Extent) !void {
-        if (extent.block_count == 0) return;
+    // ----------------------------------------------------------------
+    // Optional / future operations
+    // ----------------------------------------------------------------
 
-        // For now, we just append the freed extent to our list.
-        // We use the 'allocator' because the free_list might need to grow
-        // its capacity to store the new extent.
-        try self.free_list.append(allocator, extent);
-
-        // Optional: In the future, you could call a sort/merge function here
-        // to keep the free_list from getting too fragmented.
-    }
-
-    /// Optional: try to grow an extent in place.
-    /// TODO: check if next free extent is adjacent
+    /// Attempt to grow an existing extent in place by `extra_blocks`.
+    /// Returns the grown Extent, or null if the adjacent space is not free.
+    ///
+    /// TODO: check whether the next free extent is adjacent.
     pub fn tryGrow(
-        self: *SpaceManager,
-        extent: Extent,
+        self:         *SpaceManager,
+        extent:       Extent,
         extra_blocks: u64,
     ) SpaceManagerError!?Extent {
         _ = self;
         _ = extent;
         _ = extra_blocks;
-        // TODO: implement growing an extent
         return null;
     }
 
-    /// Optional: query total free space (for stats/debug).
-    /// TODO: sum free_list items
+    /// Return the total number of free blocks across all extents.
+    ///
+    /// TODO: sum free_list items.
     pub fn totalFreeBlocks(self: *SpaceManager) SpaceManagerError!u64 {
         _ = self;
-        // TODO: compute total free blocks
         return 0;
     }
 };
 
-fn readBlockStruct(device: *BlockDevice, lba: u64, ptr: *anyopaque, size: usize) !void {
-    var buf: [512]u8 = undefined;
-    if (size > buf.len or size > device.block_size)
-        return error.StructTooLarge;
+// ----------------------------------------------------------------
+// File-private helpers
+// ----------------------------------------------------------------
 
-    try device.readBlocks(device.ctx, lba, buf[0..size]);
-
-    const dst = @as([*]u8, @ptrCast(ptr))[0..size];
-    _ = memory.memcpy(dst.ptr, buf[0..size].ptr, size);
-}
-
+/// Serialise a struct into a zeroed 512-byte buffer and write it to `lba`.
 fn writeBlockStruct(device: *BlockDevice, lba: u64, ptr: *const anyopaque, size: usize) !void {
     var buf: [512]u8 = undefined;
     @memset(buf[0..], 0);
@@ -226,6 +258,8 @@ fn writeBlockStruct(device: *BlockDevice, lba: u64, ptr: *const anyopaque, size:
     try device.writeBlocks(device.ctx, lba, buf[0..device.block_size]);
 }
 
+/// Halt the CPU and display a debug message.
+/// Intended as a kernel-level breakpoint for development only.
 fn breakpoint(msg: []const u8) void {
     vga.writeString(msg, 0, 0);
     while (true) asm volatile ("hlt");

@@ -1,26 +1,34 @@
 // src/kernel/E820.zig
 //
-// This module provides read‑only access to the E820 memory map
-// after it has been copied into kernel‑owned memory by E820Store.zig.
+// Read‑only access to the kernel‑owned E820 memory map.
+//
+// E820Store.zig copies the bootloader’s E820 table into safe,
+// kernel‑owned memory. This module simply holds the address/count
+// of that copied table and provides indexed access.
 //
 // Responsibilities:
-//   • Hold the address + count of the copied E820 table
-//   • Provide safe indexed access to entries
+//   • Store pointer + count of copied E820 table
+//   • Provide safe, bounds‑checked access to entries
 //
-// This module does NOT copy or modify the table — it only reads it.
+// This module does NOT copy or modify the table.
 
 pub const E820Entry = extern struct {
-    base: u64,        // physical base address
-    length: u64,      // length in bytes
-    entry_type: u32,  // 1 = usable RAM, others = reserved/ACPI/etc.
-    acpi: u32,        // extended attributes (usually zero)
+    base:       u64, // physical base address
+    length:     u64, // length in bytes
+    entry_type: u32, // 1 = usable RAM, others = reserved/ACPI/etc.
+    acpi:       u32, // extended attributes (usually zero)
 };
 
-// Pointer to the kernel-owned E820 table (set by E820Store.init()).
-var table_addr: usize = 0;
+// -----------------------------------------------------------------------------
+//  INTERNAL STATE (set once by E820Store.init())
+// -----------------------------------------------------------------------------
 
-// Number of valid entries in the table.
-var table_count: usize = 0;
+var table_addr: usize = 0; // physical address of first entry
+var table_count: usize = 0; // number of valid entries
+
+// -----------------------------------------------------------------------------
+//  PUBLIC API
+// -----------------------------------------------------------------------------
 
 /// Set the address and count of the safe E820 table.
 /// Called once during early boot by E820Store.init().
@@ -42,6 +50,6 @@ pub fn getEntry(index: usize) ?E820Entry {
     if (index >= table_count) return null;
 
     const addr = table_addr + index * @sizeOf(E820Entry);
-    const ptr = @as(*const E820Entry, @ptrFromInt(addr));
+    const ptr  = @as(*const E820Entry, @ptrFromInt(addr));
     return ptr.*;
 }

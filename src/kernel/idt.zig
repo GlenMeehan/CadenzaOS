@@ -1,49 +1,55 @@
 // src/kernel/idt.zig
 //
-// Interrupt Descriptor Table (IDT) setup and basic exception handling
-// for x86_64 long mode.
+// Interrupt Descriptor Table (IDT) setup for x86_64 long mode.
 //
 // Responsibilities:
 //   • Define IDT entry + IDTR structures
-//   • Build a 256-entry IDT
-//   • Install exception handlers for common faults
-//   • Provide a common Zig-level exception handler
+//   • Build a 256‑entry IDT
+//   • Install exception handlers for common CPU faults
+//   • Provide a Zig‑level exception handler
 //
-// This is an early, simple implementation: no IRQs, no IST, no user mode.
-
-// src/kernel/idt.zig
-//
-// Interrupt Descriptor Table (IDT) setup and basic exception handling
-// for x86_64 long mode.
+// Notes:
+//   • No IST, no user mode, no IRQs here (IRQs handled elsewhere)
+//   • Assembly stubs push (num, error_code) in a uniform format
 
 const vga = @import("vga.zig");
 const conv = @import("convert.zig");
+
 extern fn load_idt(ptr: *const IDTR) void;
 
+// -----------------------------------------------------------------------------
+//  IDT ENTRY STRUCTURES
+// -----------------------------------------------------------------------------
+
 const IDTEntry = packed struct {
-    offset_low: u16,
-    selector: u16,
-    ist: u8,
-    flags: u8,
-    offset_mid: u16,
+    offset_low:  u16,
+    selector:    u16,
+    ist:         u8,
+    flags:       u8,
+    offset_mid:  u16,
     offset_high: u32,
-    reserved: u32 = 0,
+    reserved:    u32 = 0,
 };
 
 const IDTR = packed struct {
     limit: u16,
-    base: u64,
+    base:  u64,
 };
 
+// 256‑entry IDT, aligned for CPU requirements
 var idt: [256]IDTEntry align(16) = [_]IDTEntry{.{
     .offset_low = 0,
-    .selector = 0,
-    .ist = 0,
-    .flags = 0,
+    .selector   = 0,
+    .ist        = 0,
+    .flags      = 0,
     .offset_mid = 0,
     .offset_high = 0,
-    .reserved = 0,
+    .reserved   = 0,
 }} ** 256;
+
+// -----------------------------------------------------------------------------
+//  HUMAN‑READABLE EXCEPTION NAMES
+// -----------------------------------------------------------------------------
 
 const exception_names = [_][]const u8{
     "Division By Zero",                // 0
@@ -70,22 +76,31 @@ const exception_names = [_][]const u8{
     "Control Protection Exception",    // 21
 };
 
+// -----------------------------------------------------------------------------
+//  IDT ENTRY BUILDER
+// -----------------------------------------------------------------------------
+
 fn setIDTEntry(index: u8, handler: u64, selector: u16, flags: u8) void {
     idt[index] = IDTEntry{
-        .offset_low = @truncate(handler & 0xFFFF),
-        .selector = selector,
-        .ist = 0,
-        .flags = flags,
-        .offset_mid = @truncate((handler >> 16) & 0xFFFF),
+        .offset_low  = @truncate(handler & 0xFFFF),
+        .selector    = selector,
+        .ist         = 0,
+        .flags       = flags,
+        .offset_mid  = @truncate((handler >> 16) & 0xFFFF),
         .offset_high = @truncate((handler >> 32) & 0xFFFFFFFF),
-        .reserved = 0,
+        .reserved    = 0,
     };
 }
 
-pub fn init() void {
-    const cs_selector: u16 = 0x08; // 64-bit kernel code segment
-    const flags: u8 = 0x8E;        // present, ring 0, 64-bit interrupt gate
+// -----------------------------------------------------------------------------
+//  PUBLIC INITIALIZATION
+// -----------------------------------------------------------------------------
 
+pub fn init() void {
+    const cs_selector: u16 = 0x08; // kernel code segment
+    const flags: u8 = 0x8E;        // present, ring 0, interrupt gate
+
+    // Install exception handlers
     setIDTEntry(0,  @intFromPtr(&exception0_asm),  cs_selector, flags);
     setIDTEntry(1,  @intFromPtr(&exception1_asm),  cs_selector, flags);
     setIDTEntry(2,  @intFromPtr(&exception2_asm),  cs_selector, flags);
@@ -100,12 +115,15 @@ pub fn init() void {
 
     const idtr = IDTR{
         .limit = @sizeOf(@TypeOf(idt)) - 1,
-        .base = @intFromPtr(&idt),
+        .base  = @intFromPtr(&idt),
     };
 
-    // No more inline asm! Just call the function.
     load_idt(&idtr);
 }
+
+// -----------------------------------------------------------------------------
+//  ZIG‑LEVEL EXCEPTION HANDLER
+// -----------------------------------------------------------------------------
 
 fn exceptionHandler(num: u64, error_code: u64) noreturn {
     vga.clearScreen(15, 4);
@@ -127,104 +145,25 @@ fn exceptionHandler(num: u64, error_code: u64) noreturn {
     }
 }
 
-// ------------------------------------------------------------
-// Assembly stubs
-// ------------------------------------------------------------
-//
-// Convention we enforce at exceptionCommonAsm entry:
-//
-//   [RSP + 0] = exception number
-//   [RSP + 8] = error code (real or dummy)
-//
-// For exceptions without a CPU-pushed error code (0–7), we push
-// a dummy error code ourselves. For those with a CPU error code
-// (8, 13, 14), we rely on the CPU’s push and only add the number.
-// ------------------------------------------------------------
+// -----------------------------------------------------------------------------
+//  EXCEPTION STUBS (ASM)
+// -----------------------------------------------------------------------------
 
-//comptime {
-    //asm (
-        //\\.global exception0_asm
-        //\\exception0_asm:
-        //\\  push $0          # dummy error code
-        //\\  push $0          # exception number
-        //\\  jmp exceptionCommonAsm
-        //\\
-        //\\.global exception1_asm
-        //\\exception1_asm:
-        //\\  push $0
-        //\\  push $1
-        //\\  jmp exceptionCommonAsm
-        //\\
-        //\\.global exception2_asm
-        //\\exception2_asm:
-        //\\  push $0
-        //\\  push $2
-        //\\  jmp exceptionCommonAsm
-        //\\
-        //\\.global exception3_asm
-        //\\exception3_asm:
-        //\\  push $0
-        //\\  push $3
-        //\\  jmp exceptionCommonAsm
-        //\\
-        //\\.global exception4_asm
-        //\\exception4_asm:
-        //\\  push $0
-        //\\  push $4
-        //\\  jmp exceptionCommonAsm
-        //\\
-        //\\.global exception5_asm
-        //\\exception5_asm:
-        //\\  push $0
-        //\\  push $5
-        //\\  jmp exceptionCommonAsm
-        //\\
-        //\\.global exception6_asm
-        //\\exception6_asm:
-        //\\  push $0
-        //\\  push $6
-        //\\  jmp exceptionCommonAsm
-        //\\
-        //\\.global exception7_asm
-        //\\exception7_asm:
-        //\\  push $0
-        //\\  push $7
-        //\\  jmp exceptionCommonAsm
-        //\\
-        //\\.global exception8_asm
-        //\\exception8_asm:
-        //\\  push $8          # exception number (CPU already pushed error code)
-    //\\  jmp exceptionCommonAsm
-    //\\
-    //\\.global exception13_asm
-    //\\exception13_asm:
-    //\\  push $13         # exception number (CPU already pushed error code)
-    //\\  jmp exceptionCommonAsm
-    //\\
-    //\\.global exception14_asm
-    //\\exception14_asm:
-    //\\  push $14         # exception number (CPU already pushed error code)
-    //\\  jmp exceptionCommonAsm
-    //\\
-    //\\.global exceptionCommonAsm
-    //\\exceptionCommonAsm:
-    //\\  mov %rsp, %rdi   # pass stack pointer as first argument (SysV: rdi)
-    //\\  call exceptionHandlerWrapper
-    //\\
-    //);
-//}
-
-extern fn exception0_asm() void;
-extern fn exception1_asm() void;
-extern fn exception2_asm() void;
-extern fn exception3_asm() void;
-extern fn exception4_asm() void;
-extern fn exception5_asm() void;
-extern fn exception6_asm() void;
-extern fn exception7_asm() void;
-extern fn exception8_asm() void;
+extern fn exception0_asm()  void;
+extern fn exception1_asm()  void;
+extern fn exception2_asm()  void;
+extern fn exception3_asm()  void;
+extern fn exception4_asm()  void;
+extern fn exception5_asm()  void;
+extern fn exception6_asm()  void;
+extern fn exception7_asm()  void;
+extern fn exception8_asm()  void;
 extern fn exception13_asm() void;
 extern fn exception14_asm() void;
+
+// -----------------------------------------------------------------------------
+//  WRAPPER — CALLED BY ASM STUBS
+// -----------------------------------------------------------------------------
 
 pub export fn exceptionHandlerWrapper(stack_ptr: u64) noreturn {
     const num_ptr = @as(*const u64, @ptrFromInt(stack_ptr + 0));
@@ -232,9 +171,13 @@ pub export fn exceptionHandlerWrapper(stack_ptr: u64) noreturn {
     exceptionHandler(num_ptr.*, err_ptr.*);
 }
 
+// -----------------------------------------------------------------------------
+//  PUBLIC GATE SETTERS
+// -----------------------------------------------------------------------------
+
 pub fn setGate(vector: u8, handler_addr: u64) void {
-    const cs_selector: u16 = 0x18; // 64-bit kernel code segment
-    const flags: u8 = 0x8E;        // present, ring 0, 64-bit interrupt gate
+    const cs_selector: u16 = 0x18; // kernel code segment (GDT index 3)
+    const flags: u8 = 0x8E;        // present, ring 0, interrupt gate
     setIDTEntry(vector, handler_addr, cs_selector, flags);
 }
 

@@ -2,7 +2,8 @@
 set -e
 
 # --- Configuration ---
-ZIG="/home/glen/zig/zig-0.16-dev/zig"
+#ZIG="/home/glen/zig/zig-0.16-dev/zig"
+ZIG="/home/glen/zig/stable-0.16.0/zig"
 ROOT=$(dirname "$0")
 SRC="$ROOT/src"
 BUILD="$ROOT/build"
@@ -39,10 +40,11 @@ $ZIG build-obj "$SRC/kernel/kernel.zig" \
     -fno-stack-protector -freference-trace=12 -femit-bin="$BUILD/kernel.o"
 
 nasm -f elf64 "$SRC/kernel/interrupts/irq_stubs.asm" -o "$BUILD/irq_stubs.o"
+as --64 "$SRC/kernel/arch_utils.s" -o "$BUILD/arch_util.o"
 
 echo "[3/6] Linking..."
 ld -m elf_x86_64 -z max-page-size=0x1000 -T "$ROOT/linker.ld" -o "$BUILD/kernel.elf" \
-    "$BUILD/kernel.o" "$BUILD/irq_stubs.o"
+    "$BUILD/kernel.o" "$BUILD/irq_stubs.o" "$BUILD/arch_util.o"
 
 ENTRY_POINT=$(readelf -h "$BUILD/kernel.elf" | grep "Entry point" | awk '{print $4}')
 objcopy -O binary "$BUILD/kernel.elf" "$BUILD/kernel.bin"

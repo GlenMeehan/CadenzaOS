@@ -3,26 +3,34 @@
 // Early debugging helpers for inspecting the raw E820 table
 // directly from its physical location (0x0009_0000).
 //
-// NOTE:
-//   This bypasses E820Store and reads memory directly from BIOS‑provided
-//   physical RAM. It is useful only for very early debugging and should
-//   not be used in production code.
+// WARNING:
+//   • This bypasses E820Store and reads BIOS-provided memory directly.
+//   • Only valid during very early boot on your specific bootloader.
+//   • Not portable, not safe, not for production.
 //
-//   Modern code should use:
-//       E820Store.init()
-//       e820.getEntry()
-//   instead of reading raw memory.
+// Modern code should use:
+//     E820Store.init()
+//     e820.getEntry()
+// instead of reading raw memory.
 
-const vga = @import("vga.zig");
+const vga  = @import("vga.zig");
 const e820 = @import("E820.zig");
 const conv = @import("convert.zig");
 
-/// Physical address where BIOS places the E820 table.
-/// This is *not* guaranteed on all systems — only valid for your bootloader.
+// -----------------------------------------------------------------------------
+//  RAW MEMORY CONSTANTS
+// -----------------------------------------------------------------------------
+
+/// Physical address where your bootloader places the E820 table.
+/// Not guaranteed on real hardware — only valid for your environment.
 const PHYS_E820: usize = 0x0009_0000;
 
 /// Size of each E820 entry in bytes (base + length + type + acpi)
 const ENTRY_SIZE: usize = 24;
+
+// -----------------------------------------------------------------------------
+//  RAW MEMORY ACCESS HELPERS
+// -----------------------------------------------------------------------------
 
 /// Compute the physical address of a field inside an E820 entry.
 fn addr(entry: usize, offset: usize) usize {
@@ -39,8 +47,12 @@ fn readU32(a: usize) u32 {
     return @as(*volatile u32, @ptrFromInt(a)).*;
 }
 
+// -----------------------------------------------------------------------------
+//  DEBUG DUMP
+// -----------------------------------------------------------------------------
+
 /// Dump the first E820 entry directly from physical memory.
-/// This is a legacy debugging helper.
+/// Legacy debugging helper — use only during bring‑up.
 pub fn dumpFirstEntries() void {
     const base0 = readU64(addr(0, 0));
     const len0  = readU64(addr(0, 8));
@@ -59,6 +71,10 @@ pub fn dumpFirstEntries() void {
     var bufd: [32]u8 = undefined;
     vga.writeStringAt(10, 44, conv.toHex(u32, acpi0, bufd[0..]), 15, 0);
 }
+
+// -----------------------------------------------------------------------------
+//  PAUSE / BREAKPOINT
+// -----------------------------------------------------------------------------
 
 /// Halt the CPU forever — useful for breakpoints or debugging pauses.
 pub fn pause() noreturn {

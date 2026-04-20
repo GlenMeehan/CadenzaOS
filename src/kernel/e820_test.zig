@@ -1,14 +1,23 @@
 // src/kernel/e820_test.zig
 //
-// Small diagnostic helpers for inspecting the E820 memory map
-// and verifying iterator behaviour. These are intended for
-// early debugging only and should not be used in production code.
+// Diagnostic helpers for inspecting the E820 memory map.
+// These utilities are intended for early debugging only and
+// should not be used in production code.
+//
+// Provides:
+//   • printEntry()          — pretty‑print a single E820 entry
+//   • test1/test2/test3     — simple iterator sanity checks
+//   • testIteratorState()   — inspect iterator internals
 
 const e820 = @import("E820.zig");
-const vga = @import("vga.zig");
+const vga  = @import("vga.zig");
 const conv = @import("convert.zig");
 
 const E820Entry = e820.E820Entry;
+
+// -----------------------------------------------------------------------------
+//  PRINTING HELPERS
+// -----------------------------------------------------------------------------
 
 /// Print a single E820 entry with a prefix label.
 /// Useful for quick debugging.
@@ -28,6 +37,10 @@ fn printEntry(prefix: []const u8, entry: E820Entry) void {
 
     vga.writeString("\n", 15, 4);
 }
+
+// -----------------------------------------------------------------------------
+//  SIMPLE TESTS
+// -----------------------------------------------------------------------------
 
 /// Test 1 — print the first E820 entry
 pub fn test1() void {
@@ -50,8 +63,12 @@ pub fn test3() void {
     printEntry("test3:", first);
 }
 
+// -----------------------------------------------------------------------------
+//  ITERATOR INTERNAL STATE TEST
+// -----------------------------------------------------------------------------
+
 /// Inspect iterator internal state before and after advancing.
-/// Useful for verifying that the iterator implementation behaves correctly.
+/// Useful for verifying iterator correctness.
 pub fn testIteratorState(label: []const u8) void {
     var it = e820.iterate();
     var buf: [32]u8 = undefined;

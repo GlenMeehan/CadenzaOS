@@ -1,4 +1,9 @@
 // src/kernel/input/key_event.zig
+//
+// Represents a keyboard event delivered by the input subsystem.
+// A key event is either:
+//   • a printable ASCII character (char)
+//   • a non‑printable special key (special)
 
 pub const KeyEvent = union(enum) {
     char: u8,

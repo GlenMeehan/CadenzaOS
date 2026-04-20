@@ -1,4 +1,30 @@
 ; src/kernel/interrupts/irq_stubs.asm
+;
+; IRQ and exception stubs for x86_64 long mode.
+; Provides:
+;   • irq0_stub, irq1_stub, irq12_stub
+;   • exception0_asm ... exception14_asm
+;   • exception_common (calls Zig wrapper)
+;
+; NOTE:
+;   load_idt is NOT defined here — it lives in arch_util.s.
+extern load_idt
+
+[BITS 64]
+
+; ---------------------------------------------------------------------------
+;  EXTERNAL SYMBOLS
+; ---------------------------------------------------------------------------
+
+extern exceptionHandlerWrapper
+
+extern irq0_handler
+extern irq1_handler
+extern irq12_handler
+
+global irq0_stub
+global irq1_stub
+global irq12_stub
 
 global exception0_asm
 global exception1_asm
@@ -12,20 +38,13 @@ global exception8_asm
 global exception13_asm
 global exception14_asm
 
-extern exceptionHandlerWrapper
+; ---------------------------------------------------------------------------
+;  REGISTER SAVE/RESTORE MACROS
+; ---------------------------------------------------------------------------
 
-global irq0_stub
-extern irq0_handler
-global irq1_stub
-extern irq1_handler
-global irq12_stub
-extern irq12_handler
-
-[BITS 64]
-
-irq0_stub:
+%macro PUSH_REGS 0
     push rbp
-    mov rbp, rsp
+    mov  rbp, rsp
 
     push rax
     push rcx
@@ -37,9 +56,9 @@ irq0_stub:
     push r9
     push r10
     push r11
+%endmacro
 
-    call irq0_handler
-
+%macro POP_REGS 0
     pop r11
     pop r10
     pop r9
@@ -51,135 +70,99 @@ irq0_stub:
     pop rcx
     pop rax
     pop rbp
+%endmacro
+
+; ---------------------------------------------------------------------------
+;  IRQ STUBS
+; ---------------------------------------------------------------------------
+
+irq0_stub:
+    PUSH_REGS
+    call irq0_handler
+    POP_REGS
     iretq
 
 irq1_stub:
-    push rbp
-    mov rbp, rsp
-
-    push rax
-    push rcx
-    push rdx
-    push rbx
-    push rsi
-    push rdi
-    push r8
-    push r9
-    push r10
-    push r11
-
+    PUSH_REGS
     call irq1_handler
-
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rbx
-    pop rdx
-    pop rcx
-    pop rax
-    pop rbp
+    POP_REGS
     iretq
 
 irq12_stub:
-    push rbp
-    mov rbp, rsp
-
-    push rax
-    push rcx
-    push rdx
-    push rbx
-    push rsi
-    push rdi
-    push r8
-    push r9
-    push r10
-    push r11
-
+    PUSH_REGS
     call irq12_handler
-
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rbx
-    pop rdx
-    pop rcx
-    pop rax
-    pop rbp
+    POP_REGS
     iretq
 
-    global load_idt
-
-    ; Add this implementation to the bottom
-    load_idt:
-        lidt [rdi]    ; In x86_64 SysV, the first argument is in RDI
-        ret
+; ---------------------------------------------------------------------------
+;  EXCEPTION STUBS
+; ---------------------------------------------------------------------------
+; For exceptions WITHOUT CPU-pushed error code:
+;     push 0          ; dummy error code
+;     push <num>      ; exception number
+;
+; For exceptions WITH CPU-pushed error code (8, 13, 14):
+;     CPU pushes error code
+;     we push only the exception number
 
 exception0_asm:
-    push qword 0      ; Dummy error code
-    push qword 0      ; Exception number 0
+    push qword 0
+    push qword 0
     jmp exception_common
 
 exception1_asm:
-    push qword 0      ; Dummy error code
-    push qword 1      ; Exception number 1
+    push qword 0
+    push qword 1
     jmp exception_common
 
 exception2_asm:
-    push qword 0      ; Dummy error code
-    push qword 2      ; Exception number 1
+    push qword 0
+    push qword 2
     jmp exception_common
 
 exception3_asm:
-    push qword 0      ; Dummy error code
-    push qword 3      ; Exception number 1
+    push qword 0
+    push qword 3
     jmp exception_common
 
 exception4_asm:
-    push qword 4      ; Dummy error code
-    push qword 1      ; Exception number 1
+    push qword 0
+    push qword 4
     jmp exception_common
 
 exception5_asm:
-    push qword 0      ; Dummy error code
-    push qword 5      ; Exception number 1
+    push qword 0
+    push qword 5
     jmp exception_common
 
 exception6_asm:
-    push qword 0      ; Dummy error code
-    push qword 6      ; Exception number 1
+    push qword 0
+    push qword 6
     jmp exception_common
 
 exception7_asm:
-    push qword 0      ; Dummy error code
-    push qword 7      ; Exception number 1
+    push qword 0
+    push qword 7
     jmp exception_common
 
 exception8_asm:
-    push qword 0      ; Dummy error code
-    push qword 8      ; Exception number 1
+    ; CPU already pushed error code
+    push qword 8
     jmp exception_common
 
-
-; ... Exceptions 2-7 follow the same pattern ...
-
 exception13_asm:
-    ; CPU ALREADY PUSHED error code here
-    push qword 13     ; Exception number 13
+    ; CPU already pushed error code
+    push qword 13
     jmp exception_common
 
 exception14_asm:
-    ; CPU ALREADY PUSHED error code here
-    push qword 14     ; Exception number 13
+    ; CPU already pushed error code
+    push qword 14
     jmp exception_common
 
-
-; --- The Unified Handler ---
+; ---------------------------------------------------------------------------
+;  UNIFIED EXCEPTION HANDLER
+; ---------------------------------------------------------------------------
 
 exception_common:
     ; Save registers
@@ -193,20 +176,19 @@ exception_common:
     push r10
     push r11
 
-    ; --- ALIGNMENT FIX START ---
-    mov rbp, rsp           ; Save current stack in RBP (need to mark RBP as used)
-    sub rsp, 8             ; Push 8 bytes to ensure 16-byte alignment
-                           ; (We pushed 9 regs + 2 error/num = 11.
-                           ; 11 * 8 = 88. 88 + 8 = 96. 96 is div by 16!)
+    ; --- ALIGNMENT FIX ---
+    mov rbp, rsp
+    sub rsp, 8          ; ensure 16-byte alignment
 
-    mov rdi, rsp           ; Pass aligned stack pointer to Zig
-    add rdi, 8             ; Point RDI to the ACTUAL start of our data
+    mov rdi, rsp
+    add rdi, 8          ; point to (num, error_code)
 
     call exceptionHandlerWrapper
 
-    add rsp, 8             ; Clean up the alignment padding
-    ; --- ALIGNMENT FIX END ---
+    add rsp, 8          ; remove alignment padding
+    ; --- END ALIGNMENT FIX ---
 
+    ; Restore registers
     pop r11
     pop r10
     pop r9
@@ -216,5 +198,6 @@ exception_common:
     pop rdx
     pop rcx
     pop rax
-    add rsp, 16            ; Clean up error code and num
+
+    add rsp, 16         ; pop (error_code, num)
     iretq
