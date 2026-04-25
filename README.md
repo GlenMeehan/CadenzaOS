@@ -1,41 +1,116 @@
 🎹 CadenzaOS
-An operating system built from scratch using the Zig programming language. CadenzaOS focuses on a clean, educational architecture with a custom filesystem and a responsive kernel-level shell.
+An operating system built from scratch using the Zig programming language. CadenzaOS focuses on a clean, educational architecture with a custom filesystem and a responsive, predictive kernel-level shell.
 
-🚀 Current Features
--Monolithic-Kernel Foundation: Written in Zig (Targeting 0.16.0), leveraging its type safety and manual memory management.
--CodaFS (Adaptive Hierarchy): A custom-designed, extent-based filesystem.
--Context-Aware Navigation: Supports a tree-based directory structure with a Current Working Directory (CWD).
--Policy-Aware Superblock: Hardware-level enums (Admin, Dev, Gaming, AI_Guided) that dictate system behavior.
--Write-Through Cache: Uses a 4MB RAM workspace mirrored to physical ATA storage for persistence.
--Intelligent Predictive Shell:
--Contextual Heuristics: The shell now prioritizes commands based on the System Policy (e.g., boosting vitals priority when in Admin mode).
--Markov Chain "Brain": A transition-based heuristic engine that learns command sequences in real-time.
--Ghost-Text Prediction: Responsive VGA rendering with "Switch-over" logic to support long-string inputs without display duplication.
--Persistence: Serializes the transition table to /sys/brain.dat for cross-session learning.
+🚀 Recent Architectural Milestone
+The system has transitioned to a Gateway Architecture. The Shell (UI) is now decoupled from the Kernel (Logic) via a formal System Call Interface, allowing for safer memory boundaries and structured inter-subsystem communication.
 
-🖥️Terminal & I/O:
--Hybrid Rendering: A dual-mode terminal that uses Canvas-style redrawing for short commands (ghost text) and TTY-style streaming for long data entries.
--I/O Telemetry: Real-time monitoring of disk latency using CPU cycle counting (RDTSC).
--VGA Driver: Direct hardware rendering with 80x25 text mode and hardware cursor synchronization.
+🧠 Core Systems
+🎼 The Conductor
+Tempo Monitoring: Real-time analysis of hardware vitals using CPU cycle counting (RDTSC).
 
-📂 Filesystem & System Commands
-ls / cd / mkdir: Standard filesystem navigation.
-edit: One-shot file editor with auto-growth and block-aware append logic.
-cat / rm / stat: File reading, deletion, and metadata/latency inspection.
-policy: View or manually override the system operation mode (Admin, Dev, Gaming, AI).
-version: Displays kernel and predictive shell build information.
-history: View the command history buffer.
+State Machine: Automatically shifts between Optimal, Discordant, and Critical states based on I/O latency.
+
+Gatekeeping: Throttles non-essential background tasks (like AI habit-saving) during high-latency events to preserve system stability.
+
+🏛️ Syscall Gateway
+Subsystem Abstraction: Centralized syscall.zig serves as the single entry point for user-facing commands to request kernel services.
+
+Habit Recording: Transparently routes shell events to the Markov Engine via the RECORD_HABIT gateway.
+
+Security: Implements compile-time bounds checking on enums to prevent unauthorized memory access across the gateway.
+
+🧠 The Composer (Predictive Shell)
+Markov Chain "Brain": A transition-based heuristic engine that learns your command sequences in real-time.
+
+Ghost-Text Prediction: Contextual command suggestions that appear even on empty lines based on session history.
+
+Persistence: Serializes the transition table to /sys/composer.dat for cross-session learning that survives reboots.
+
+📂 CodaFS (Adaptive Filesystem)
+Extent-Based Storage: Efficient block management for file growth and directory handling.
+
+Policy-Aware Superblock: Hardware-level enums (Admin, Dev, Gaming, AI_Guided) dictate the Conductor's behavioral bias.
+
+Write-Through Integrity: Workspace mirroring to physical ATA storage for reliable persistence.
+
+🛠️ Command Suite
+Filesystem: ls, cd, mkdir, touch, edit, cat, del, mv, rename, stat.
+
+System: policy (manual override), vitals (latency telemetry), history, clear, version.
+
+Power: shutdown, reboot.
 
 🏗 Project Structure
-/src/kernel: Core kernel logic and shell implementation.
-/src/kernel/fs: CodaFS implementation, Telemetry hooks, and Space Manager.
-/src/kernel/drivers: Hardware abstraction (VGA, Keyboard, ATA/IDE).
+../Cadenza/
+── build
+│   ├── arch_util.o
+│   ├── boot.bin
+│   ├── deps.txt
+│   ├── disk.img
+│   ├── disktest.img
+│   ├── irq_stubs.o
+│   ├── kernel.bin
+│   ├── kernel.elf
+│   ├── kernel_info.inc
+│   ├── kernel.o
+│   ├── qemu.log
+│   └── stage2.bin
+├── linker.ld
+├── qemu.log
+├── README.md
+├── .README.md.kate-swp
+├── src
+│   ├── boot
+│   │   └── boot.asm
+│   ├── kernel
+│   │   ├── arch_utils.s
+│   │   ├── bitmap.zig
+│   │   ├── boot_info.zig
+│   │   ├── conductor.zig
+│   │   ├── config.zig
+│   │   ├── convert.zig
+│   │   ├── debug.zig
+│   │   ├── drivers
+│   │   │   ├── ata.zig
+│   │   │   └── mouse.zig
+│   │   ├── E820Store.zig
+│   │   ├── e820_test.zig
+│   │   ├── E820.zig
+│   │   ├── frame_allocator.zig
+│   │   ├── fs
+│   │   │   ├── ata_block_device.zig
+│   │   │   ├── block_device.zig
+│   │   │   ├── coda_file.zig
+│   │   │   ├── coda_fs.zig
+│   │   │   ├── coda_sm.zig
+│   │   │   └── ramdisk.zig
+│   │   ├── idt.zig
+│   │   ├── inputs
+│   │   │   ├── keyboard.zig
+│   │   │   └── key_event.zig
+│   │   ├── interrupts
+│   │   │   └── irq_stubs.asm
+│   │   ├── irupts.zig
+│   │   ├── kernel.zig
+│   │   ├── memory.zig
+│   │   ├── page_allocator.zig
+│   │   ├── panic.zig
+│   │   ├── pic.zig
+│   │   ├── port_io.zig
+│   │   ├── shell.zig
+│   │   ├── syscall.zig
+│   │   ├── system.zig
+│   │   ├── terminal.zig
+│   │   ├── tests.zig
+│   │   ├── vga.zig
+│   │   └── vitals.zig
+│   └── stage2
+│       └── stage2.asm
 
-🛠 Build & Environment
-Prerequisites: Zig 0.16.0, NASM, and QEMU (x86_64).
-Instructions: Run chmod +x build.sh and then ./build.sh to compile the kernel, assemble the bootloader, and launch the image in QEMU.
 
 ⏳ Roadmap
-✅ Phase 4 (Complete): Markov Brain & Persistence.
-✅ Phase 5 (Complete): Contextual Prioritization & Hybrid Terminal Rendering.
-⏳ Phase 6: The Sentinel: Implementation of telemetry-driven self-healing logic (IO-to-Policy automation).
+✅ Phase 4: Markov Brain & Persistence.
+
+✅ Phase 5: Contextual Prioritization & Hybrid Terminal Rendering.
+
+🔄 Phase 6 (In-Progress): The Sentinel. Automating the transition from Discordant to Optimal via predictive I/O scheduling.

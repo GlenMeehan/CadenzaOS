@@ -21,23 +21,9 @@ const bp = @import("fs/coda_fs.zig").breakpoint;
 const coda_file = @import("fs/coda_file.zig");
 const ata = @import("drivers/ata.zig");
 const vitals = @import("vitals.zig");
+const conductor = @import("conductor.zig");
+const syscall = @import("syscall.zig");
 
-pub const CommandID = enum(u8) {
-    UNKNOWN = 0,
-    LS      = 1,
-    CD      = 2,
-    MKDIR   = 3,
-    STAT    = 4,
-    CAT     = 5,
-    POLICY  = 6,
-    TOUCH   = 7,
-    EDIT    = 8,
-    VITALS  = 9,
-    DEL     = 10,
-    RENAME  = 11,
-    MOVE    = 12,
-    VERSION = 13,
-};
 
 const DirEntry = coda_file.DirEntry;
 const Directory = coda_file.Directory;
@@ -61,12 +47,8 @@ var g_cwd_name_len: usize = 1; // Start with "/"
 
 var last_latency: u64 = 0;
 
-// Markov "brain" transition table
-const cmd_count = std.enums.values(CommandID).len;
-// 10x10+ table is plenty of room to grow
-pub var transition_table: [cmd_count][cmd_count]u16 = .{.{0} ** cmd_count} ** cmd_count;
 
-var last_command: CommandID = .UNKNOWN;
+var last_command: conf.CommandID = .UNKNOWN;
 
 // -----------------------------------------------------------------------------
 //  COMMAND REGISTRATION
@@ -76,25 +58,25 @@ const Command = struct {
     name: []const u8,
     desc: []const u8,
     func: *const fn([][]const u8) void,
-    id: CommandID = .UNKNOWN,
+    id: conf.CommandID = .UNKNOWN,
     needs_arg: bool = false,
 };
 
 const commands = [_]Command{
     // Utility commands
-    .{ .name = "help",     .desc = "Show this help message",              .func = cmd_help },
-    .{ .name = "keys",     .desc = "Show key and control functions help", .func = cmd_keys },
-    .{ .name = "clear",    .desc = "Clear the screen",                    .func = cmd_clear },
-    .{ .name = "echo",     .desc = "Print arguments",                     .func = cmd_echo },
-    .{ .name = "history",  .desc = "Show command history",                .func = cmd_history },
+    .{ .name = "help",     .desc = "Show this help message",              .func = cmd_help, .id = .UNKNOWN },
+    .{ .name = "keys",     .desc = "Show key and control functions help", .func = cmd_keys, .id = .UNKNOWN },
+    .{ .name = "clear",    .desc = "Clear the screen",                    .func = cmd_clear, .id = .UNKNOWN },
+    .{ .name = "echo",     .desc = "Print arguments",                     .func = cmd_echo, .id = .UNKNOWN },
+    .{ .name = "history",  .desc = "Show command history",                .func = cmd_history, .id = .UNKNOWN },
 
     // System commands
-    .{ .name = "shutdown", .desc = "Power off the machine",               .func = cmd_shutdown },
-    .{ .name = "reboot",   .desc = "Reboot the machine",                  .func = cmd_reboot },
+    .{ .name = "shutdown", .desc = "Power off the machine",               .func = cmd_shutdown, .id = .UNKNOWN },
+    .{ .name = "reboot",   .desc = "Reboot the machine",                  .func = cmd_reboot, .id = .UNKNOWN },
     .{ .name = "vitals",   .desc = "Display vitals",                      .func = cmd_vitals,  .id = .VITALS },
     .{ .name = "version",  .desc = "Display system version information",  .func = cmd_version, .id = .VERSION },
 
-    // Filesystem / brain‑tracked commands
+    // Filesystem / Composer‑tracked commands
     .{ .name = "ls",       .desc = "List root directory",                 .func = cmd_ls,     .id = .LS },
     .{ .name = "touch",    .desc = "Create a file",                       .func = cmd_touch,  .id = .TOUCH,  .needs_arg = true },
     .{ .name = "edit",     .desc = "Write data into file",                .func = cmd_edit,   .id = .EDIT,   .needs_arg = true },
@@ -106,7 +88,8 @@ const commands = [_]Command{
     .{ .name = "cd",       .desc = "Navigate to a folder",                .func = cmd_cd,     .id = .CD,     .needs_arg = true },
     .{ .name = "mv",       .desc = "Move a file",                         .func = cmd_mv,     .id = .MOVE },
 
-    // Policy / brain control
+    //The Conductor
+    // Policy  control
     .{ .name = "policy",   .desc = "View/set system policy",              .func = cmd_policy, .id = .POLICY },
 };
 
@@ -146,7 +129,7 @@ fn parseArgs(line: []const u8) [][]const u8 {
     return parse_tokens[0..count];
 }
 
-fn getCmdId(name: []const u8) CommandID {
+fn getCmdId(name: []const u8) conf.CommandID {
     for (commands) |c| {
         if (mem.eqlNoSimd(u8, c.name, name)) return c.id;
     }
@@ -160,6 +143,12 @@ fn getCmdId(name: []const u8) CommandID {
 pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
     g_fs = fs;
     g_allocator = allocator;
+
+    // --- CONDUCTOR INITIALIZATION ---
+    // Link the Conductor to the live policy now that g_fs is set
+    conductor.init(&g_fs.superblock.policy);
+
+
     g_cwd_lba = fs.superblock.root_dir_extent_start;
     g_cwd_blocks = @intCast(fs.superblock.root_dir_extent_blocks);
 
@@ -167,13 +156,14 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
     g_cwd_name[0] = '/';
     g_cwd_name_len = 1;
 
-    // Load Markov brain and plug predictor into terminal
-    loadBrain();
+    // Load Composer and plug predictor into terminal
+    loadComposer();
     term.setPredictor(shellPredictor);
 
     last_command = .UNKNOWN;
 
     while (true) {
+
         var prompt_buf: [64]u8 = undefined;
         const current_dir = g_cwd_name[0..g_cwd_name_len];
         const prompt = std.fmt.bufPrint(&prompt_buf, "Cadenza {s}> ", .{current_dir}) catch "Cadenza> ";
@@ -199,9 +189,11 @@ fn execute(line: []const u8) void {
     const tokens = parseArgs(line);
     if (tokens.len == 0) return;
 
+    // --- CONDUCTOR: LISTEN ---
+    // Analyze disk vitals before proceeding
+
     const cmd = tokens[0];
     const current_cmd_id = getCmdId(cmd);
-
     var found = false;
 
     // 1. Find and run the command
@@ -213,31 +205,27 @@ fn execute(line: []const u8) void {
         }
     }
 
-    // 2. Update Markov "brain"
+    // 2. Update Composer (The Learning Step)
+    // Inside shell.zig -> execute()
     if (found and current_cmd_id != .UNKNOWN) {
-        const prev_idx = @intFromEnum(last_command);
-        const curr_idx = @intFromEnum(current_cmd_id);
 
-        if (transition_table[prev_idx][curr_idx] < 65535) {
-            transition_table[prev_idx][curr_idx] += 10;
+        // 1. Record the habit via the Gateway
+        _ = syscall.call(.RECORD_HABIT, @intFromEnum(last_command), @intFromEnum(current_cmd_id));
+
+        // 2. Check Tempo via the Gateway
+        const current_tempo = syscall.call(.GET_TEMPO, 0, 0);
+        if (current_tempo == @intFromEnum(conductor.ConductorState.Optimal)) {
+            saveComposer() catch {};
         }
+
         last_command = current_cmd_id;
-
-        saveBrain() catch |err| {
-            vga.writeString("Save Error: ", 4, 0);
-            vga.writeString(@errorName(err), 4, 0);
-            vga.writeString("\n", 4, 0);
-
-            if (g_fs.superblock.policy == .Dev) {
-                vga.writeString("!! Brain Save Failed !!\n", 12, 0);
-            }
-        };
     }
 
-    // 3. Sentinel / policy logic
+    // 3. Dev-Mode Telemetry
+    // This gives the developer a raw look at cycles if things feel slow.
     if (g_fs.superblock.policy == .Dev) {
-        if (last_latency > 10_000_000) {
-            vga.writeString("!! Sentinel: High Disk Latency detected. Policy: Dev !!\n", 14, 0);
+        if (vitals.current_vitals.last_read_latency > 10_000_000) {
+            vga.writeString("!! Conductor: Latency Spike Detected !!\n", 14, 0);
         }
     }
 }
@@ -884,7 +872,7 @@ fn cmd_edit(args: [][]const u8) void {
 }
 
 // -----------------------------------------------------------------------------
-//  POLICY / BRAIN COMMANDS
+//  POLICY / COMPOSER COMMANDS
 // -----------------------------------------------------------------------------
 
 fn cmd_policy(args: [][]const u8) void {
@@ -918,11 +906,11 @@ fn cmd_policy(args: [][]const u8) void {
         return;
     }
 
-    saveBrain() catch {};
+    saveComposer() catch {};
 }
 
 // -----------------------------------------------------------------------------
-//  BRAIN / PREDICTION HELPERS
+//  COMPOSER / PREDICTION HELPERS
 // -----------------------------------------------------------------------------
 
 fn getLbaForBlock(meta: coda_file.FileMeta, block_index: u64) u64 {
@@ -961,7 +949,7 @@ pub fn predictNextCommand() []const u8 {
     var best_weight: u16 = 0;
     var best_id_val: u8 = 0;
 
-    for (transition_table[prev_idx], 0..) |weight, i| {
+    for (conductor.transition_table[prev_idx], 0..) |weight, i| {
         if (weight > best_weight) {
             best_weight = weight;
             best_id_val = @intCast(i);
@@ -970,7 +958,7 @@ pub fn predictNextCommand() []const u8 {
 
     if (best_weight == 0) return "help";
 
-    const best_id = @as(CommandID, @enumFromInt(best_id_val));
+    const best_id = @as(conf.CommandID, @enumFromInt(best_id_val));
 
     for (commands) |c| {
         if (c.id == best_id and c.id != .UNKNOWN) {
@@ -983,60 +971,82 @@ pub fn predictNextCommand() []const u8 {
 
 // Predictor plugged into terminal.zig
 fn shellPredictor(input: []const u8) []const u8 {
-    if (input.len == 0) {
-        const next_id = getHighestTransition(last_command);
-        if (next_id != .UNKNOWN) {
-            return getNameFromId(next_id) orelse "";
-        }
-    }
+    const table_size = conductor.transition_table.len;
+    const prev_idx = @intFromEnum(last_command);
+    if (prev_idx >= table_size) return "";
 
-    const input_len = input.len;
-    if (input_len == 0) {
-        const next_id = getHighestTransition(last_command);
-        if (next_id != .UNKNOWN) {
-            return getNameFromId(next_id) orelse "";
+    // 1. EMPTY INPUT CASE (The "Proactive" suggestion)
+    if (input.len == 0) {
+        var top_score: u16 = 0;
+        var top_idx: usize = 0;
+
+        // Find the most likely transition in the Markov table
+        for (conductor.transition_table[prev_idx], 0..) |score, i| {
+            if (score > top_score) {
+                top_score = score;
+                top_idx = i;
+            }
+        }
+
+        // Only suggest if the habit is established (e.g., 5+ times)
+        if (top_score > 5) {
+            for (commands) |c| {
+                if (@intFromEnum(c.id) == top_idx) {
+                    return c.name;
+                }
+            }
         }
         return "";
     }
 
-    var best_match: []const u8 = "";
-    var highest_weight: u32 = 0;
+    // 2. TYPING CASE (The "Ghost Text" suggestion)
+    const is_admin = (g_fs.superblock.policy == .Admin);
+    var best_score: i32 = -1;
+    var best_match: ?[]const u8 = null;
 
-    for (commands) |cmd| {
-        if (std.mem.startsWith(u8, cmd.name, input)) {
-            const cmd_idx = @intFromEnum(cmd.id);
-            const prev_idx = @intFromEnum(last_command);
+    for (commands) |c| {
+        // PERF: Skip immediately if the first letter doesn't match
+        if (c.name.len <= input.len or c.name[0] != input[0]) continue;
 
-            var weight: u32 = transition_table[prev_idx][cmd_idx];
+        if (std.mem.startsWith(u8, c.name, input)) {
+            const tidx = @intFromEnum(c.id);
+            var score: i32 = 0;
 
-            if (g_fs.superblock.policy == .Admin) {
-                if (cmd.id == .VITALS) {
-                    weight += 20000;
+            if (tidx < table_size) {
+                score = @intCast(conductor.transition_table[prev_idx][tidx]);
+            }
+
+            // Multiply habits to make them beat alphabetical order
+            var effective_score = score * 10;
+
+            // Fast Admin Boost
+            if (is_admin) {
+                if (c.name[0] == 'v' or c.name[0] == 'p') {
+                    if (std.mem.eql(u8, c.name, "vitals") or std.mem.eql(u8, c.name, "policy")) {
+                        effective_score += 1000;
+                    }
                 }
             }
 
-            if (weight >= highest_weight) {
-                highest_weight = weight;
-                best_match = cmd.name;
+            if (effective_score > best_score) {
+                best_score = effective_score;
+                best_match = c.name;
             }
         }
     }
 
-    if (best_match.len >= input_len) {
-        return best_match[input_len..];
-    }
-
+    if (best_match) |bm| return bm[input.len..];
     return "";
 }
 
-fn getHighestTransition(prev: CommandID) CommandID {
+fn getHighestTransition(prev: conf.CommandID) conf.CommandID {
     const prev_idx = @intFromEnum(prev);
-    var best_id: CommandID = .UNKNOWN;
+    var best_id: conf.CommandID = .UNKNOWN;
     var max_val: u16 = 0;
 
     const threshold: u16 = 2;
 
-    for (transition_table[prev_idx], 0..) |weight, i| {
+    for (conductor.transition_table[prev_idx], 0..) |weight, i| {
         if (weight > max_val and weight >= threshold) {
             max_val = weight;
             best_id = @enumFromInt(i);
@@ -1046,14 +1056,14 @@ fn getHighestTransition(prev: CommandID) CommandID {
     return best_id;
 }
 
-fn getNameFromId(id: CommandID) ?[]const u8 {
+fn getNameFromId(id: conf.CommandID) ?[]const u8 {
     for (commands) |cmd| {
         if (cmd.id == id) return cmd.name;
     }
     return null;
 }
 
-fn saveBrain() !void {
+fn saveComposer() !void {
     const root_lba = g_fs.superblock.root_dir_extent_start;
 
     const sys_entry = g_fs.findFile(g_allocator, root_lba, "sys") catch |err| blk: {
@@ -1069,51 +1079,51 @@ fn saveBrain() !void {
 
     const sys_meta_lba = sys_entry.meta_extent.start_block;
 
-    const brain_entry = g_fs.findFile(g_allocator, sys_meta_lba, "brain.dat") catch |err| blk: {
+    const composer_entry = g_fs.findFile(g_allocator, sys_meta_lba, "composer.dat") catch |err| blk: {
         if (err == error.FileNotFound) {
-            try g_fs.createFile(g_allocator, sys_meta_lba, 4, "brain.dat");
-            break :blk try g_fs.findFile(g_allocator, sys_meta_lba, "brain.dat");
+            try g_fs.createFile(g_allocator, sys_meta_lba, 4, "composer.dat");
+            break :blk try g_fs.findFile(g_allocator, sys_meta_lba, "composer.dat");
         }
         return err;
     };
 
-    var brain_meta = try g_fs.readFileMeta(g_allocator, brain_entry.meta_extent.start_block);
-    const data_lba = brain_meta.extents[0].start_block;
+    var composer_meta = try g_fs.readFileMeta(g_allocator, composer_entry.meta_extent.start_block);
+    const data_lba = composer_meta.extents[0].start_block;
 
-    const bytes = std.mem.sliceAsBytes(&transition_table);
+    const bytes = std.mem.sliceAsBytes(&conductor.transition_table);
     try g_fs.device.writeBlocks(g_fs.device.ctx, data_lba, bytes);
 
-    brain_meta.size_bytes = bytes.len;
-    brain_meta.extents[0].block_count = 1;
+    composer_meta.size_bytes = bytes.len;
+    composer_meta.extents[0].block_count = 1;
 
     try g_fs.writeBlockStruct(
-        brain_entry.meta_extent.start_block,
-        &brain_meta,
-        @sizeOf(@TypeOf(brain_meta)),
+        composer_entry.meta_extent.start_block,
+        &composer_meta,
+        @sizeOf(@TypeOf(composer_meta)),
     );
 }
 
-fn loadBrain() void {
+fn loadComposer() void {
     const path_res = g_fs.resolvePath(
         g_allocator,
         g_fs.superblock.root_dir_extent_start,
-        "/sys/brain.dat",
+        "/sys/composer.dat",
     ) catch return;
 
     const meta = g_fs.readFileMeta(g_allocator, path_res.lba) catch return;
     const data_lba = meta.extents[0].start_block;
 
-    const bytes = std.mem.sliceAsBytes(&transition_table);
+    const bytes = std.mem.sliceAsBytes(&conductor.transition_table);
 
     g_fs.device.readBlocks(g_fs.device.ctx, data_lba, bytes) catch return;
 }
 
 /// Increases the probability weight between two commands.
-fn rewardTransition(prev: CommandID, curr: CommandID) void {
+fn rewardTransition(prev: conf.CommandID, curr: conf.CommandID) void {
     const p = @intFromEnum(prev);
     const c = @intFromEnum(curr);
 
-    if (transition_table[p][c] < 255) {
-        transition_table[p][c] += 1;
+    if (conductor.transition_table[p][c] < 255) {
+        conductor.transition_table[p][c] += 1;
     }
 }

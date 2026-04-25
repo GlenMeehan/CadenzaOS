@@ -20,8 +20,30 @@ pub const Vitals = struct {
 
     /// Latency of the most recent disk read operation (in cycles or microseconds).
     last_read_latency: u64 = 0,
+
+
+    total_cycles: u64 = 0,
 };
 
 /// Global instance of kernel vitals.
 /// Subsystems update this directly.
-pub var current_vitals = Vitals{};
+pub var current_vitals = Vitals{
+    .last_read_latency = 0,
+    .total_cycles = 0,
+};
+
+/// Refreshes the total CPU cycle count.
+/// Safe to call from anywhere.
+pub fn update() void {
+    var low: u32 = undefined;
+    var high: u32 = undefined;
+
+    // Low-level hardware call
+    asm volatile ("rdtsc"
+    : [low] "={ax}" (low),
+                  [high] "={dx}" (high),
+    );
+
+    // Now this line will work because 'total_cycles' exists above!
+    current_vitals.total_cycles = (@as(u64, high) << 32) | low;
+}

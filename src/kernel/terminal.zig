@@ -62,7 +62,7 @@ var saved_line_len: usize = 0;
 
 pub const PredictorFn = *const fn (input: []const u8) []const u8;
 
-// This is the "slot" where the shell will plug in its brain
+// This is the "slot" where the shell will plug in its the Composer
 var external_predictor: ?PredictorFn = null;
 
 pub fn setPredictor(func: PredictorFn) void {
