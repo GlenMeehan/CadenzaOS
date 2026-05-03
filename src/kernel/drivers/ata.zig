@@ -19,6 +19,8 @@ const std       = @import("std");
 const port      = @import("../port_io.zig");
 const vga       = @import("../vga.zig");
 const BlockDevice = @import("../fs/block_device.zig").BlockDevice;
+const conf = @import("../config.zig");
+
 
 // --------------------------------
 // ATA register ports
@@ -62,13 +64,13 @@ const DeviceError = error{ IoError, OutOfRange };
 pub const AtaDevice = struct {
 
     /// Return a BlockDevice interface backed by this AtaDevice.
-    /// Hard-codes 512-byte sectors and a 20480-sector (10 MiB) disk.
+    /// Hard-codes BLOCK_SIZE-byte sectors and a DISK_SECTOR_COUNT-sector (10 MiB) disk.
     /// Adjust total_blocks to match your actual disk geometry.
     pub fn asBlockDevice(self: *AtaDevice) BlockDevice {
         return BlockDevice{
             .ctx          = self,
-            .block_size   = 512,
-            .total_blocks = 20480,
+            .block_size   = conf.BLOCK_SIZE,
+            .total_blocks = conf.DISK_SECTOR_COUNT,
             .readBlocks   = readBlocks,
             .writeBlocks  = writeBlocks,
         };
@@ -81,9 +83,9 @@ pub const AtaDevice = struct {
     /// It predates the current superblock format and should be updated or
     /// removed before use in production.
     pub fn checkFileSystem(lba: u32) bool {
-        var buffer: [512]u8 align(8) = undefined;
+        var buffer: [conf.BLOCK_SIZE]u8 align(8) = undefined;
         readBlocks(null, lba, &buffer) catch return false;
-        const header = @as(*[512]u8, @ptrCast(@alignCast(&buffer)));
+        const header = @as(*[conf.BLOCK_SIZE]u8, @ptrCast(@alignCast(&buffer)));
         // TODO: replace 0xDEAFBEEF with CODA_MAGIC and use the real Superblock type
         const magic = std.mem.readInt(u64, header[0..8], .little);
         return magic == 0xDEAFBEEF;
@@ -99,7 +101,7 @@ pub const AtaDevice = struct {
     pub fn readBlocks(ctx: ?*anyopaque, lba: u64, buf: []u8) DeviceError!void {
         _ = ctx;
 
-        var sectors_remaining = (buf.len + 511) / 512;
+        var sectors_remaining = (buf.len + conf.BLOCK_SIZE - 1) / conf.BLOCK_SIZE;
         var current_lba       = lba;
         var current_offset: usize = 0;
 
@@ -145,7 +147,7 @@ pub const AtaDevice = struct {
     pub fn writeBlocks(ctx: ?*anyopaque, lba: u64, buf: []const u8) DeviceError!void {
         _ = ctx;
 
-        const total_sectors = @as(u32, @intCast((buf.len + 511) / 512));
+        const total_sectors = @as(u32, @intCast((buf.len + conf.BLOCK_SIZE - 1) / conf.BLOCK_SIZE));
         if (total_sectors == 0) return;
 
         // Disable interrupts on the control register before starting a write sequence
@@ -181,7 +183,7 @@ pub const AtaDevice = struct {
             // 5. Transfer 256 words (512 bytes); pad with zeros if buf is exhausted
             var j: usize = 0;
             while (j < 256) : (j += 1) {
-                const offset = (current_sector * 512) + (j * 2);
+                const offset = (current_sector * conf.BLOCK_SIZE) + (j * 2);
                 const data: u16 = if (offset + 1 < buf.len)
                 @as(u16, buf[offset]) | (@as(u16, buf[offset + 1]) << 8)
                 else if (offset < buf.len)
@@ -212,7 +214,7 @@ pub const AtaDevice = struct {
 /// `start_lba`       — first sector of the partition
 /// `size_in_sectors` — total sector count of the partition
 pub fn initializePartitionTable(start_lba: u32, size_in_sectors: u32) void {
-    var buffer: [512]u8 align(8) = undefined;
+    var buffer: [conf.BLOCK_SIZE]u8 align(8) = undefined;
 
     AtaDevice.readBlocks(null, 0, &buffer) catch {
         vga.writeString("Error: Could not read MBR\n", 12, 0);
@@ -243,13 +245,13 @@ pub fn initializePartitionTable(start_lba: u32, size_in_sectors: u32) void {
 /// This predates CodaFs.mkfs() and should not be used for new filesystems.
 /// Retained here for reference only.
 pub fn formatMyFileSystem(lba: u32) void {
-    var buffer align(8) = std.mem.zeroes([512]u8);
+    var buffer align(8) = std.mem.zeroes([conf.BLOCK_SIZE]u8);
 
     // TODO: replace with CodaFs.mkfs() — this does not produce a valid CODA filesystem
     std.mem.writeInt(u64, buffer[0..8],   0xDEAFBEEF, .little);  // legacy magic
     std.mem.writeInt(u32, buffer[8..12],  1,           .little);  // version
-    std.mem.writeInt(u32, buffer[12..16], 512,         .little);  // block_size
-    std.mem.writeInt(u64, buffer[16..24], 20480,       .little);  // total_blocks
+    std.mem.writeInt(u32, buffer[12..16], conf.BLOCK_SIZE,         .little);  // block_size
+    std.mem.writeInt(u64, buffer[16..24], conf.DISK_SECTOR_COUNT,       .little);  // total_blocks
 
     AtaDevice.writeBlocks(null, @as(u64, lba), &buffer) catch {};
 }

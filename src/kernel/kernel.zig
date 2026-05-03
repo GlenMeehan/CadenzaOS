@@ -165,7 +165,7 @@ pub export fn kmain() noreturn {
     //  DISK / FILESYSTEM RESTORE OR INIT
     // -------------------------------------------------------------------------
     var fs_exists: bool = false;
-    const partition_start = 2048;
+    const partition_start = conf.PARTITION_START_LBA;
 
     if (ata.AtaDevice.checkFileSystem(partition_start)) {
         fs_exists = true;
@@ -187,7 +187,7 @@ pub export fn kmain() noreturn {
 
         sb.flags |= coda_fs.FLAG_DIRTY;
 
-        ata.AtaDevice.writeBlocks(null, partition_start, fs_ramdisk_buf[0..512]) catch {
+        ata.AtaDevice.writeBlocks(null, partition_start, fs_ramdisk_buf[0..conf.BLOCK_SIZE]) catch {
             vga.writeString("ERROR: Could not mark disk as DIRTY!\n", 12, 0);
         };
 
@@ -202,7 +202,7 @@ pub export fn kmain() noreturn {
         vga.writeString("Formatting Partition...\n", 15, 0);
         ata.formatMyFileSystem(partition_start);
 
-        ata.AtaDevice.readBlocks(null, partition_start, fs_ramdisk_buf[0..512]) catch {};
+        ata.AtaDevice.readBlocks(null, partition_start, fs_ramdisk_buf[0..conf.BLOCK_SIZE]) catch {};
 
         vga.writeString("Done. Please close QEMU and run ./build.sh run\n", 11, 0);
     }
@@ -290,6 +290,8 @@ pub export fn kmain() noreturn {
     pic.unmaskIrq(@as(u8, 12)); // mouse
 
     mouse.initMouse();
+
+    interrupts.init_pit(100); // 100Hz = 100 ticks per second
 
     asm volatile ("sti");
 

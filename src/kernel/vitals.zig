@@ -46,4 +46,10 @@ pub fn update() void {
 
     // Now this line will work because 'total_cycles' exists above!
     current_vitals.total_cycles = (@as(u64, high) << 32) | low;
+
+    // --- TEMPORARY TEST LINE ---
+    // This forces the Sentinel to see a "Critical" hardware state
+    //current_vitals.last_read_latency = 60_000_000;
+    // ---------------------------
+
 }

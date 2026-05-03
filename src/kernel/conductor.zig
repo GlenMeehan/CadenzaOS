@@ -13,7 +13,7 @@ const conf = @import("config.zig");
 const cmd_count = std.enums.values(conf.CommandID).len;
 
 // 10x10+ table is plenty of room to grow
-pub var transition_table: [cmd_count][cmd_count]u16 = .{.{0} ** cmd_count} ** cmd_count;
+pub var transition_table = [_][32]u16{ [_]u16{0} ** 32 } ** 32;
 
 /// The Conductor's assessment of system harmony.
 pub const ConductorState = enum {
@@ -23,6 +23,12 @@ pub const ConductorState = enum {
 };
 
 pub var current_state: ConductorState = .Optimal;
+
+// Temporarily force the state to see the Shell respond
+//pub var current_state = ConductorState.Discordant;
+
+var decay_timer: u32 = 0;
+const DECAY_INTERVAL: u32 = 100; // Decay every 100 'ticks'
 
 
 
@@ -35,7 +41,7 @@ const CRITICAL_THRESHOLD: u64 = 50_000_000;
 var policy_ptr: ?*coda.SystemPolicy = null;
 
 /// Links the Conductor to the actual System Policy
-pub fn init(ptr: *coda.SystemPolicy) void {
+pub fn init(ptr: *conf.SystemPolicy) void {
     policy_ptr = ptr;
 }
 
@@ -50,7 +56,7 @@ pub fn evaluateTempo() void {
 
             // ACT: If we have the pointer, force the policy to Admin
             if (policy_ptr) |p| {
-                p.* = .Admin;
+                p.* = .ADMIN;
             }
 
             vga.writeString("\n!! CONDUCTOR: CRITICAL - FORCING ADMIN POLICY !!\n", 12, 0);
@@ -64,8 +70,14 @@ pub fn evaluateTempo() void {
     } else {
         if (current_state != .Optimal) {
             current_state = .Optimal;
-            // Green: system is back in rhythm
             vga.writeString("\n!! CONDUCTOR: TEMPO RESTORED !!\n", 10, 0);
+        }
+
+        // Only age the brain when the system is healthy
+        decay_timer += 1;
+        if (decay_timer >= DECAY_INTERVAL) {
+            decayHabits();
+            decay_timer = 0;
         }
     }
 }
@@ -85,4 +97,46 @@ pub fn tick() void {
 
     // 2. Run the evaluation logic
     evaluateTempo();
+}
+
+/// Reduces the weight of all habits by ~10%.
+/// Integer-based fixed-point math: (Value * 9) / 10.
+pub fn decayHabits() void {
+    for (&transition_table) |*row| {
+        for (row) |*cell| {
+            if (cell.* > 0) {
+                // We cast to u32 to ensure the multiplication
+                // doesn't overflow u16 before the division.
+                const scaled: u32 = (@as(u32, cell.*) * 9) / 10;
+                cell.* = @intCast(scaled);
+            }
+        }
+    }
+}
+
+/// Returns the probability weight of a specific command sequence.
+/// 0 means the user has never performed this sequence.
+pub fn getScore(prev: conf.CommandID, curr: conf.CommandID) u16 {
+    const p_idx = @intFromEnum(prev);
+    const c_idx = @intFromEnum(curr);
+
+    // Boundary check for safety
+    if (p_idx >= transition_table.len or c_idx >= transition_table[0].len) return 0;
+
+    return transition_table[p_idx][c_idx];
+}
+
+
+pub fn getTopScoreInRow(prev: conf.CommandID) u16 {
+    const row = @intFromEnum(prev);
+    if (row >= 16) return 0; // The safety fence
+
+    var max_score: u16 = 0;
+    for (0..16) |col| { // Only scan up to 15
+        const score = transition_table[row][col];
+        if (score > max_score) {
+            max_score = score;
+        }
+    }
+    return max_score;
 }

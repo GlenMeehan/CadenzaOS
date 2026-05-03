@@ -113,6 +113,8 @@ var extended_release = false;
 // Main entry point for PS/2 scancodes
 // -----------------------------------------------------------------------------
 
+pub var last_char: u8 = 0;
+
 pub fn handleScancode(scancode: u8) void {
     // 0xE0 = extended key prefix
     if (scancode == 0xE0) {
@@ -145,13 +147,17 @@ pub fn handleScancode(scancode: u8) void {
 
     // ASCII mapping
     if (scancodeToAscii(scancode)) |ch| {
-        // Ctrl‑letter combinations (Ctrl+A → 0x01)
-        if (ctrl_down) {
-            term.handleKeyEvent(.{ .char = ch & 0x1F });
-            return;
-        }
+        // 1. Determine the final character (handling Ctrl modification)
+        const final_ch = if (ctrl_down) (ch & 0x1F) else ch;
 
-        term.handleKeyEvent(.{ .char = ch });
+        // 2. Update the "Memory" for the Confirmation Service
+        last_char = final_ch;
+
+        // 3. Update the "UI" (Terminal)
+        term.handleKeyEvent(.{ .char = final_ch });
+
+        // If it was a Ctrl combo, we return early as you did before
+        if (ctrl_down) return;
     }
 }
 

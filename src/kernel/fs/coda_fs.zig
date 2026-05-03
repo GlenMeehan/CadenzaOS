@@ -47,12 +47,7 @@ pub const IoEvent = struct {
 
 /// Operating policy embedded in the superblock.
 /// Controls telemetry thresholds and future AI-guided behaviour.
-pub const SystemPolicy = enum(u32) {
-    Admin     = 0,
-    Dev       = 1,
-    Gaming    = 2,
-    AI_Guided = 3,  // Reserved for Phase 4
-};
+pub const SystemPolicy = conf.SystemPolicy;
 
 /// On-disk superblock describing the entire filesystem layout.
 /// Read at mount time; written only by mkfs.
@@ -69,18 +64,19 @@ pub const SystemPolicy = enum(u32) {
 /// NOTE: This struct is written to disk verbatim via writeBlockStruct().
 ///       Any layout change is a breaking on-disk format change.
 pub const Superblock = struct {
-    magic:   u64,
-    flags:   u64,
-    version: u32,
-    block_size:    u32,
-    total_blocks:  u64,
+    magic:        u64,  // 8 bytes
+    flags:        u64,  // 8 bytes
+    version:      u32,  // 4 bytes
+    block_size:   u32,  // 4 bytes (Total 24 - Good)
+    total_blocks: u64,  // 8 bytes (Total 32 - Good)
 
     // Build policy awareness into the superblock
-    policy:                SystemPolicy,
-    latency_threshold_ns:  u64,  // Baseline for anomaly detection (nanoseconds)
+    policy: conf.SystemPolicy,          // 1 byte (from config.zig)
+    _pad: [7]u8 = [_]u8{0} ** 7,        // 7 bytes (Total 8 - Perfect alignment!)
 
-    sm_start_block:  u64,
-    sm_block_count:  u64,
+    latency_threshold_ns: u64,          // Now starts on a clean 8-byte boundary
+    sm_start_block:       u64,
+    sm_block_count:       u64,
 
     root_dir_extent_start:  u64,
     root_dir_extent_blocks: u64,
@@ -131,9 +127,9 @@ pub const CodaFs = struct {
     /// Does NOT verify directory integrity.
     /// Returns a fully initialised CodaFs instance.
     pub fn mount(allocator: std.mem.Allocator, device: *BlockDevice) !CodaFs {
-        // 1. Read superblock from LBA 2048
+        // 1. Read superblock from LBA SB_LBA set in config.zig
         var sb: Superblock = undefined;
-        try readSuperblock(device, 2048, &sb);
+        try readSuperblock(device, conf.SB_LBA, &sb);
 
         if (sb.magic != CODA_MAGIC) return error.InvalidMagic;
 
@@ -157,13 +153,6 @@ pub const CodaFs = struct {
         };
     }
 
-    /// Format a fresh CODA filesystem on the given device.
-    ///
-    /// On-disk layout:
-    ///   [2048]        Superblock
-    ///   [2049..2064]  SpaceManager region (16 blocks)
-    ///   [2065..]      Data region
-    ///
     /// Allocates a 4-block root directory extent.
     /// Initialises SpaceManager and writes an empty root directory.
     /// Overwrites existing data without warning.
@@ -172,8 +161,8 @@ pub const CodaFs = struct {
 
         const total_blocks: u64 = device.total_blocks;
 
-        const sb_block:      u64 = 2048;
-        const sm_start_block: u64 = 2049;
+        const sb_block:      u64 = conf.SB_LBA;
+        const sm_start_block: u64 = conf.SB_LBA + 1;
         const sm_block_count: u64 = 16;
 
         const data_start_block = sm_start_block + sm_block_count;
@@ -194,7 +183,7 @@ pub const CodaFs = struct {
             .version     = CODA_VERSION,
             .block_size  = @as(u32, @intCast(device.block_size)),
             .total_blocks = total_blocks,
-            .policy               = .Dev,    // Default operating policy
+            .policy               = conf.current_policy,    // Default operating policy
             .latency_threshold_ns = 28480,   // Placeholder baseline
             .sm_start_block  = sm_start_block,
             .sm_block_count  = sm_block_count,
@@ -203,6 +192,7 @@ pub const CodaFs = struct {
             .flags   = 0,
             .reserved = [_]u8{0} ** 128,
         };
+
 
         try sm.flushToDisk(allocator, sm_start_block, sm_block_count);
         try initEmptyRootDir(device, root_extent);
@@ -753,7 +743,7 @@ pub const CodaFs = struct {
         // NOTE: latency_threshold_ns is compared against raw cycle counts here;
         //       calibrate the multiplier (×10) to your CPU frequency.
         if (duration > self.superblock.latency_threshold_ns * 10) {
-            self.superblock.policy = .Admin;
+            self.superblock.policy = .ADMIN;
         }
 
         return duration;
@@ -784,6 +774,14 @@ pub const CodaFs = struct {
     pub fn getCycles() u64 {
         return asm volatile ("rdtsc" : [ret] "={ax}" (-> u64) : : .{ .edx = true });
     }
+
+    // Sync the Superblock to the correct location
+    pub fn syncSuperblock(self: *CodaFs) !void {
+        const sb_block: u64 = conf.SB_LBA;
+        // We call the existing writeSuperblock helper used by mkfs
+        try writeSuperblock(self.device, sb_block, &self.superblock);
+    }
+
 };
 
 // ----------------------------------------------------------------
@@ -795,7 +793,7 @@ pub const CodaFs = struct {
 /// Writes a clean, empty directory block sequence.
 fn initEmptyRootDir(device: *BlockDevice, extent: Extent) !void {
     const total_size = extent.block_count * device.block_size;
-    var buf: [2048]u8 = undefined;
+    var buf: [conf.SB_LBA]u8 = undefined;
     @memset(buf[0..], 0);
     try device.writeBlocks(device.ctx, extent.start_block, buf[0..total_size]);
 }

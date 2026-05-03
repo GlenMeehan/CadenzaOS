@@ -23,6 +23,9 @@ const ata = @import("drivers/ata.zig");
 const vitals = @import("vitals.zig");
 const conductor = @import("conductor.zig");
 const syscall = @import("syscall.zig");
+const ui_prompt = @import("ui/prompt.zig");
+const keyboard = @import("inputs/keyboard");
+const irupts = @import("irupts.zig");
 
 
 const DirEntry = coda_file.DirEntry;
@@ -30,6 +33,9 @@ const Directory = coda_file.Directory;
 
 const FG = 15;
 const BG = 0;
+
+var last_command_tick: u64 = 0;
+var current_command_tick: u64 = 0;
 
 // -----------------------------------------------------------------------------
 //  GLOBAL SHELL STATE
@@ -49,6 +55,8 @@ var last_latency: u64 = 0;
 
 
 var last_command: conf.CommandID = .UNKNOWN;
+
+var anomaly_detected: bool = false; // The global "Messenger" flag
 
 // -----------------------------------------------------------------------------
 //  COMMAND REGISTRATION
@@ -71,10 +79,11 @@ const commands = [_]Command{
     .{ .name = "history",  .desc = "Show command history",                .func = cmd_history, .id = .UNKNOWN },
 
     // System commands
-    .{ .name = "shutdown", .desc = "Power off the machine",               .func = cmd_shutdown, .id = .UNKNOWN },
-    .{ .name = "reboot",   .desc = "Reboot the machine",                  .func = cmd_reboot, .id = .UNKNOWN },
+    .{ .name = "shutdown", .desc = "Power off the machine",               .func = cmd_shutdown, .id = .SHUTDOWN },
+    .{ .name = "reboot",   .desc = "Reboot the machine",                  .func = cmd_reboot, .id = .REBOOT },
     .{ .name = "vitals",   .desc = "Display vitals",                      .func = cmd_vitals,  .id = .VITALS },
     .{ .name = "version",  .desc = "Display system version information",  .func = cmd_version, .id = .VERSION },
+    .{ .name = "uptime",  .desc = "Display time elapsed since last boot",  .func = cmd_uptime, .id = .UPTIME },
 
     // Filesystem / Composer‑tracked commands
     .{ .name = "ls",       .desc = "List root directory",                 .func = cmd_ls,     .id = .LS },
@@ -176,6 +185,7 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
 
         while (true) {
             if (term.takeLine()) |line| {
+                conductor.tick();
                 term.commitHistory();
                 execute(line);
                 term.consumeLine();
@@ -186,48 +196,96 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
 }
 
 fn execute(line: []const u8) void {
+    const current_time = irupts.ticks; //used to monitor rapidity of keystrokes
     const tokens = parseArgs(line);
     if (tokens.len == 0) return;
 
-    // --- CONDUCTOR: LISTEN ---
-    // Analyze disk vitals before proceeding
-
-    const cmd = tokens[0];
-    const current_cmd_id = getCmdId(cmd);
+    const cmd_name = tokens[0];
+    const current_cmd_id = getCmdId(cmd_name);
     var found = false;
 
-    // 1. Find and run the command
+    // 1. Monitor and respond to command current_tempo
+    const is_too_fast = checkEntropy(current_time);
+
+    if (is_too_fast) {
+        // Switch on the LIVE policy, not the compile-time constant
+        switch (g_fs.superblock.policy) {
+            .ADMIN => {
+                vga.writeString("!! SECURITY: Command velocity too high.\n", 0x0C, 0);
+                vga.writeString("System locked for 5 seconds...\n", 0x07, 0);
+                irupts.sleep(500);
+                vga.writeString("System unlocked. Proceed with caution.\n", 0x0A, 0);
+                return;
+            },
+            .DEV => {
+                vga.writeString("Warning: High command velocity detected.\n", 0x0E, 0);
+            },
+            .GAMING => {
+                // Do nothing. High velocity is the goal.
+            },
+        }
+    }
+
+    // 2. THE LOGIC CHECK (Markov + Surprise Logic)
+    // The syscall now returns 1 if (Surprise > Threshold)
+    var is_anomalous = false;
+    if (current_cmd_id != .UNKNOWN) {
+        const result = syscall.call(.RECORD_HABIT, @intFromEnum(last_command), @intFromEnum(current_cmd_id));
+        is_anomalous = (result == 1);
+    }
+
+    // 3. THE POLICY CHECK (Tier 1: Static Safety)
+    const is_critical = switch (g_fs.superblock.policy) {
+        .ADMIN  => (current_cmd_id == .DEL or current_cmd_id == .SHUTDOWN),
+        .DEV    => (current_cmd_id == .SHUTDOWN), // Delete is fine for devs
+        .GAMING => false, // Nothing is critical; just run it.
+    };
+
+    if (is_critical or is_anomalous) {
+        // We tailor the message so you know WHY you are being prompted
+        const msg = if (is_critical)
+        "!! SAFETY: Confirm critical action?"
+        else
+            "!! THE CRITIC: Unusual sequence detected. Proceed?";
+
+        if (!ui_prompt.confirm(msg)) {
+            vga.writeString("Action cancelled.\n", 0x07, 0);
+            return;
+        }
+
+        // --- REINFORCEMENT ---
+        if (is_anomalous) {
+            // By calling RECORD_HABIT again, we rapidly increase the score
+            // of this new path, reducing the "Surprise Factor" for next time.
+            _ = syscall.call(.RECORD_HABIT, @intFromEnum(last_command), @intFromEnum(current_cmd_id));
+            vga.writeString("Critic: Habit updated.\n", 0x07, 0);
+        }
+    }
+
+    // 4. THE EXECUTION LOOP
     for (commands) |c| {
-        if (mem.eqlNoSimd(u8, c.name, cmd)) {
+        if (mem.eqlNoSimd(u8, c.name, cmd_name)) {
             c.func(tokens);
             found = true;
             break;
         }
     }
 
-    // 2. Update Composer (The Learning Step)
-    // Inside shell.zig -> execute()
+    // 5. POST-EXECUTION UPDATES
     if (found and current_cmd_id != .UNKNOWN) {
+        // Important: Update 'last_command' so the NEXT command
+        // can be compared against this one.
+        last_command = current_cmd_id;
 
-        // 1. Record the habit via the Gateway
-        _ = syscall.call(.RECORD_HABIT, @intFromEnum(last_command), @intFromEnum(current_cmd_id));
-
-        // 2. Check Tempo via the Gateway
+        // Auto-save the habit table if the system is "Optimal"
         const current_tempo = syscall.call(.GET_TEMPO, 0, 0);
         if (current_tempo == @intFromEnum(conductor.ConductorState.Optimal)) {
             saveComposer() catch {};
         }
-
-        last_command = current_cmd_id;
+    } else if (!found) {
+        vga.writeString("Unknown command.\n", 0x07, 0);
     }
 
-    // 3. Dev-Mode Telemetry
-    // This gives the developer a raw look at cycles if things feel slow.
-    if (g_fs.superblock.policy == .Dev) {
-        if (vitals.current_vitals.last_read_latency > 10_000_000) {
-            vga.writeString("!! Conductor: Latency Spike Detected !!\n", 14, 0);
-        }
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -341,11 +399,13 @@ fn cmd_test(_: [][]const u8) void {
 // -----------------------------------------------------------------------------
 
 fn cmd_shutdown(_: [][]const u8) void {
+
     vga.writeString("Shutting down...\n", FG, BG);
     system.shutdown();
 }
 
 fn cmd_reboot(_: [][]const u8) void {
+
     vga.writeString("Rebooting...\n", FG, BG);
     system.reboot();
 }
@@ -367,6 +427,53 @@ fn cmd_version(args: [][]const u8) void {
     vga.writeString("Cadenza OS - Version 0.1.0 (Dev Build)\n", 11, 0);
     vga.writeString("Kernel: Zig 0.16-dev\n", 7, 0);
     vga.writeString("Predictive Shell: Phase 1 Context-Aware\n", 10, 0);
+}
+
+fn cmd_uptime(tokens: [][]const u8) void {
+    _ = tokens;
+
+    const total_seconds = @as(u32, @intCast(irupts.ticks / 100));
+    const h = total_seconds / 3600;
+    const m = (total_seconds % 3600) / 60;
+    const s = total_seconds % 60;
+
+    // Create a buffer for the entire line (e.g., 80 characters)
+    var line_buf: [80]u8 = undefined;
+    var pos: usize = 0;
+
+    // Helper to "append" strings to our line_buf
+    const prefix = "Uptime: ";
+    @memcpy(line_buf[pos .. pos + prefix.len], prefix);
+    pos += prefix.len;
+
+    var num_buf: [16]u8 = undefined;
+
+    // Add Hours
+    if (h > 0) {
+        const str = conv.u32ToStr(&num_buf, h);
+        @memcpy(line_buf[pos .. pos + str.len], str);
+        pos += str.len;
+        line_buf[pos] = 'h'; pos += 1;
+        line_buf[pos] = ' '; pos += 1;
+    }
+
+    // Add Minutes
+    if (m > 0 or h > 0) {
+        const str = conv.u32ToStr(&num_buf, m);
+        @memcpy(line_buf[pos .. pos + str.len], str);
+        pos += str.len;
+        line_buf[pos] = 'm'; pos += 1;
+        line_buf[pos] = ' '; pos += 1;
+    }
+
+    // Add Seconds
+    const s_str = conv.u32ToStr(&num_buf, s);
+    @memcpy(line_buf[pos .. pos + s_str.len], s_str);
+    pos += s_str.len;
+    line_buf[pos] = 's'; pos += 1;
+
+    // Now write the entire built string in one single VGA call
+    vga.writeString(line_buf[0..pos], 0x0F, 0);
 }
 
 // -----------------------------------------------------------------------------
@@ -541,7 +648,7 @@ fn cmd_cat(args: [][]const u8) void {
         return;
     }
 
-    const buf = g_allocator.alloc(u8, 512) catch return;
+    const buf = g_allocator.alloc(u8, conf.BLOCK_SIZE) catch return;
     defer g_allocator.free(buf);
 
     var bytes_remaining = meta.size_bytes;
@@ -558,7 +665,7 @@ fn cmd_cat(args: [][]const u8) void {
                 return;
             };
 
-            const chunk_size = if (bytes_remaining > 512) @as(usize, 512) else @as(usize, @intCast(bytes_remaining));
+            const chunk_size = if (bytes_remaining > conf.BLOCK_SIZE) @as(usize, conf.BLOCK_SIZE) else @as(usize, @intCast(bytes_remaining));
 
             vga.writeRaw(buf[0..chunk_size], FG, BG);
 
@@ -570,12 +677,13 @@ fn cmd_cat(args: [][]const u8) void {
 }
 
 fn cmd_del(args: [][]const u8) void {
+
     if (args.len < 2) {
         vga.writeString("Usage: del <filename>\n", FG, BG);
         return;
     }
 
-    const filename = args[1];
+     const filename = args[1];
 
     g_fs.deleteFile(g_allocator, g_cwd_lba, filename) catch |err| {
         if (err == error.FileNotFound) {
@@ -814,7 +922,7 @@ fn cmd_edit(args: [][]const u8) void {
 
     const old_size = meta.size_bytes;
     const total_new_size = old_size + final_text.len;
-    const total_blocks_needed = (total_new_size + 511) / 512;
+    const total_blocks_needed = (total_new_size + conf.BLOCK_SIZE - 1) / conf.BLOCK_SIZE;
 
     while (meta.extent_count < total_blocks_needed) {
         g_fs.addBlockToFile(g_allocator, &meta) catch |err| {
@@ -827,15 +935,15 @@ fn cmd_edit(args: [][]const u8) void {
         };
     }
 
-    const block_buf = g_allocator.alloc(u8, 512) catch return;
+    const block_buf = g_allocator.alloc(u8, conf.BLOCK_SIZE) catch return;
     defer g_allocator.free(block_buf);
 
     var bytes_to_append = final_text.len;
     var write_offset: usize = old_size;
 
     while (bytes_to_append > 0) {
-        const block_idx = write_offset / 512;
-        const offset_in_block = write_offset % 512;
+        const block_idx = write_offset / conf.BLOCK_SIZE;
+        const offset_in_block = write_offset % conf.BLOCK_SIZE;
 
         const target_lba = getLbaForBlock(meta, block_idx);
 
@@ -844,7 +952,7 @@ fn cmd_edit(args: [][]const u8) void {
             return;
         };
 
-        const space_in_block = 512 - offset_in_block;
+        const space_in_block = conf.BLOCK_SIZE - offset_in_block;
         const copy_size = if (bytes_to_append > space_in_block) space_in_block else bytes_to_append;
 
         const source_start = final_text.len - bytes_to_append;
@@ -876,37 +984,47 @@ fn cmd_edit(args: [][]const u8) void {
 // -----------------------------------------------------------------------------
 
 fn cmd_policy(args: [][]const u8) void {
+    // 1. Handle the "Read Only" case
     if (args.len < 2) {
         vga.writeString("Current Policy: ", 15, 0);
         switch (g_fs.superblock.policy) {
-            .Admin     => vga.writeString("Admin\n", 14, 0),
-            .Dev       => vga.writeString("Dev\n", 10, 0),
-            .Gaming    => vga.writeString("Gaming\n", 13, 0),
-            .AI_Guided => vga.writeString("AI_Guided\n", 11, 0),
+            .ADMIN  => vga.writeString("Admin\n", 14, 0),
+            .DEV    => vga.writeString("Dev\n", 10, 0),
+            .GAMING => vga.writeString("Gaming\n", 13, 0),
         }
-        return;
+        return; // Exit here; nothing changed, so no sync needed.
     }
 
     const new_policy = args[1];
+    var changed = false;
 
+    // 2. Update the memory state
     if (std.mem.eql(u8, new_policy, "admin")) {
-        g_fs.superblock.policy = .Admin;
+        g_fs.superblock.policy = .ADMIN;
         vga.writeString("Policy switched to Admin\n", 14, 0);
+        changed = true;
     } else if (std.mem.eql(u8, new_policy, "dev")) {
-        g_fs.superblock.policy = .Dev;
+        g_fs.superblock.policy = .DEV;
         vga.writeString("Policy switched to Dev\n", 10, 0);
+        changed = true;
     } else if (std.mem.eql(u8, new_policy, "gaming")) {
-        g_fs.superblock.policy = .Gaming;
+        g_fs.superblock.policy = .GAMING;
         vga.writeString("Policy switched to Gaming\n", 13, 0);
-    } else if (std.mem.eql(u8, new_policy, "ai")) {
-        g_fs.superblock.policy = .AI_Guided;
-        vga.writeString("Policy switched to AI_Guided\n", 11, 0);
+        changed = true;
     } else {
-        vga.writeString("Unknown policy. Use: admin, dev, gaming, or ai\n", 12, 0);
+        vga.writeString("Unknown policy. Use: admin, dev, or gaming\n", 12, 0);
         return;
     }
 
-    saveComposer() catch {};
+    // 3. Persist BOTH the habit data and the Filesystem Superblock
+    if (changed) {
+        saveComposer() catch {}; // Saves the "Software" state (Markov habits)
+
+        // Critical: Saves the "Hardware" state (The Policy at LBA conf.SB_LBA)
+        g_fs.syncSuperblock() catch { // No |err| needed if we don't use it
+            vga.writeString("Error: Sync failed\n", 0x0C, 0);
+        };
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1000,7 +1118,7 @@ fn shellPredictor(input: []const u8) []const u8 {
     }
 
     // 2. TYPING CASE (The "Ghost Text" suggestion)
-    const is_admin = (g_fs.superblock.policy == .Admin);
+    const is_admin = (g_fs.superblock.policy == .ADMIN);
     var best_score: i32 = -1;
     var best_match: ?[]const u8 = null;
 
@@ -1126,4 +1244,49 @@ fn rewardTransition(prev: conf.CommandID, curr: conf.CommandID) void {
     if (conductor.transition_table[p][c] < 255) {
         conductor.transition_table[p][c] += 1;
     }
+}
+
+
+//Prompt when unusual sequences are detected
+fn challengeUser(cmd_name: []const u8) bool {
+    vga.writeString("\n[!] STABILITY WARNING: ", 0x0E, 0); // Yellow/Gold
+    vga.writeString(cmd_name, 0x0F, 0);
+    vga.writeString(" is unusual for this persona.\n", 0x0E, 0);
+    vga.writeString("Allow execution? (y/n): ", 0x07, 0);
+
+    while (true) {
+        const key = keyboard.getChar();
+        if (key == 'y' or key == 'Y') {
+            vga.writeString("Confirmed.\n", 0x0A, 0); // Green
+            return true;
+        }
+        if (key == 'n' or key == 'N') {
+            vga.writeString("Blocked.\n", 0x0C, 0); // Red
+            return false;
+        }
+    }
+}
+//Time stamp the last command so that command temp can be monitored
+//This enables policies to be adapptive, e.g. GAMING accepts faster, repetitive key bashing
+//Admin will iterpret that as an attack
+
+fn checkEntropy(current_tick: u64) bool {
+    // 1. Calculate the delta (time passed since last command)
+    const delta = current_tick - last_command_tick;
+
+    // 2. Update the global variable for the NEXT command
+    last_command_tick = current_tick;
+
+    // 3. Safety: If this is the first command after boot, delta will be huge.
+    // We only care about delta if last_command_tick was already set.
+    if (delta == current_tick) return false;
+
+    // 4. The Threshold:
+    // If delta is less than 15 ticks, the user is typing too fast.
+    // Increase this number (e.g., to 30) if it's still too sensitive.
+    if (delta < 25) {
+        return true;
+    }
+
+    return false;
 }

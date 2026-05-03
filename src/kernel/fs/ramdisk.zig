@@ -20,8 +20,9 @@
 const BlockDevice = @import("block_device.zig").BlockDevice;
 const mem         = @import("../memory.zig");
 const ata         = @import("../drivers/ata.zig");
+const conf = @import("../config.zig");
 
-const partition_start = 2048;  // Physical LBA offset of the CODA partition on disk
+const partition_start = conf.SB_LBA;  // Physical LBA offset of the CODA partition on disk
 
 // --------------------------------
 // RamDisk

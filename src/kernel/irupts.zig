@@ -24,7 +24,7 @@ pub var ticks: u64 = 0;
 pub export fn irq0_handler() callconv(.c) void {
     ticks += 1;
 
-    // Debug: update tick counter every 100 ticks
+    // Debug: update tick counter every 20 ticks
     if (ticks % 100 == 0) {
         var buf: [18]u8 = undefined;
         const hex = conv.toHex(u64, ticks, &buf);
@@ -56,6 +56,22 @@ pub export fn irq1_handler() callconv(.c) void {
 var mouse_index: u8 = 0;
 var mouse_packet: [3]u8 = .{0, 0, 0};
 var count: u8 = 0;
+
+//Initiatlise PIT - this function is called in kernel.zig/kmain in the IDT / PIC / MOUSE / INTERRUPTS section
+//Call after PIT and mouse initialisation but before sti
+pub fn init_pit(frequency: u32) void {
+    // The oscillator runs at 1.193182 MHz
+    const divisor = @as(u16, @intCast(1193182 / frequency));
+
+    // 0x43 is the Command Register
+    // 0x36 = 00 (Channel 0) 11 (Access lobyte/hibyte) 011 (Square wave) 0 (Binary)
+    io.outb(0x43, 0x36);
+
+    // 0x40 is Channel 0 Data Port
+    io.outb(0x40, @as(u8, @intCast(divisor & 0xFF)));        // Low byte
+    io.outb(0x40, @as(u8, @intCast((divisor >> 8) & 0xFF))); // High byte
+}
+
 
 pub export fn irq12_handler() callconv(.c) void {
     // Debug counter
@@ -96,4 +112,13 @@ pub export fn irq12_handler() callconv(.c) void {
     // EOI: slave PIC first, then master PIC
     io.outb(0xA0, 0x20); // slave
     io.outb(0x20, 0x20); // master
+}
+
+
+// Sleep for a number of ticks.
+pub fn sleep(ticks_to_wait: u64) void {
+    const start_tick = ticks; // Define it here!
+    while (ticks - start_tick < ticks_to_wait) {
+        asm volatile ("hlt");
+    }
 }

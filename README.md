@@ -1,16 +1,18 @@
 🎹 CadenzaOS
 An operating system built from scratch using the Zig programming language. CadenzaOS focuses on a clean, educational architecture with a custom filesystem and a responsive, predictive kernel-level shell.
 
-🚀 Recent Architectural Milestone
-The system has transitioned to a Gateway Architecture. The Shell (UI) is now decoupled from the Kernel (Logic) via a formal System Call Interface, allowing for safer memory boundaries and structured inter-subsystem communication.
+🚀 Recent Architectural Milestones
+Gateway Architecture: The Shell (UI) is now decoupled from the Kernel (Logic) via a formal System Call Interface.
+
+Standardized Time & Entropy: Implementation of a fixed 100Hz Programmable Interval Timer (PIT) frequency. This provides a universal "tick" ($10ms$) that ensures consistent command velocity monitoring and security lockouts across different hardware and emulators.
 
 🧠 Core Systems
 🎼 The Conductor
-Tempo Monitoring: Real-time analysis of hardware vitals using CPU cycle counting (RDTSC).
+Tempo Monitoring: Real-time analysis of hardware vitals using standardized PIT ticks and CPU cycle counting (RDTSC).
 
 State Machine: Automatically shifts between Optimal, Discordant, and Critical states based on I/O latency.
 
-Gatekeeping: Throttles non-essential background tasks (like AI habit-saving) during high-latency events to preserve system stability.
+Velocity Entropy: Monitors command input speed. High-velocity "mashing" triggers policy-based cooling periods (e.g., a 5-second lockout in ADMIN mode) to prevent command-injection or accidental spamming.
 
 🏛️ Syscall Gateway
 Subsystem Abstraction: Centralized syscall.zig serves as the single entry point for user-facing commands to request kernel services.
@@ -29,36 +31,19 @@ Persistence: Serializes the transition table to /sys/composer.dat for cross-sess
 📂 CodaFS (Adaptive Filesystem)
 Extent-Based Storage: Efficient block management for file growth and directory handling.
 
-Policy-Aware Superblock: Hardware-level enums (Admin, Dev, Gaming, AI_Guided) dictate the Conductor's behavioral bias.
+Policy-Aware Superblock: Hardware-level enums (Admin, Dev, Gaming) dictate the Conductor's behavioral bias and shell security constraints.
 
 Write-Through Integrity: Workspace mirroring to physical ATA storage for reliable persistence.
 
 🛠️ Command Suite
-Filesystem: ls, cd, mkdir, touch, edit, cat, del, mv, rename, stat.
+Filesystem: ls, cd, mkdir, touch, edit, cat, del, mv, rename, stat, df (Disk Free).
 
-System: policy (manual override), vitals (latency telemetry), history, clear, version.
+System: policy (manual override), vitals (latency telemetry), history, clear, uptime (Standardized clock check), sync (Buffer flush).
 
-Power: shutdown, reboot.
+Power: shutdown, reboot
 
 🏗 Project Structure
 ../Cadenza/
-── build
-│   ├── arch_util.o
-│   ├── boot.bin
-│   ├── deps.txt
-│   ├── disk.img
-│   ├── disktest.img
-│   ├── irq_stubs.o
-│   ├── kernel.bin
-│   ├── kernel.elf
-│   ├── kernel_info.inc
-│   ├── kernel.o
-│   ├── qemu.log
-│   └── stage2.bin
-├── linker.ld
-├── qemu.log
-├── README.md
-├── .README.md.kate-swp
 ├── src
 │   ├── boot
 │   │   └── boot.asm
@@ -97,20 +82,24 @@ Power: shutdown, reboot.
 │   │   ├── panic.zig
 │   │   ├── pic.zig
 │   │   ├── port_io.zig
+│   │   ├── security.zig
 │   │   ├── shell.zig
 │   │   ├── syscall.zig
 │   │   ├── system.zig
 │   │   ├── terminal.zig
 │   │   ├── tests.zig
+│   │   ├── ui
+│   │   │   └── prompt.zig
 │   │   ├── vga.zig
 │   │   └── vitals.zig
 │   └── stage2
 │       └── stage2.asm
 
 
+
 ⏳ Roadmap
 ✅ Phase 4: Markov Brain & Persistence.
 
-✅ Phase 5: Contextual Prioritization & Hybrid Terminal Rendering.
+✅ Phase 5: Contextual Prioritization & PIT Standardisation.
 
-🔄 Phase 6 (In-Progress): The Sentinel. Automating the transition from Discordant to Optimal via predictive I/O scheduling.
+🔄 Phase 6 (In-Progress): The Sentinel. Automating the transition from Discordant to Optimal via predictive I/O scheduling and finalizing CodaFS space management.

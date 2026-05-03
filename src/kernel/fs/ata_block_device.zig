@@ -17,6 +17,7 @@ const BlockDevice = @import("block_device.zig").BlockDevice;
 const BlockDeviceError = @import("block_device.zig").BlockDeviceError;
 const ata = @import("../drivers/ata.zig");
 const std = @import("std");
+const conf = @import("../config.zig");
 
 /// Errors exposed to the filesystem.
 /// We intentionally keep this small and stable.
@@ -42,8 +43,8 @@ pub const AtaBlockDevice = struct {
     pub fn asBlockDevice(self: *AtaBlockDevice) BlockDevice {
         return BlockDevice{
             .ctx = self,
-            .block_size = 512,
-            .total_blocks = 20480, // TODO: detect from ATA identify data
+            .block_size = conf.BLOCK_SIZE,
+            .total_blocks = conf.DISK_SECTOR_COUNT, // TODO: detect from ATA identify data
             .readBlocks = readAdapter,
             .writeBlocks = writeAdapter,
         };
@@ -79,8 +80,8 @@ pub const AtaBlockDevice = struct {
         const actual_lba = self.partition_start + block_lba;
 
         // If the caller gives us less than 512 bytes, pad it.
-        if (buf.len < 512) {
-            var temp_buf = std.mem.zeroes([512]u8);
+        if (buf.len < conf.BLOCK_SIZE) {
+            var temp_buf = std.mem.zeroes([conf.BLOCK_SIZE]u8);
             @memcpy(temp_buf[0..buf.len], buf);
 
             ata.AtaDevice.writeBlocks(null, actual_lba, &temp_buf)

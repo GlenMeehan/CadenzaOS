@@ -20,6 +20,7 @@ const BlockDevice   = @import("block_device.zig").BlockDevice;
 const conv          = @import("../convert.zig");
 const memory        = @import("../memory.zig");
 const vga           = @import("../vga.zig");
+const conf = @import("../config.zig");
 
 // --------------------------------
 // On-disk constants and structures
@@ -102,7 +103,7 @@ pub const SpaceManager = struct {
         start_block: u64,
     ) !SpaceManager {
         // 1. Read the first sector into an aligned buffer and extract the header
-        var sector_buf: [512]u8 align(@alignOf(SmHeader)) = undefined;
+        var sector_buf: [conf.BLOCK_SIZE]u8 align(@alignOf(SmHeader)) = undefined;
         try device.readBlocks(device.ctx, start_block, &sector_buf);
         const header = @as(*const SmHeader, @ptrCast(&sector_buf)).*;
 
@@ -249,7 +250,7 @@ pub const SpaceManager = struct {
 
 /// Serialise a struct into a zeroed 512-byte buffer and write it to `lba`.
 fn writeBlockStruct(device: *BlockDevice, lba: u64, ptr: *const anyopaque, size: usize) !void {
-    var buf: [512]u8 = undefined;
+    var buf: [conf.BLOCK_SIZE]u8 = undefined;
     @memset(buf[0..], 0);
 
     const src = @as([*]const u8, @ptrCast(ptr))[0..size];
