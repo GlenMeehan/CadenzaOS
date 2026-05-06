@@ -100,3 +100,21 @@ pub fn strToU32(s: []const u8) !u32 {
 
     return value;
 }
+
+pub fn u64ToStr(buf: *[21]u8, value: u64) []const u8 {
+    var i: usize = buf.len;
+    var v = value;
+
+    if (v == 0) {
+        buf[buf.len - 1] = '0';
+        return buf[buf.len - 1 ..];
+    }
+
+    while (v > 0 and i > 0) {
+        i -= 1;
+        buf[i] = @intCast('0' + (v % 10));
+        v /= 10;
+    }
+
+    return buf[i..];
+}

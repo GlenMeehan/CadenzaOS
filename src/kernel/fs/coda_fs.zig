@@ -25,6 +25,7 @@ const DirEntry   = @import("coda_file.zig").DirEntry;
 const FileMeta   = @import("coda_file.zig").FileMeta;
 const FileType   = @import("coda_file.zig").FileType;
 const MAX_NAME   = @import("coda_file.zig").MAX_NAME;
+const conv = @import("../convert.zig");
 
 // --------------------------------
 // Filesystem constants
@@ -283,8 +284,17 @@ pub const CodaFs = struct {
             meta.size_bytes = fs.device.block_size;
         }
 
-        // 5. Write FileMeta to disk
-        try fs.writeBlockStruct(meta_extent.start_block, &meta, @sizeOf(FileMeta));
+        // 5. Write FileMeta to disk (ensure the ENTIRE block is clean)
+        const meta_buf = try allocator.alloc(u8, fs.device.block_size);
+        defer allocator.free(meta_buf);
+        @memset(meta_buf, 0); // Wipe out any previous disk garbage
+
+        // Copy your clean struct into the start of the clean buffer
+        const meta_bytes = std.mem.asBytes(&meta);
+        @memcpy(meta_buf[0..meta_bytes.len], meta_bytes);
+
+        // Write the full, clean block to disk
+        try fs.device.writeBlocks(fs.device.ctx, meta_extent.start_block, meta_buf);
 
         // 6. Build and insert the DirEntry into the parent
         var new_entry = DirEntry{
@@ -610,6 +620,7 @@ pub const CodaFs = struct {
         _ = memory.memcpy(buf[0..size].ptr, src.ptr, size);
 
         _ = try self.writeBlocksWithTelemetry(lba, buf[0..self.device.block_size]);
+
     }
 
     /// Append a new data block to a file's extent list.

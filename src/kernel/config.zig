@@ -37,6 +37,7 @@ pub const CommandID = enum(u8) {
     MOVE    = 14,
     VERSION = 15,
     UPTIME = 16,
+    DF = 17,
 };
 
 

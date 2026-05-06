@@ -18,7 +18,7 @@ pub const MAX_EXTENTS: usize = 8;   // Max extents per file (fixed-size array)
 pub const MAX_NAME: usize = 64;     // Max filename length (bytes)
 
 /// Type of file represented by FileMeta.
-pub const FileType = enum {
+pub const FileType = enum(u8) {
     File,
     Directory,
 };
@@ -35,7 +35,7 @@ pub const FileType = enum {
 /// NOTE:
 ///   This struct must remain stable. Changing field order or size
 ///   breaks compatibility with existing disks.
-pub const FileMeta = struct {
+pub const FileMeta = extern struct {
     file_type: FileType,
     size_bytes: u64,
     extent_count: u32,

@@ -24,16 +24,36 @@ pub var ticks: u64 = 0;
 pub export fn irq0_handler() callconv(.c) void {
     ticks += 1;
 
-    // Debug: update tick counter every 20 ticks
     if (ticks % 100 == 0) {
-        var buf: [18]u8 = undefined;
-        const hex = conv.toHex(u64, ticks, &buf);
+        const total_seconds = ticks / 100;
+        const minutes = @as(u32, @intCast(total_seconds / 60));
+        const seconds = @as(u32, @intCast(total_seconds % 60));
 
-        vga.writeStringAt(0, 57, "Ticks: ", 15, 0);
-        vga.writeStringAt(0, 64, hex, 15, 0);
+        var m_buf: [16]u8 = undefined;
+        var s_buf: [16]u8 = undefined;
+
+        const m_str = conv.u32ToStr(&m_buf, minutes);
+        const s_str = conv.u32ToStr(&s_buf, seconds);
+
+        const row: u16 = 0;
+        const col_start: u16 = 60;
+
+        vga.writeStringAt(row, col_start, "Uptime: ", 0x07, 0);
+
+        // Use @intCast to satisfy the u16 requirement
+        const m_val_col = col_start + 8;
+        vga.writeStringAt(row, m_val_col, m_str, 0x0E, 0);
+
+        const m_unit_col = m_val_col + @as(u16, @intCast(m_str.len));
+        vga.writeStringAt(row, m_unit_col, "m ", 0x07, 0);
+
+        const s_val_col = m_unit_col + 2;
+        vga.writeStringAt(row, s_val_col, s_str, 0x0E, 0);
+
+        const s_unit_col = s_val_col + @as(u16, @intCast(s_str.len));
+        vga.writeStringAt(row, s_unit_col, "s ", 0x07, 0);
     }
 
-    // End of interrupt (master PIC)
     io.outb(0x20, 0x20);
 }
 

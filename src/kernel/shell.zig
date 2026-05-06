@@ -26,6 +26,7 @@ const syscall = @import("syscall.zig");
 const ui_prompt = @import("ui/prompt.zig");
 const keyboard = @import("inputs/keyboard");
 const irupts = @import("irupts.zig");
+//const sm = @import("fs/coda_sm.zig");
 
 
 const DirEntry = coda_file.DirEntry;
@@ -96,7 +97,7 @@ const commands = [_]Command{
     .{ .name = "mkdir",    .desc = "Create a directory",                  .func = cmd_mkdir,  .id = .MKDIR,  .needs_arg = true },
     .{ .name = "cd",       .desc = "Navigate to a folder",                .func = cmd_cd,     .id = .CD,     .needs_arg = true },
     .{ .name = "mv",       .desc = "Move a file",                         .func = cmd_mv,     .id = .MOVE },
-
+    .{ .name = "df",       .desc = "Display free disk space",                         .func = cmd_df,     .id = .DF },
     //The Conductor
     // Policy  control
     .{ .name = "policy",   .desc = "View/set system policy",              .func = cmd_policy, .id = .POLICY },
@@ -638,6 +639,7 @@ fn cmd_cat(args: [][]const u8) void {
         return;
     };
 
+
     if (meta.file_type == .Directory) {
         vga.writeString("Error: Cannot 'cat' a directory.\n", FG, BG);
         return;
@@ -920,6 +922,7 @@ fn cmd_edit(args: [][]const u8) void {
         return;
     };
 
+
     const old_size = meta.size_bytes;
     const total_new_size = old_size + final_text.len;
     const total_blocks_needed = (total_new_size + conf.BLOCK_SIZE - 1) / conf.BLOCK_SIZE;
@@ -970,6 +973,8 @@ fn cmd_edit(args: [][]const u8) void {
         bytes_to_append -= copy_size;
     }
 
+
+
     meta.size_bytes = @intCast(total_new_size);
     g_fs.writeBlockStruct(meta_lba, &meta, @sizeOf(coda_file.FileMeta)) catch {
         vga.writeString("Error: Metadata sync failed\n", 12, 0);
@@ -977,6 +982,46 @@ fn cmd_edit(args: [][]const u8) void {
     };
 
     vga.writeString("Success: Data appended to Coda FS.\n", 10, 0);
+}
+
+//Display free disk space
+fn cmd_df(args: [][]const u8) void {
+    _ = args;
+    const total = g_fs.superblock.total_blocks;
+    const free = g_fs.space_manager.getFreeBlockCount();
+    const used = total - free;
+
+    var output_buf: [256]u8 = undefined;
+    var pos: usize = 0;
+    var n_buf: [21]u8 = undefined;
+
+    // 1. Copy Total
+    const s_total = conv.u64ToStr(&n_buf, total);
+    @memcpy(output_buf[pos .. pos + 14], "CodaFS: Total ");
+    pos += 14;
+    @memcpy(output_buf[pos .. pos + s_total.len], s_total);
+    pos += s_total.len;
+
+    // 2. Copy Used
+    const s_used = conv.u64ToStr(&n_buf, used);
+    @memcpy(output_buf[pos .. pos + 8], " | Used ");
+    pos += 8;
+    @memcpy(output_buf[pos .. pos + s_used.len], s_used);
+    pos += s_used.len;
+
+    // 3. Copy Free
+    const s_free = conv.u64ToStr(&n_buf, free);
+    @memcpy(output_buf[pos .. pos + 8], " | Free ");
+    pos += 8;
+    @memcpy(output_buf[pos .. pos + s_free.len], s_free);
+    pos += s_free.len;
+
+    // 4. Add Newline
+    output_buf[pos] = '\n';
+    pos += 1;
+
+    // 5. Final print
+    vga.writeString(output_buf[0..pos], 0x0F, 0);
 }
 
 // -----------------------------------------------------------------------------
@@ -1200,6 +1245,13 @@ fn saveComposer() !void {
     const composer_entry = g_fs.findFile(g_allocator, sys_meta_lba, "composer.dat") catch |err| blk: {
         if (err == error.FileNotFound) {
             try g_fs.createFile(g_allocator, sys_meta_lba, 4, "composer.dat");
+            const ce = try g_fs.findFile(g_allocator, sys_meta_lba, "composer.dat");
+            var cm = try g_fs.readFileMeta(g_allocator, ce.meta_extent.start_block);
+            // Grow to 4 blocks to fit the 2048-byte transition table
+            while (cm.extent_count < 4) {
+                try g_fs.addBlockToFile(g_allocator, &cm);
+            }
+            try g_fs.writeBlockStruct(ce.meta_extent.start_block, &cm, @sizeOf(coda_file.FileMeta));
             break :blk try g_fs.findFile(g_allocator, sys_meta_lba, "composer.dat");
         }
         return err;
@@ -1212,7 +1264,7 @@ fn saveComposer() !void {
     try g_fs.device.writeBlocks(g_fs.device.ctx, data_lba, bytes);
 
     composer_meta.size_bytes = bytes.len;
-    composer_meta.extents[0].block_count = 1;
+    composer_meta.extents[0].block_count = 4;
 
     try g_fs.writeBlockStruct(
         composer_entry.meta_extent.start_block,

@@ -33,7 +33,7 @@ pub const SM_MAGIC: u64 = 0x434F44415F534D31;  // "CODA_SM1"
 ///
 /// start_block  — first LBA in the range (inclusive)
 /// block_count  — number of consecutive blocks
-pub const Extent = struct {
+pub const Extent = extern struct {
     start_block: u64,
     block_count: u64,
 };
@@ -242,6 +242,21 @@ pub const SpaceManager = struct {
         _ = self;
         return 0;
     }
+
+    /// Returns the total number of blocks that are currently free.
+    pub fn getFreeBlockCount(self: *const SpaceManager) u64 {
+        var free_total: u64 = 0;
+        for (self.free_list.items) |ext| {
+            free_total += ext.block_count;
+        }
+        return free_total;
+    }
+
+    /// Returns the total number of blocks currently in use.
+    pub fn getUsedBlockCount(self: *const SpaceManager, total_disk_blocks: u64) u64 {
+        return total_disk_blocks - self.getFreeBlockCount();
+    }
+
 };
 
 // ----------------------------------------------------------------
