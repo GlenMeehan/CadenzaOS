@@ -341,7 +341,15 @@ pub const CodaFs = struct {
         const dir_buf = try allocator.alloc(u8, fs.device.block_size);
         defer allocator.free(dir_buf);
 
-        try fs.device.readBlocks(fs.device.ctx, dir_lba, dir_buf);
+        // For subdirectories, dir_lba is the metadata LBA —
+        // resolve the actual data block LBA from the first extent
+        const is_root = (dir_lba == fs.superblock.root_dir_extent_start);
+        const data_lba = if (is_root) dir_lba else blk: {
+            const dir_meta = try fs.readFileMeta(allocator, dir_lba);
+            break :blk dir_meta.extents[0].start_block;
+        };
+
+        try fs.device.readBlocks(fs.device.ctx, data_lba, dir_buf);
 
         const entries = @as([*]DirEntry, @ptrCast(@alignCast(dir_buf.ptr)))[0 .. fs.device.block_size / @sizeOf(DirEntry)];
 
@@ -357,7 +365,7 @@ pub const CodaFs = struct {
         if (!found) return error.FileNotFound;
 
         // 6. Persist directory changes and SpaceManager state
-        try fs.device.writeBlocks(fs.device.ctx, dir_lba, dir_buf);
+        try fs.device.writeBlocks(fs.device.ctx, data_lba, dir_buf);
         try fs.space_manager.flushToDisk(allocator, fs.superblock.sm_start_block, fs.superblock.sm_block_count);
     }
 

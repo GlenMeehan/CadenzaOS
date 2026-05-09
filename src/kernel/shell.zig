@@ -26,7 +26,7 @@ const syscall = @import("syscall.zig");
 const ui_prompt = @import("ui/prompt.zig");
 const keyboard = @import("inputs/keyboard");
 const irupts = @import("irupts.zig");
-//const sm = @import("fs/coda_sm.zig");
+const task = @import("task.zig");
 
 
 const DirEntry = coda_file.DirEntry;
@@ -85,6 +85,7 @@ const commands = [_]Command{
     .{ .name = "vitals",   .desc = "Display vitals",                      .func = cmd_vitals,  .id = .VITALS },
     .{ .name = "version",  .desc = "Display system version information",  .func = cmd_version, .id = .VERSION },
     .{ .name = "uptime",  .desc = "Display time elapsed since last boot",  .func = cmd_uptime, .id = .UPTIME },
+    .{ .name = "tt",  .desc = "Multiprocess test",  .func = test_task, .id = .TT },
 
     // Filesystem / Composer‑tracked commands
     .{ .name = "ls",       .desc = "List root directory",                 .func = cmd_ls,     .id = .LS },
@@ -154,6 +155,21 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
     g_fs = fs;
     g_allocator = allocator;
 
+    // --- TASK MANAGER INITIALIZATION ---
+    // 1. Initialize the manager
+    task.manager = task.TaskManager.init();
+
+    // 2. Register THIS shell as Task 0
+    // We don't allocate memory for 'stack_mem' because the shell is
+    // already using the kernel/boot stack provided by your bootloader.
+    task.manager.tasks[0] = task.Task{
+        .id = 0,
+        .stack_ptr = 0,    // This will be saved automatically on the first yield
+        .state = .Running, // The shell is the one currently running!
+        .stack_mem = &[_]u8{},
+    };
+    task.manager.count = 1;
+
     // --- CONDUCTOR INITIALIZATION ---
     // Link the Conductor to the live policy now that g_fs is set
     conductor.init(&g_fs.superblock.policy);
@@ -192,6 +208,9 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
                 term.consumeLine();
                 break;
             }
+            // Optimization: If the shell is idle waiting for a key,
+            // we can yield to background tasks here too!
+            // task.yield();
         }
     }
 }
@@ -238,11 +257,14 @@ fn execute(line: []const u8) void {
     // 3. THE POLICY CHECK (Tier 1: Static Safety)
     const is_critical = switch (g_fs.superblock.policy) {
         .ADMIN  => (current_cmd_id == .DEL or current_cmd_id == .SHUTDOWN),
-        .DEV    => (current_cmd_id == .SHUTDOWN), // Delete is fine for devs
-        .GAMING => false, // Nothing is critical; just run it.
+        .DEV    => (current_cmd_id == .SHUTDOWN or current_cmd_id == .DEL), // Added .DEL here for testing
+        .GAMING => (current_cmd_id == .DEL), // Added .DEL here for testing
     };
 
-    if (is_critical or is_anomalous) {
+    // FORCE PROMPT FOR DELETE
+    const force_prompt = (current_cmd_id == .DEL);
+
+    if (is_critical or is_anomalous or force_prompt) {
         // We tailor the message so you know WHY you are being prompted
         const msg = if (is_critical)
         "!! SAFETY: Confirm critical action?"
@@ -679,13 +701,15 @@ fn cmd_cat(args: [][]const u8) void {
 }
 
 fn cmd_del(args: [][]const u8) void {
-
     if (args.len < 2) {
-        vga.writeString("Usage: del <filename>\n", FG, BG);
+        vga.writeString("Usage: del <filename>\n", 15, 0);
         return;
     }
 
-     const filename = args[1];
+    const filename = args[1];
+
+    // Note: The prompt logic usually lives here or inside a wrapper.
+    // If you have a 'confirmAction' function, ensure it's still being called.
 
     g_fs.deleteFile(g_allocator, g_cwd_lba, filename) catch |err| {
         if (err == error.FileNotFound) {
@@ -1341,4 +1365,32 @@ fn checkEntropy(current_tick: u64) bool {
     }
 
     return false;
+}
+
+
+// Test command to check memory allocation works
+fn test_task(args: [][]const u8) void {
+    _ = args;
+
+    if (task.manager.tasks[1] == null) {
+        // Just 'catch' with no |_|
+        const tA = task.Task.init(1, g_allocator, @intFromPtr(&task.taskA_main)) catch {
+            vga.writeString("Error: Failed to initialize task.\n", 12, 0);
+            return;
+        };
+
+        // Same here: just 'catch' and use '_' for the returned index
+        _ = task.manager.addTask(tA) catch {
+            vga.writeString("Error: No task slots available.\n", 12, 0);
+            return;
+        };
+
+        vga.writeString("Task A spawned successfully.\n", 10, 0);
+
+
+
+
+    }
+    // This tells the manager: "Save the Shell, find Task A, and jump to it!"
+    task.yield();
 }
