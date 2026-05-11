@@ -8,6 +8,7 @@ const std = @import("std");
 pub extern fn switch_tasks(old_rsp: *usize, new_rsp: usize) void;
 
 const MAX_TASKS = 8;
+pub var preempt_requested: bool = false;
 
 pub const TaskState = enum {
     Ready,      // Waiting to be picked by the scheduler
@@ -17,15 +18,12 @@ pub const TaskState = enum {
 };
 
 pub const RegisterContext = struct {
-    // The order must match exactly how your switch_tasks assembly
-    // pushes and pops registers to/from the stack.
     r15: u64, r14: u64, r13: u64, r12: u64,
     r11: u64, r10: u64, r9: u64, r8: u64,
     rbp: u64, rdi: u64, rsi: u64, rdx: u64,
     rcx: u64, rbx: u64, rax: u64,
 
-    /// This is where 'ret' will jump. For a new task, this is the entry point.
-    /// For a yielded task, this is the instruction after 'switch_tasks'.
+    // This is what 'ret' in arch_util.s will jump to
     rip: u64,
 };
 
@@ -40,22 +38,17 @@ pub const Task = struct {
         const stack = try allocator.alloc(u8, 4096);
         const stack_top = @intFromPtr(stack.ptr) + stack.len;
 
-        // Place the initial RegisterContext at the top of the stack
         var initial_sp = stack_top - @sizeOf(RegisterContext);
-
-        // Standard x86_64 ABI alignment (16-byte)
         initial_sp = (initial_sp & ~@as(usize, 15));
 
         const reg_ptr = @as(*RegisterContext, @ptrFromInt(initial_sp));
 
-        // Zero out registers so the task starts with a clean slate
+        // 1. Clear all registers
         inline for (std.meta.fields(RegisterContext)) |field| {
-            if (!std.mem.eql(u8, field.name, "rip")) {
-                @field(reg_ptr, field.name) = 0;
-            }
+            @field(reg_ptr, field.name) = 0;
         }
 
-        // Set the address the task starts executing at
+        // 2. Set the entry point
         reg_ptr.rip = entry_point;
 
         return Task{
@@ -68,9 +61,10 @@ pub const Task = struct {
 };
 
 pub const TaskManager = struct {
-    tasks: [MAX_TASKS]?Task,
+    tasks: [8]?Task,
     current_task_idx: usize,
     count: usize,
+    yield_enabled: bool = false, // Start disabled!
 
     pub fn init() TaskManager {
         return .{
@@ -137,6 +131,9 @@ pub fn yield() void {
 /// We mark it as 'pub' so shell.zig can see it, and 'callconv(.C)'
 /// for standard stack behavior.
 pub fn taskA_main() callconv(.c) void {
+
+    // Force interrupts to be ENABLED as soon as this task starts
+    asm volatile ("sti");
     const vga_ptr = @as([*]volatile u16, @ptrFromInt(0xB8000));
     var run_count: u32 = 0;
 

@@ -38,6 +38,9 @@ const BG = 0;
 var last_command_tick: u64 = 0;
 var current_command_tick: u64 = 0;
 
+// 4KB of memory, aligned to 16 bytes for x86_64 compatibility
+var test_task_stack: [4096]u8 align(16) = [_]u8{0} ** 4096;
+
 // -----------------------------------------------------------------------------
 //  GLOBAL SHELL STATE
 // -----------------------------------------------------------------------------
@@ -85,7 +88,7 @@ const commands = [_]Command{
     .{ .name = "vitals",   .desc = "Display vitals",                      .func = cmd_vitals,  .id = .VITALS },
     .{ .name = "version",  .desc = "Display system version information",  .func = cmd_version, .id = .VERSION },
     .{ .name = "uptime",  .desc = "Display time elapsed since last boot",  .func = cmd_uptime, .id = .UPTIME },
-    .{ .name = "tt",  .desc = "Multiprocess test",  .func = test_task, .id = .TT },
+    //.{ .name = "tt",  .desc = "Multiprocess test",  .func = test_task, .id = .TT },
 
     // Filesystem / Composer‑tracked commands
     .{ .name = "ls",       .desc = "List root directory",                 .func = cmd_ls,     .id = .LS },
@@ -170,6 +173,19 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
     };
     task.manager.count = 1;
 
+    // 3. We cast the function 'test_task' to a 'usize' address
+    task.manager.tasks[1] = task.Task.init(
+        1,
+        allocator,
+        @intFromPtr(&task.taskA_main) // Point straight to the worker
+    ) catch unreachable;
+
+    // 4. Update the count so the manager knows there are now 2 tasks
+    task.manager.count = 2;
+
+    // 5. THE MASTER SWITCH: This tells the timer it's okay to start switching
+    task.manager.yield_enabled = true;
+
     // --- CONDUCTOR INITIALIZATION ---
     // Link the Conductor to the live policy now that g_fs is set
     conductor.init(&g_fs.superblock.policy);
@@ -208,9 +224,10 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
                 term.consumeLine();
                 break;
             }
-            // Optimization: If the shell is idle waiting for a key,
-            // we can yield to background tasks here too!
-            // task.yield();
+            if (task.preempt_requested) {
+                task.preempt_requested = false;
+                task.manager.yield();
+            }
         }
     }
 }
@@ -1367,30 +1384,3 @@ fn checkEntropy(current_tick: u64) bool {
     return false;
 }
 
-
-// Test command to check memory allocation works
-fn test_task(args: [][]const u8) void {
-    _ = args;
-
-    if (task.manager.tasks[1] == null) {
-        // Just 'catch' with no |_|
-        const tA = task.Task.init(1, g_allocator, @intFromPtr(&task.taskA_main)) catch {
-            vga.writeString("Error: Failed to initialize task.\n", 12, 0);
-            return;
-        };
-
-        // Same here: just 'catch' and use '_' for the returned index
-        _ = task.manager.addTask(tA) catch {
-            vga.writeString("Error: No task slots available.\n", 12, 0);
-            return;
-        };
-
-        vga.writeString("Task A spawned successfully.\n", 10, 0);
-
-
-
-
-    }
-    // This tells the manager: "Save the Shell, find Task A, and jump to it!"
-    task.yield();
-}

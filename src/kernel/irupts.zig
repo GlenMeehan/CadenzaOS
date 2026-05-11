@@ -14,6 +14,7 @@ const vga = @import("vga.zig");
 const io = @import("port_io.zig");
 const conv = @import("convert.zig");
 const keyboard = @import("inputs/keyboard.zig");
+const task = @import("task.zig");
 
 pub var ticks: u64 = 0;
 
@@ -22,8 +23,11 @@ pub var ticks: u64 = 0;
 // -----------------------------------------------------------------------------
 
 pub export fn irq0_handler() callconv(.c) void {
+
+    // 1. Increment ticks FIRST
     ticks += 1;
 
+    // 2. Handle the Uptime Display logic (Keep your existing code here)
     if (ticks % 100 == 0) {
         const total_seconds = ticks / 100;
         const minutes = @as(u32, @intCast(total_seconds / 60));
@@ -54,7 +58,15 @@ pub export fn irq0_handler() callconv(.c) void {
         vga.writeStringAt(row, s_unit_col, "s ", 0x07, 0);
     }
 
+    // 3. IMPORTANT: Send the EOI to the PIC BEFORE yielding
+    // If we yield before doing this, the hardware thinks we are still
+    // busy and will stop sending Timer AND Keyboard interrupts!
     io.outb(0x20, 0x20);
+
+    // 4. Finally, yield
+    if (task.manager.yield_enabled) {
+        task.preempt_requested = true;
+    }
 }
 
 // -----------------------------------------------------------------------------
