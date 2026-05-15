@@ -49,4 +49,24 @@ pub const SystemPolicy = enum(u8) {
 };
 
 // Default policy - you can change this to simulate the "Setup" choice
-pub var current_policy: SystemPolicy = .DEV;
+pub var current_policy: SystemPolicy = .ADMIN;
+
+
+//Multitasking pulse contril constants
+
+pub const scheduler = struct {
+    /// How many timer ticks a task gets before we force a switch.
+    /// Lower = more "parallel" feel, Higher = better raw performance.
+    pub const timeslice_ticks: u32 = 10;
+
+    /// Maximum number of concurrent tasks the kernel can manage.
+    pub const max_tasks: usize = 8;
+
+    /// Default stack size for new tasks (4KB is standard).
+    pub const default_stack_size: usize = 4096;
+};
+
+pub const timer = struct {
+    /// The frequency of the PIT (Programmable Interval Timer) in Hz.
+    pub const frequency_hz: u32 = 100;
+};

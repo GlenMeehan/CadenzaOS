@@ -160,7 +160,7 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
 
     // --- TASK MANAGER INITIALIZATION ---
     // 1. Initialize the manager
-    task.manager = task.TaskManager.init();
+    task.manager = task.TaskManager.init(g_allocator);
 
     // 2. Register THIS shell as Task 0
     // We don't allocate memory for 'stack_mem' because the shell is
@@ -170,6 +170,7 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
         .stack_ptr = 0,    // This will be saved automatically on the first yield
         .state = .Running, // The shell is the one currently running!
         .stack_mem = &[_]u8{},
+        .wake_tick = 0,
     };
     task.manager.count = 1;
 
@@ -180,11 +181,19 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
         @intFromPtr(&task.taskA_main) // Point straight to the worker
     ) catch unreachable;
 
+    // 3b. Register Task 2 (Task B)
+    task.manager.tasks[2] = task.Task.init(
+        2,
+        allocator,
+        @intFromPtr(&task.taskB_main)
+    ) catch unreachable;
+
     // 4. Update the count so the manager knows there are now 2 tasks
     task.manager.count = 2;
 
     // 5. THE MASTER SWITCH: This tells the timer it's okay to start switching
     task.manager.yield_enabled = true;
+    task.manager.yield_control = .Auto; // Start safe!
 
     // --- CONDUCTOR INITIALIZATION ---
     // Link the Conductor to the live policy now that g_fs is set
@@ -204,11 +213,19 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
 
     last_command = .UNKNOWN;
 
+    asm volatile ("sti");
+
     while (true) {
 
         var prompt_buf: [64]u8 = undefined;
         const current_dir = g_cwd_name[0..g_cwd_name_len];
         const prompt = std.fmt.bufPrint(&prompt_buf, "Cadenza {s}> ", .{current_dir}) catch "Cadenza> ";
+
+        // Check if the Timer has requested a reschedule
+        if (task.preemption_requested) {
+            task.preemption_requested = false; // Reset the flag
+            task.yield();                      // Perform the yield
+        }
 
         vga.writeString(prompt, 3, 0);
         vga.updateCursorHardware();
@@ -224,9 +241,9 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
                 term.consumeLine();
                 break;
             }
-            if (task.preempt_requested) {
-                task.preempt_requested = false;
-                task.manager.yield();
+            if (task.preemption_requested) {
+                task.preemption_requested = false;
+                task.yield();
             }
         }
     }

@@ -15,6 +15,7 @@ const io = @import("port_io.zig");
 const conv = @import("convert.zig");
 const keyboard = @import("inputs/keyboard.zig");
 const task = @import("task.zig");
+const config = @import("config.zig");
 
 pub var ticks: u64 = 0;
 
@@ -23,13 +24,14 @@ pub var ticks: u64 = 0;
 // -----------------------------------------------------------------------------
 
 pub export fn irq0_handler() callconv(.c) void {
+    // 1. MASTER CLOCK: Increment the manager's ticks
+    // This drives everything: Uptime, Sleep, and Preemption.
+    task.manager.ticks += 1;
+    const current_ticks = task.manager.ticks;
 
-    // 1. Increment ticks FIRST
-    ticks += 1;
-
-    // 2. Handle the Uptime Display logic (Keep your existing code here)
-    if (ticks % 100 == 0) {
-        const total_seconds = ticks / 100;
+    // 2. UPTIME DISPLAY: Refresh once per second (every 100 ticks)
+    if (current_ticks % 100 == 0) {
+        const total_seconds = current_ticks / 100;
         const minutes = @as(u32, @intCast(total_seconds / 60));
         const seconds = @as(u32, @intCast(total_seconds % 60));
 
@@ -44,28 +46,29 @@ pub export fn irq0_handler() callconv(.c) void {
 
         vga.writeStringAt(row, col_start, "Uptime: ", 0x07, 0);
 
-        // Use @intCast to satisfy the u16 requirement
-        const m_val_col = col_start + 8;
-        vga.writeStringAt(row, m_val_col, m_str, 0x0E, 0);
+        // Draw minutes
+        vga.writeStringAt(row, col_start + 8, m_str, 0x0E, 0);
+        const m_len = @as(u16, @intCast(m_str.len));
+        vga.writeStringAt(row, col_start + 8 + m_len, "m ", 0x07, 0);
 
-        const m_unit_col = m_val_col + @as(u16, @intCast(m_str.len));
-        vga.writeStringAt(row, m_unit_col, "m ", 0x07, 0);
-
-        const s_val_col = m_unit_col + 2;
-        vga.writeStringAt(row, s_val_col, s_str, 0x0E, 0);
-
-        const s_unit_col = s_val_col + @as(u16, @intCast(s_str.len));
-        vga.writeStringAt(row, s_unit_col, "s ", 0x07, 0);
+        // Draw seconds
+        const s_pos = col_start + 8 + m_len + 2;
+        vga.writeStringAt(row, s_pos, s_str, 0x0E, 0);
+        const s_len = @as(u16, @intCast(s_str.len));
+        vga.writeStringAt(row, s_pos + s_len, "s ", 0x07, 0);
     }
 
-    // 3. IMPORTANT: Send the EOI to the PIC BEFORE yielding
-    // If we yield before doing this, the hardware thinks we are still
-    // busy and will stop sending Timer AND Keyboard interrupts!
+    // 3. EOI: Tell the hardware we processed the interrupt
     io.outb(0x20, 0x20);
 
-    // 4. Finally, yield
+    // 4. PREEMPTION: Switch tasks if enabled
     if (task.manager.yield_enabled) {
-        task.preempt_requested = true;
+        if (task.manager.yield_control == .Auto) {
+            // Check against our config value (e.g., 10 ticks)
+            if (current_ticks % config.scheduler.timeslice_ticks == 0) {
+                task.manager.yield();
+            }
+        }
     }
 }
 
@@ -74,11 +77,25 @@ pub export fn irq0_handler() callconv(.c) void {
 // -----------------------------------------------------------------------------
 
 pub export fn irq1_handler() callconv(.c) void {
+    // 1. Read the scancode from port 0x60
     const scancode = io.inb(0x60);
     keyboard.handleScancode(scancode);
 
+    // 2. Put it in your keyboard buffer
     // EOI (master PIC)
     io.outb(0x20, 0x20);
+
+    // 3. NEW: Wake up the Shell (Task 0)
+    if (task.manager.tasks[0]) |*shell| {
+        if (shell.state == .Blocked and shell.wake_tick == 0) {
+            shell.state = .Ready;
+        }
+    }
+
+    // 4. Send EOI to PIC
+    io.outb(0x20, 0x20);
+
+
 }
 
 // -----------------------------------------------------------------------------
