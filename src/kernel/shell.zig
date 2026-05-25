@@ -26,8 +26,23 @@ const syscall = @import("syscall.zig");
 const ui_prompt = @import("ui/prompt.zig");
 const keyboard = @import("inputs/keyboard");
 const irupts = @import("irupts.zig");
+const scheduler = @import("scheduler.zig");
 const task = @import("task.zig");
 
+
+// --------------------------------
+// Task registry
+// --------------------------------
+
+const TaskRegistryEntry = struct {
+    name: []const u8,
+    entry: *const fn() callconv(.c) void,
+};
+
+const task_registry = [_]TaskRegistryEntry{
+    .{ .name = "taskA", .entry = &task.taskA_main },
+    .{ .name = "taskB", .entry = &task.taskB_main },
+};
 
 const DirEntry = coda_file.DirEntry;
 const Directory = coda_file.Directory;
@@ -88,7 +103,7 @@ const commands = [_]Command{
     .{ .name = "vitals",   .desc = "Display vitals",                      .func = cmd_vitals,  .id = .VITALS },
     .{ .name = "version",  .desc = "Display system version information",  .func = cmd_version, .id = .VERSION },
     .{ .name = "uptime",  .desc = "Display time elapsed since last boot",  .func = cmd_uptime, .id = .UPTIME },
-    //.{ .name = "tt",  .desc = "Multiprocess test",  .func = test_task, .id = .TT },
+    .{ .name = "spawn", .desc = "Spawn a named task", .func = cmd_spawn, .id = .SPAWN, .needs_arg = true },
 
     // Filesystem / Composer‑tracked commands
     .{ .name = "ls",       .desc = "List root directory",                 .func = cmd_ls,     .id = .LS },
@@ -158,74 +173,27 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
     g_fs = fs;
     g_allocator = allocator;
 
-    // --- TASK MANAGER INITIALIZATION ---
-    // 1. Initialize the manager
-    task.manager = task.TaskManager.init(g_allocator);
-
-    // 2. Register THIS shell as Task 0
-    // We don't allocate memory for 'stack_mem' because the shell is
-    // already using the kernel/boot stack provided by your bootloader.
-    task.manager.tasks[0] = task.Task{
-        .id = 0,
-        .stack_ptr = 0,    // This will be saved automatically on the first yield
-        .state = .Running, // The shell is the one currently running!
-        .stack_mem = &[_]u8{},
-        .wake_tick = 0,
-    };
-    task.manager.count = 1;
-
-    // 3. We cast the function 'test_task' to a 'usize' address
-    task.manager.tasks[1] = task.Task.init(
-        1,
-        allocator,
-        @intFromPtr(&task.taskA_main) // Point straight to the worker
-    ) catch unreachable;
-
-    // 3b. Register Task 2 (Task B)
-    task.manager.tasks[2] = task.Task.init(
-        2,
-        allocator,
-        @intFromPtr(&task.taskB_main)
-    ) catch unreachable;
-
-    // 4. Update the count so the manager knows there are now 2 tasks
-    task.manager.count = 2;
-
-    // 5. THE MASTER SWITCH: This tells the timer it's okay to start switching
-    task.manager.yield_enabled = true;
-    task.manager.yield_control = .Auto; // Start safe!
-
     // --- CONDUCTOR INITIALIZATION ---
-    // Link the Conductor to the live policy now that g_fs is set
     conductor.init(&g_fs.superblock.policy);
-
 
     g_cwd_lba = fs.superblock.root_dir_extent_start;
     g_cwd_blocks = @intCast(fs.superblock.root_dir_extent_blocks);
 
-    // Initialize the name to root
     g_cwd_name[0] = '/';
     g_cwd_name_len = 1;
 
-    // Load Composer and plug predictor into terminal
     loadComposer();
     term.setPredictor(shellPredictor);
-
     last_command = .UNKNOWN;
 
+    // Enable interrupts safely now that hardware/FS state is bound
     asm volatile ("sti");
 
+    // ONE SINGLE CLEAN LOOP
     while (true) {
-
         var prompt_buf: [64]u8 = undefined;
         const current_dir = g_cwd_name[0..g_cwd_name_len];
         const prompt = std.fmt.bufPrint(&prompt_buf, "Cadenza {s}> ", .{current_dir}) catch "Cadenza> ";
-
-        // Check if the Timer has requested a reschedule
-        if (task.preemption_requested) {
-            task.preemption_requested = false; // Reset the flag
-            task.yield();                      // Perform the yield
-        }
 
         vga.writeString(prompt, 3, 0);
         vga.updateCursorHardware();
@@ -233,19 +201,15 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
         term.startNewLine();
         term.refresh();
 
-        while (true) {
-            if (term.takeLine()) |line| {
-                conductor.tick();
-                term.commitHistory();
-                execute(line);
-                term.consumeLine();
-                break;
-            }
-            if (task.preemption_requested) {
-                task.preemption_requested = false;
-                task.yield();
-            }
-        }
+        // 1. This halts and yields to Task A back-and-forth continuously
+        // until you press Enter!
+        const line = term.takeLine();
+
+        // 2. The microsecond Enter is pressed, execute and repeat cleanly
+        conductor.tick();
+        term.commitHistory();
+        execute(line);
+        term.consumeLine();
     }
 }
 
@@ -1130,6 +1094,33 @@ fn cmd_policy(args: [][]const u8) void {
     }
 }
 
+fn cmd_spawn(args: [][]const u8) void {
+    if (args.len < 2) {
+        vga.writeString("Usage: spawn <taskname>\n", 15, 0);
+        return;
+    }
+
+    const task_name = args[1];
+
+    // Search the task registry for a matching name
+    for (task_registry) |entry| {
+        if (std.mem.eql(u8, entry.name, task_name)) {
+            _ = scheduler.manager.registerDynamicTask(entry.entry, g_allocator) catch {
+                vga.writeString("Error: Could not spawn task\n", 12, 0);
+                return;
+            };
+            vga.writeString("Spawned: ", 10, 0);
+            vga.writeString(task_name, 10, 0);
+            vga.putChar('\n', 10, 0);
+            return;
+        }
+    }
+
+    vga.writeString("Error: Unknown task '", 12, 0);
+    vga.writeString(task_name, 12, 0);
+    vga.writeString("'\n", 12, 0);
+}
+
 // -----------------------------------------------------------------------------
 //  COMPOSER / PREDICTION HELPERS
 // -----------------------------------------------------------------------------
@@ -1401,3 +1392,13 @@ fn checkEntropy(current_tick: u64) bool {
     return false;
 }
 
+pub fn pause() void {
+    // Disable interrupts so the timer can't kick us out,
+    // then put the CPU into a permanent halt state.
+    while (true) {
+        asm volatile (
+            \\cli
+            \\hlt
+        );
+    }
+}

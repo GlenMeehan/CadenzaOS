@@ -113,6 +113,47 @@ var extended_release = false;
 // Main entry point for PS/2 scancodes
 // -----------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------
+// Circular Input Queue (Ring Buffer)
+// -----------------------------------------------------------------------------
+const BUFFER_SIZE = 64;
+
+pub const RingBuffer = struct {
+    data: [BUFFER_SIZE]u8 = [_]u8{0} ** BUFFER_SIZE,
+    head: usize = 0,
+    tail: usize = 0,
+
+    pub fn push(self: *RingBuffer, ch: u8) bool {
+        const next_head = (self.head + 1) % BUFFER_SIZE;
+        // If the buffer is full, drop the character to prevent overwriting unread keys
+        if (next_head == self.tail) {
+            return false;
+        }
+        self.data[self.head] = ch;
+        self.head = next_head;
+        return true;
+    }
+
+    pub fn pop(self: *RingBuffer) ?u8 {
+        // If head equals tail, there are no unread keys
+        if (self.head == self.tail) {
+            return null;
+        }
+        const ch = self.data[self.tail];
+        self.tail = (self.tail + 1) % BUFFER_SIZE;
+        return ch;
+    }
+};
+
+// Global instance to bridge interrupts and tasks
+pub var input_queue = RingBuffer{};
+
+/// Pulls the next available character from the circular input buffer.
+/// Returns the ASCII character if one is waiting, or null if the buffer is empty.
+pub fn readChar() ?u8 {
+    return input_queue.pop();
+}
+
 pub var last_char: u8 = 0;
 
 pub fn handleScancode(scancode: u8) void {
@@ -147,16 +188,17 @@ pub fn handleScancode(scancode: u8) void {
 
     // ASCII mapping
     if (scancodeToAscii(scancode)) |ch| {
-        // 1. Determine the final character (handling Ctrl modification)
         const final_ch = if (ctrl_down) (ch & 0x1F) else ch;
 
-        // 2. Update the "Memory" for the Confirmation Service
+        // 1. Keep tracking memory variable for now if other systems need it
         last_char = final_ch;
 
-        // 3. Update the "UI" (Terminal)
-        term.handleKeyEvent(.{ .char = final_ch });
+        // 2. MODIFIED: Push straight into the ring buffer queue instead of calling UI directly
+        _ = input_queue.push(final_ch);
 
-        // If it was a Ctrl combo, we return early as you did before
+        // 3. UI update removed from interrupt context
+        // term.handleKeyEvent(.{ .char = final_ch });
+
         if (ctrl_down) return;
     }
 }

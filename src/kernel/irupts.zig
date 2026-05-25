@@ -16,6 +16,7 @@ const conv = @import("convert.zig");
 const keyboard = @import("inputs/keyboard.zig");
 const task = @import("task.zig");
 const config = @import("config.zig");
+const scheduler = @import("scheduler.zig");
 
 pub var ticks: u64 = 0;
 
@@ -24,10 +25,10 @@ pub var ticks: u64 = 0;
 // -----------------------------------------------------------------------------
 
 pub export fn irq0_handler() callconv(.c) void {
-    // 1. MASTER CLOCK: Increment the manager's ticks
-    // This drives everything: Uptime, Sleep, and Preemption.
-    task.manager.ticks += 1;
-    const current_ticks = task.manager.ticks;
+    // 1. Increment the local, standalone global clock instead of task.manager
+    ticks += 1;
+    scheduler.manager.ticks = ticks;  // ← keep scheduler in sync
+    const current_ticks = ticks;
 
     // 2. UPTIME DISPLAY: Refresh once per second (every 100 ticks)
     if (current_ticks % 100 == 0) {
@@ -60,16 +61,6 @@ pub export fn irq0_handler() callconv(.c) void {
 
     // 3. EOI: Tell the hardware we processed the interrupt
     io.outb(0x20, 0x20);
-
-    // 4. PREEMPTION: Switch tasks if enabled
-    if (task.manager.yield_enabled) {
-        if (task.manager.yield_control == .Auto) {
-            // Check against our config value (e.g., 10 ticks)
-            if (current_ticks % config.scheduler.timeslice_ticks == 0) {
-                task.manager.yield();
-            }
-        }
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -81,21 +72,15 @@ pub export fn irq1_handler() callconv(.c) void {
     const scancode = io.inb(0x60);
     keyboard.handleScancode(scancode);
 
-    // 2. Put it in your keyboard buffer
-    // EOI (master PIC)
+    // 2. Send EOI to master PIC
     io.outb(0x20, 0x20);
 
-    // 3. NEW: Wake up the Shell (Task 0)
-    if (task.manager.tasks[0]) |*shell| {
-        if (shell.state == .Blocked and shell.wake_tick == 0) {
-            shell.state = .Ready;
-        }
-    }
-
-    // 4. Send EOI to PIC
-    io.outb(0x20, 0x20);
-
-
+    // 3. REACTIVE YIELD LEFT-OVER: COMMENTED OUT COMPLETELY
+    // if (task.manager.tasks[0]) |*shell| {
+    //     if (shell.state == .Blocked and shell.wake_tick == 0) {
+    //         shell.state = .Ready;
+    //     }
+    // }
 }
 
 // -----------------------------------------------------------------------------

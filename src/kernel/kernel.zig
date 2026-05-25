@@ -37,6 +37,8 @@ const coda_fs = @import("fs/coda_fs.zig");
 const CodaFs = coda_fs.CodaFs;
 const bd = @import("fs/block_device.zig").BlockDevice;
 const ata = @import("drivers/ata.zig");
+const scheduler = @import("scheduler.zig");
+const task = @import("task.zig");
 
 pub const STACK_SIZE = 0x40000;         // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
@@ -56,6 +58,7 @@ var heap_buffer: [1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
 
 // Global FixedBufferAllocator — lifetime = whole kernel
 var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
+var allocator: std.mem.Allocator = undefined;
 
 // RAM Disk virtual mapping
 pub const RAMDISK_VIRT_ADDR: usize = 0xFFFFFF8001000000;
@@ -66,6 +69,7 @@ pub const fs_ramdisk_buf: *[RAMDISK_SIZE]u8 = @ptrFromInt(RAMDISK_VIRT_ADDR);
 
 // Global filesystem instance (RAM-backed CodaFS)
 var fs_global: CodaFs align(4096) linksection(".bss") = undefined;
+
 
 // -----------------------------------------------------------------------------
 //  FREESTANDING SUPPORT: memmove
@@ -125,6 +129,19 @@ pub fn panic(
     }
 }
 
+/// This function serves as the entry point for the managed Shell task.
+/// It wraps the true shell runner with the global kernel state variables.
+fn schedulerShellWrapper() void {
+    // Invoke your standard shell loop using the active global allocations
+    shell.run(&fs_global, allocator);
+
+    // Defensive programming: tasks should never return. If it breaks out, hang safely.
+    while (true) {
+        scheduler.manager.yield();
+    }
+}
+
+
 // Ensure IRQ handlers are retained
 comptime {
     _ = interrupts.irq0_handler;
@@ -147,6 +164,8 @@ export fn kernel_entry() void {
     kmain();
     unreachable;
 }
+
+
 
 /// Main kernel entry point.
 pub export fn kmain() noreturn {
@@ -224,7 +243,7 @@ pub export fn kmain() noreturn {
     vga.step(2);
 
     // 3) Use the global FixedBufferAllocator as the kernel heap
-    const allocator = fba.allocator();
+    allocator = fba.allocator();
 
     // 4) Initialize frame allocator (backed by safe E820 data).
     fa.FrameAllocator.init();
@@ -433,9 +452,41 @@ pub export fn kmain() noreturn {
     fs_global.root_dir = fs.root_dir;
 
     // -------------------------------------------------------------------------
-    //  HAND OFF TO SHELL
+    //  TASK MANAGER INITIALIZATION
     // -------------------------------------------------------------------------
-    shell.run(&fs_global, allocator);
+    scheduler.manager = scheduler.Scheduler.init(allocator);
+
+    if (conf.USE_SCHEDULER_SHELL) {
+        // 1. Register the main thread as Task 0
+        scheduler.manager.registerCurrentThreadAsTask(0, 0);
+
+        // 2. Register Task A & B while we are still in setup mode
+        //These are place holder spawns for future if any tasks need to run automatically on startup
+        //_ = scheduler.manager.registerDynamicTask(task.taskA_main, allocator) catch |err| {
+            //vga.writeString("Failed to spawn Task A: ", 12, 0);
+            //vga.writeString(@errorName(err), 12, 0);
+            //@panic("Failed to spawn Task A");
+        //};
+
+        //_ = scheduler.manager.registerDynamicTask(task.taskB_main, allocator) catch |err| {
+            //vga.writeString("Failed to spawn Task B: ", 12, 0);
+            //vga.writeString(@errorName(err), 12, 0);
+            //@panic("Failed to spawn Task B");
+        //};
+
+        // 3. Drop the safety barrier (the scheduler is now fully armed)
+        scheduler.manager.yield_enabled = true;
+
+        // 4. Launch! Execution drops into the shell loop now.
+        shell.run(&fs_global, allocator);
+
+        // Defensive fall-through protection in case shell ever exits
+        while (true) { asm volatile ("hlt"); }
+    } else {
+        // Legacy mode: Scheduler stays off, shell runs raw
+        scheduler.manager.yield_enabled = false;
+        shell.run(&fs_global, allocator);
+    }
 
     // Optional allocator tests (kept as-is)
     const ENABLE_TESTS = false;

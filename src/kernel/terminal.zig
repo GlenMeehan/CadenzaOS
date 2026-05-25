@@ -20,6 +20,8 @@ const KeyEvent = @import("inputs/key_event.zig").KeyEvent;
 const SpecialKey = @import("inputs/key_event.zig").SpecialKey;
 const mem = @import("memory.zig");
 const config = @import("config.zig");
+const keyboard = @import("inputs/keyboard.zig");
+const scheduler = @import("scheduler.zig");
 
 const MAX_LINE = config.TERMINAL_LINE_SIZE;
 const MAX_HISTORY = 32;
@@ -134,9 +136,37 @@ fn isPrintable(ch: u8) bool {
     return ch >= 32 and ch < 127;
 }
 
-pub fn takeLine() ?[]const u8 {
-    if (!line_ready.load(.acquire)) return null;
-    return line_buffer[0..line_len];
+pub fn takeLine() []const u8 {
+    while (true) {
+        // 1. First, drain the raw ring buffer keys into the line buffer (from Option A)
+        pollKeyboard();
+
+        // 2. Check if a full line is ready (user pressed Enter)
+        if (line_ready.load(.acquire)) {
+            return line_buffer[0..line_len];
+        }
+
+        // 3. THE FIX: The line isn't ready. Stop spinning!
+        // Tell the scheduler to put the Shell (Task 0) to sleep.
+        if (scheduler.manager.tasks[0]) |*shell_task| {
+            shell_task.state = .Ready;
+        }
+
+        // 4. Immediately give up the rest of our time slot.
+        // The CPU jumps away to run other things, completely ignoring the shell
+        // until the keyboard interrupt wakes it up.
+        scheduler.manager.yield();
+    }
+}
+
+/// Drains all characters currently waiting in the keyboard's circular buffer
+/// and processes them through the terminal's line-editor and UI state machine.
+pub fn pollKeyboard() void {
+    // Continuously pop from the ring buffer until it returns null (empty)
+    while (keyboard.readChar()) |ch| {
+        // Feed the raw character to your existing line processor
+        processChar(ch);
+    }
 }
 
 pub fn consumeLine() void {

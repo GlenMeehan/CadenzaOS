@@ -38,7 +38,7 @@ pub const CommandID = enum(u8) {
     VERSION = 15,
     UPTIME = 16,
     DF = 17,
-    //TT = 18,
+    SPAWN = 18,
 };
 
 
@@ -52,7 +52,7 @@ pub const SystemPolicy = enum(u8) {
 pub var current_policy: SystemPolicy = .ADMIN;
 
 
-//Multitasking pulse contril constants
+//Multitasking pulse control constants
 
 pub const scheduler = struct {
     /// How many timer ticks a task gets before we force a switch.
@@ -70,3 +70,5 @@ pub const timer = struct {
     /// The frequency of the PIT (Programmable Interval Timer) in Hz.
     pub const frequency_hz: u32 = 100;
 };
+
+pub const USE_SCHEDULER_SHELL = true;
