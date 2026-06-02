@@ -58,7 +58,7 @@ var heap_buffer: [1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
 
 // Global FixedBufferAllocator — lifetime = whole kernel
 var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
-var allocator: std.mem.Allocator = undefined;
+pub var allocator: std.mem.Allocator = undefined;
 
 // RAM Disk virtual mapping
 pub const RAMDISK_VIRT_ADDR: usize = 0xFFFFFF8001000000;
@@ -68,7 +68,13 @@ pub const RAMDISK_SIZE: usize = 4 * 1024 * 1024;
 pub const fs_ramdisk_buf: *[RAMDISK_SIZE]u8 = @ptrFromInt(RAMDISK_VIRT_ADDR);
 
 // Global filesystem instance (RAM-backed CodaFS)
-var fs_global: CodaFs align(4096) linksection(".bss") = undefined;
+pub var fs_global: CodaFs align(4096) linksection(".bss") = undefined;
+
+// -----------------------------------------------------------------------------
+// THE PERMANENT KERNEL STACK
+// -----------------------------------------------------------------------------
+// A dedicated 16KB stack array sitting safely in the permanent .bss section
+var kmain_stack: [16384]u8 align(16) linksection(".bss") = undefined;
 
 
 // -----------------------------------------------------------------------------
@@ -92,6 +98,65 @@ pub export fn memmove(dest: ?[*]u8, src: ?[*]const u8, n: usize) ?[*]u8 {
         }
     }
     return dest;
+}
+
+/// Handles early filesystem formatting and mounting.
+///
+/// CRITICAL ARCHITECTURAL NOTE ON MEMORY LIFECYCLE:
+/// This function executes within the context of Task 0. The underlying `ram_disk`
+/// and `dev` (BlockDevice) instances MUST be allocated on a permanent stack frame
+/// (like `kmain`'s stack) and passed here via mutable pointers.
+///
+/// If these structures were instantiated locally inside this function, their memory
+/// would be destroyed when this function returns, leaving `fs_global` filled with
+/// dangerous dangling pointers that would instantly crash the shell.
+fn genesisTask(
+    fs_already_exists: bool,
+    ram_disk: * @import("fs/ramdisk.zig").RamDisk,
+               dev: * @import("fs/block_device.zig").BlockDevice,
+               mgr: *scheduler.Scheduler,
+               idle_stack: []u8,
+               shell_stack: []u8,
+) void {
+    _ = ram_disk;
+
+    // 1. FILESYSTEM INITIALIZATION
+    if (!fs_already_exists) {
+        CodaFs.mkfs(allocator, dev) catch |err| {
+            @panic(@errorName(err));
+        };
+    }
+
+    const fs = CodaFs.mount(allocator, dev) catch |err| {
+        vga.writeString("Mount failed: ", 12, 4);
+        @panic(@errorName(err));
+    };
+
+    fs_global.device = fs.device;
+    fs_global.superblock = fs.superblock;
+    fs_global.space_manager = fs.space_manager;
+    fs_global.root_dir = fs.root_dir;
+
+    // 2. SYSTEM TASK REGISTRATION
+    if (conf.USE_SCHEDULER_SHELL) {
+        mgr.registerStaticTask(1, 1, idleTaskMain, idle_stack);
+        mgr.registerStaticTask(2, 2, shellTaskMain, shell_stack);
+    }
+}
+
+/// The Idle Task: Low-power fallback execution loop
+fn idleTaskMain() callconv(.c) void {
+    while (true) {
+        asm volatile ("hlt");
+    }
+}
+
+/// The Shell Task: New home for our interactive CLI
+fn shellTaskMain() callconv(.c) void {
+    shell.run(&fs_global, allocator);
+    while (true) {
+        asm volatile ("hlt");
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -169,6 +234,17 @@ export fn kernel_entry() void {
 
 /// Main kernel entry point.
 pub export fn kmain() noreturn {
+    // 1. Calculate the top of our new stack array
+    const new_sp = @intFromPtr(&kmain_stack) + kmain_stack.len;
+
+    // 2. Inline assembly compliant with modern Zig syntax
+    asm volatile (
+        \\ movq %[stack], %%rsp
+        :
+        : [stack] "r" (new_sp),
+    );
+
+
     // -------------------------------------------------------------------------
     //  BSS / EARLY CLEAR
     // -------------------------------------------------------------------------
@@ -429,61 +505,46 @@ pub export fn kmain() noreturn {
     asm volatile ("sti");
     vga.clearScreen(15, 0);
 
-    // -------------------------------------------------------------------------
-    //  FILESYSTEM BRING-UP (RAM-BACKED CODAFS)
-    // -------------------------------------------------------------------------
-    var ram_disk = @import("fs/ramdisk.zig").RamDisk.init(fs_ramdisk_buf[0..], 512);
-    var dev = ram_disk.asBlockDevice();
-
-    if (!fs_exists) {
-        CodaFs.mkfs(allocator, &dev) catch |err| {
-            @panic(@errorName(err));
-        };
-    }
-
-    const fs = CodaFs.mount(allocator, &dev) catch |err| {
-        vga.writeString("Mount failed: ", 12, 4);
-        @panic(@errorName(err));
-    };
-
-    fs_global.device = fs.device;
-    fs_global.superblock = fs.superblock;
-    fs_global.space_manager = fs.space_manager;
-    fs_global.root_dir = fs.root_dir;
-
-    // -------------------------------------------------------------------------
-    //  TASK MANAGER INITIALIZATION
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // TASK MANAGER INITIALIZATION
+    // =========================================================================
     scheduler.manager = scheduler.Scheduler.init(allocator);
 
     if (conf.USE_SCHEDULER_SHELL) {
-        // 1. Register the main thread as Task 0
         scheduler.manager.registerCurrentThreadAsTask(0, 0);
+        scheduler.manager.current_task_idx = 0;
+    }
 
-        // 2. Register Task A & B while we are still in setup mode
-        //These are place holder spawns for future if any tasks need to run automatically on startup
-        //_ = scheduler.manager.registerDynamicTask(task.taskA_main, allocator) catch |err| {
-            //vga.writeString("Failed to spawn Task A: ", 12, 0);
-            //vga.writeString(@errorName(err), 12, 0);
-            //@panic("Failed to spawn Task A");
-        //};
+    // =========================================================================
+    // PERMANENT STORAGE & STACK FRAME ALLOCATIONS
+    // =========================================================================
+    var ram_disk = @import("fs/ramdisk.zig").RamDisk.init(fs_ramdisk_buf[0..], 512);
+    var dev = ram_disk.asBlockDevice();
 
-        //_ = scheduler.manager.registerDynamicTask(task.taskB_main, allocator) catch |err| {
-            //vga.writeString("Failed to spawn Task B: ", 12, 0);
-            //vga.writeString(@errorName(err), 12, 0);
-            //@panic("Failed to spawn Task B");
-        //};
+    // Allocate task stacks safely within kmain's permanent stack context
+    var idle_stack_buf: [16384]u8 align(16) = undefined;
+    var shell_stack_buf: [16384]u8 align(16) = undefined;
 
-        // 3. Drop the safety barrier (the scheduler is now fully armed)
-        scheduler.manager.yield_enabled = true;
+    // =========================================================================
+    // EXPLICIT STEP: EXECUTE TASK 0 INITIALIZATION WORKER
+    // =========================================================================
+    genesisTask(
+        fs_exists,
+        &ram_disk,
+        &dev,
+        &scheduler.manager,
+        idle_stack_buf[0..],
+        shell_stack_buf[0..]
+    );
 
-        // 4. Launch! Execution drops into the shell loop now.
+    // =========================================================================
+    //  SHELL STARTUP
+    // =========================================================================
+    if (conf.USE_SCHEDULER_SHELL) {
+        scheduler.manager.yield_enabled = false; // Kept false safely for verification!
         shell.run(&fs_global, allocator);
-
-        // Defensive fall-through protection in case shell ever exits
         while (true) { asm volatile ("hlt"); }
     } else {
-        // Legacy mode: Scheduler stays off, shell runs raw
         scheduler.manager.yield_enabled = false;
         shell.run(&fs_global, allocator);
     }

@@ -502,33 +502,34 @@ fn cmd_uptime(tokens: [][]const u8) void {
 // -----------------------------------------------------------------------------
 
 fn cmd_ls(args: [][]const u8) void {
+    var arena = std.heap.ArenaAllocator.init(g_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     var target_lba = g_cwd_lba;
     var target_blocks = g_cwd_blocks;
 
     if (args.len > 1) {
-        const result = g_fs.resolvePath(g_allocator, g_cwd_lba, args[1]) catch |err| {
+        const result = g_fs.resolvePath(alloc, g_cwd_lba, args[1]) catch |err| {
             vga.writeString("Error: ", 12, 0);
             vga.writeString(@errorName(err), 12, 0);
             vga.writeString("\n", 12, 0);
             return;
         };
-
         target_lba = result.lba;
         target_blocks = @intCast(result.blocks);
-
         if (!result.is_directory) {
             vga.writeString("Error: Path is a file, not a directory.\n", 12, 0);
             return;
         }
     }
 
-    const entries = g_fs.listDir(g_allocator, target_lba, target_blocks) catch |err| {
+    const entries = g_fs.listDir(alloc, target_lba, target_blocks) catch |err| {
         vga.writeString("ls failed: ", 12, 0);
         vga.writeString(@errorName(err), 12, 0);
         vga.putChar('\n', 15, 0);
         return;
     };
-    defer g_allocator.free(entries);
 
     if (entries.len == 0) {
         vga.writeString("(empty)\n", 7, 0);
@@ -536,25 +537,20 @@ fn cmd_ls(args: [][]const u8) void {
     }
 
     for (entries) |entry| {
-        const meta = g_fs.readFileMeta(g_allocator, entry.meta_extent.start_block) catch continue;
-
+        const meta = g_fs.readFileMeta(alloc, entry.meta_extent.start_block) catch continue;
         if (meta.file_type == .Directory) {
             vga.writeString("[DIR]  ", 11, 0);
         } else {
             vga.writeString("[FILE] ", 15, 0);
         }
-
         const name = entry.name[0..entry.name_len];
         const color: u8 = if (meta.file_type == .Directory) 11 else 15;
-
         for (name) |c| {
             vga.putChar(c, color, 0);
         }
-
         if (meta.file_type == .Directory) {
             vga.putChar('/', 11, 0);
         }
-
         vga.putChar('\n', 15, 0);
     }
 }
@@ -597,14 +593,18 @@ fn cmd_stat(args: [][]const u8) void {
         return;
     }
 
+    var arena = std.heap.ArenaAllocator.init(g_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     const filename = args[1];
 
-    const lba = g_fs.findFile(g_allocator, g_cwd_lba, filename) catch {
+    const lba = g_fs.findFile(alloc, g_cwd_lba, filename) catch {
         vga.writeString("File not found\n", FG, BG);
         return;
     };
 
-    const meta = g_fs.readFileMeta(g_allocator, lba.meta_extent.start_block) catch {
+    const meta = g_fs.readFileMeta(alloc, lba.meta_extent.start_block) catch {
         vga.writeString("Failed to read metadata\n", FG, BG);
         return;
     };
@@ -631,10 +631,8 @@ fn cmd_stat(args: [][]const u8) void {
     var cursor: usize = 0;
     @memcpy(size_line[cursor..label.len], label);
     cursor += label.len;
-
     @memcpy(size_line[cursor .. cursor + size_str.len], size_str);
     cursor += size_str.len;
-
     @memcpy(size_line[cursor .. cursor + suffix.len], suffix);
     cursor += suffix.len;
 
@@ -647,18 +645,21 @@ fn cmd_cat(args: [][]const u8) void {
         return;
     }
 
+    var arena = std.heap.ArenaAllocator.init(g_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     const filename = args[1];
 
-    const entry = g_fs.findFile(g_allocator, g_cwd_lba, filename) catch {
+    const entry = g_fs.findFile(alloc, g_cwd_lba, filename) catch {
         vga.writeString("Error: File not found\n", FG, BG);
         return;
     };
 
-    const meta = g_fs.readFileMeta(g_allocator, entry.meta_extent.start_block) catch {
+    const meta = g_fs.readFileMeta(alloc, entry.meta_extent.start_block) catch {
         vga.writeString("Error: Could not read metadata\n", FG, BG);
         return;
     };
-
 
     if (meta.file_type == .Directory) {
         vga.writeString("Error: Cannot 'cat' a directory.\n", FG, BG);
@@ -670,8 +671,7 @@ fn cmd_cat(args: [][]const u8) void {
         return;
     }
 
-    const buf = g_allocator.alloc(u8, conf.BLOCK_SIZE) catch return;
-    defer g_allocator.free(buf);
+    const buf = alloc.alloc(u8, conf.BLOCK_SIZE) catch return;
 
     var bytes_remaining = meta.size_bytes;
 
@@ -688,9 +688,7 @@ fn cmd_cat(args: [][]const u8) void {
             };
 
             const chunk_size = if (bytes_remaining > conf.BLOCK_SIZE) @as(usize, conf.BLOCK_SIZE) else @as(usize, @intCast(bytes_remaining));
-
             vga.writeRaw(buf[0..chunk_size], FG, BG);
-
             bytes_remaining -= chunk_size;
         }
     }
@@ -727,14 +725,17 @@ fn cmd_rename(args: [][]const u8) void {
         return;
     }
 
+    var arena = std.heap.ArenaAllocator.init(g_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     const old_name = args[1];
     const new_name = args[2];
 
-    const entries = g_fs.listDir(g_allocator, g_cwd_lba, g_cwd_blocks) catch {
+    const entries = g_fs.listDir(alloc, g_cwd_lba, g_cwd_blocks) catch {
         vga.writeString("Error: Could not read directory.\n", 12, 0);
         return;
     };
-    defer g_allocator.free(entries);
 
     var found = false;
     for (entries) |*e| {
@@ -743,7 +744,6 @@ fn cmd_rename(args: [][]const u8) void {
                 vga.writeString("Error: New name too long.\n", 12, 0);
                 return;
             }
-
             @memset(e.name[0..], 0);
             @memcpy(e.name[0..new_name.len], new_name);
             e.name_len = @intCast(new_name.len);
@@ -757,7 +757,7 @@ fn cmd_rename(args: [][]const u8) void {
         return;
     }
 
-    g_fs.saveDirectoryEntries(g_allocator, g_cwd_lba, entries) catch {
+    g_fs.saveDirectoryEntries(alloc, g_cwd_lba, entries) catch {
         vga.writeString("Error: Failed to sync changes to disk.\n", 12, 0);
         return;
     };
@@ -790,9 +790,14 @@ fn cmd_cd(args: [][]const u8) void {
         vga.writeString("Usage: cd <directory>\n", 14, 0);
         return;
     }
+
+    var arena = std.heap.ArenaAllocator.init(g_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     const path_str = args[1];
 
-    const result = g_fs.resolvePath(g_allocator, g_cwd_lba, path_str) catch |err| {
+    const result = g_fs.resolvePath(alloc, g_cwd_lba, path_str) catch |err| {
         if (err == error.PathNotFound) {
             vga.writeString("Error: Directory not found.\n", 12, 0);
         } else {
@@ -837,6 +842,10 @@ fn cmd_mv(args: [][]const u8) void {
         return;
     }
 
+    var arena = std.heap.ArenaAllocator.init(g_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     const src_path = args[1];
     const dest_path = args[2];
 
@@ -849,13 +858,13 @@ fn cmd_mv(args: [][]const u8) void {
         if (src_dir_path.len == 0) src_dir_path = "/";
     }
 
-    const src_parent = g_fs.resolvePath(g_allocator, g_cwd_lba, src_dir_path) catch {
+    const src_parent = g_fs.resolvePath(alloc, g_cwd_lba, src_dir_path) catch {
         vga.writeString("Error: Source directory not found.\n", 12, 0);
         return;
     };
 
     const entry_to_move = g_fs.findAndRemoveEntry(
-        g_allocator,
+        alloc,
         src_parent.lba,
         @intCast(src_parent.blocks),
                                                   src_filename,
@@ -866,28 +875,21 @@ fn cmd_mv(args: [][]const u8) void {
         return;
     };
 
-    const dest_resolve = g_fs.resolvePath(g_allocator, g_cwd_lba, dest_path) catch |err| {
-        _ = g_fs.insertEntry(g_allocator, src_parent.lba, entry_to_move) catch {};
+    const dest_resolve = g_fs.resolvePath(alloc, g_cwd_lba, dest_path) catch |err| {
+        _ = g_fs.insertEntry(alloc, src_parent.lba, entry_to_move) catch {};
         vga.writeString("Error: Dest resolution failed: ", 12, 0);
         vga.writeString(@errorName(err), 12, 0);
         vga.putChar('\n', 15, 0);
         return;
     };
 
-    vga.writeString("DEBUG: is_dir = ", 14, 0);
-    if (dest_resolve.is_directory) {
-        vga.writeString("TRUE\n", 10, 0);
-    } else {
-        vga.writeString("FALSE\n", 12, 0);
-    }
-
     if (dest_resolve.is_directory) {
         g_fs.insertEntry(
-            g_allocator,
+            alloc,
             dest_resolve.lba,
             entry_to_move,
         ) catch |err| {
-            _ = g_fs.insertEntry(g_allocator, src_parent.lba, entry_to_move) catch {};
+            _ = g_fs.insertEntry(alloc, src_parent.lba, entry_to_move) catch {};
             vga.writeString("Insert failed: ", 12, 0);
             vga.writeString(@errorName(err), 12, 0);
             vga.putChar('\n', 15, 0);
@@ -895,7 +897,7 @@ fn cmd_mv(args: [][]const u8) void {
         };
         vga.writeString("Move successful!\n", 10, 0);
     } else {
-        _ = g_fs.insertEntry(g_allocator, src_parent.lba, entry_to_move) catch {};
+        _ = g_fs.insertEntry(alloc, src_parent.lba, entry_to_move) catch {};
         vga.writeString("Error: Target is a file.\n", 12, 0);
     }
 }
@@ -906,6 +908,10 @@ fn cmd_edit(args: [][]const u8) void {
         return;
     }
 
+    var arena = std.heap.ArenaAllocator.init(g_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
     const filename = args[1];
 
     var text_buf: [conf.TERMINAL_LINE_SIZE]u8 align(16) = undefined;
@@ -915,7 +921,6 @@ fn cmd_edit(args: [][]const u8) void {
             text_buf[current_pos] = ' ';
             current_pos += 1;
         }
-
         const space_left = text_buf.len - current_pos;
         const copy_len = if (arg.len > space_left) space_left else arg.len;
         @memcpy(text_buf[current_pos .. current_pos + copy_len], arg[0..copy_len]);
@@ -925,31 +930,33 @@ fn cmd_edit(args: [][]const u8) void {
 
     var meta_lba: u64 = 0;
 
-    if (g_fs.findFile(g_allocator, g_cwd_lba, filename)) |entry| {
+    // Use arena for read operations only
+    if (g_fs.findFile(alloc, g_cwd_lba, filename)) |entry| {
         meta_lba = entry.meta_extent.start_block;
     } else |_| {
+        // Use g_allocator for write operations
         g_fs.createFile(g_allocator, g_cwd_lba, g_cwd_blocks, filename) catch {
             vga.writeString("Error: Could not create file\n", 12, 0);
             return;
         };
-        const new_entry = g_fs.findFile(g_allocator, g_cwd_lba, filename) catch {
+        const new_entry = g_fs.findFile(alloc, g_cwd_lba, filename) catch {
             vga.writeString("Error: File created but not found\n", 12, 0);
             return;
         };
         meta_lba = new_entry.meta_extent.start_block;
     }
 
-    var meta = g_fs.readFileMeta(g_allocator, meta_lba) catch {
+    var meta = g_fs.readFileMeta(alloc, meta_lba) catch {
         vga.writeString("Error: Could not read metadata\n", 12, 0);
         return;
     };
-
 
     const old_size = meta.size_bytes;
     const total_new_size = old_size + final_text.len;
     const total_blocks_needed = (total_new_size + conf.BLOCK_SIZE - 1) / conf.BLOCK_SIZE;
 
     while (meta.extent_count < total_blocks_needed) {
+        // Use g_allocator for write operations
         g_fs.addBlockToFile(g_allocator, &meta) catch |err| {
             if (err == error.FileAtMaximumSize) {
                 vga.writeString("Warning: File capped at 4KB.\n", 14, 0);
@@ -960,8 +967,7 @@ fn cmd_edit(args: [][]const u8) void {
         };
     }
 
-    const block_buf = g_allocator.alloc(u8, conf.BLOCK_SIZE) catch return;
-    defer g_allocator.free(block_buf);
+    const block_buf = alloc.alloc(u8, conf.BLOCK_SIZE) catch return;
 
     var bytes_to_append = final_text.len;
     var write_offset: usize = old_size;
@@ -969,7 +975,6 @@ fn cmd_edit(args: [][]const u8) void {
     while (bytes_to_append > 0) {
         const block_idx = write_offset / conf.BLOCK_SIZE;
         const offset_in_block = write_offset % conf.BLOCK_SIZE;
-
         const target_lba = getLbaForBlock(meta, block_idx);
 
         g_fs.device.readBlocks(g_fs.device.ctx, target_lba, block_buf) catch {
@@ -979,8 +984,8 @@ fn cmd_edit(args: [][]const u8) void {
 
         const space_in_block = conf.BLOCK_SIZE - offset_in_block;
         const copy_size = if (bytes_to_append > space_in_block) space_in_block else bytes_to_append;
-
         const source_start = final_text.len - bytes_to_append;
+
         @memcpy(
             block_buf[offset_in_block .. offset_in_block + copy_size],
             final_text[source_start .. source_start + copy_size],
@@ -994,8 +999,6 @@ fn cmd_edit(args: [][]const u8) void {
         write_offset += copy_size;
         bytes_to_append -= copy_size;
     }
-
-
 
     meta.size_bytes = @intCast(total_new_size);
     g_fs.writeBlockStruct(meta_lba, &meta, @sizeOf(coda_file.FileMeta)) catch {
@@ -1276,45 +1279,40 @@ fn getNameFromId(id: conf.CommandID) ?[]const u8 {
 }
 
 fn saveComposer() !void {
-    const root_lba = g_fs.superblock.root_dir_extent_start;
+    var arena = std.heap.ArenaAllocator.init(g_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
 
-    const sys_entry = g_fs.findFile(g_allocator, root_lba, "sys") catch |err| blk: {
+    const root_lba = g_fs.superblock.root_dir_extent_start;
+    const sys_entry = g_fs.findFile(alloc, root_lba, "sys") catch |err| blk: {
         if (err == error.FileNotFound) {
-            try g_fs.createEntry(g_allocator, root_lba, 1, "sys", .Directory);
-            break :blk try g_fs.findFile(g_allocator, root_lba, "sys");
+            try g_fs.createEntry(alloc, root_lba, 1, "sys", .Directory);
+            break :blk try g_fs.findFile(alloc, root_lba, "sys");
         }
         return err;
     };
-
-    const sys_meta = try g_fs.readFileMeta(g_allocator, sys_entry.meta_extent.start_block);
+    const sys_meta = try g_fs.readFileMeta(alloc, sys_entry.meta_extent.start_block);
     if (sys_meta.file_type != .Directory) return error.NotADirectory;
-
     const sys_meta_lba = sys_entry.meta_extent.start_block;
-
-    const composer_entry = g_fs.findFile(g_allocator, sys_meta_lba, "composer.dat") catch |err| blk: {
+    const composer_entry = g_fs.findFile(alloc, sys_meta_lba, "composer.dat") catch |err| blk: {
         if (err == error.FileNotFound) {
-            try g_fs.createFile(g_allocator, sys_meta_lba, 4, "composer.dat");
-            const ce = try g_fs.findFile(g_allocator, sys_meta_lba, "composer.dat");
-            var cm = try g_fs.readFileMeta(g_allocator, ce.meta_extent.start_block);
-            // Grow to 4 blocks to fit the 2048-byte transition table
+            try g_fs.createFile(alloc, sys_meta_lba, 4, "composer.dat");
+            const ce = try g_fs.findFile(alloc, sys_meta_lba, "composer.dat");
+            var cm = try g_fs.readFileMeta(alloc, ce.meta_extent.start_block);
             while (cm.extent_count < 4) {
-                try g_fs.addBlockToFile(g_allocator, &cm);
+                try g_fs.addBlockToFile(alloc, &cm);
             }
             try g_fs.writeBlockStruct(ce.meta_extent.start_block, &cm, @sizeOf(coda_file.FileMeta));
-            break :blk try g_fs.findFile(g_allocator, sys_meta_lba, "composer.dat");
+            break :blk try g_fs.findFile(alloc, sys_meta_lba, "composer.dat");
         }
         return err;
     };
-
-    var composer_meta = try g_fs.readFileMeta(g_allocator, composer_entry.meta_extent.start_block);
+    var composer_meta = try g_fs.readFileMeta(alloc, composer_entry.meta_extent.start_block);
     const data_lba = composer_meta.extents[0].start_block;
-
     const bytes = std.mem.sliceAsBytes(&conductor.transition_table);
     try g_fs.device.writeBlocks(g_fs.device.ctx, data_lba, bytes);
-
     composer_meta.size_bytes = bytes.len;
     composer_meta.extents[0].block_count = 4;
-
     try g_fs.writeBlockStruct(
         composer_entry.meta_extent.start_block,
         &composer_meta,
