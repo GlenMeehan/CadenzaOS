@@ -166,7 +166,7 @@ pub const Scheduler = struct {
     /// The core time-allocation logic.
     /// Cyclically loops through the array to find the next active task slot.
     pub fn pickNextTask(self: *Scheduler) usize {
-        // 1. Add the '&' right here to iterate by reference!
+        // 1. Wake up any suspended tasks whose timer thresholds have passed
         for (&self.tasks) |*maybe_task| {
             if (maybe_task.*) |*t| {
                 if (t.state == .Suspended and self.ticks >= t.wake_tick) {
@@ -175,16 +175,25 @@ pub const Scheduler = struct {
             }
         }
 
-        // 2. Run your existing round-robin loop
+        // 2. Strict Round-Robin tracking using direct array optional checks
         var next_idx = (self.current_task_idx + 1) % self.tasks.len;
         while (next_idx != self.current_task_idx) {
             if (self.tasks[next_idx]) |t| {
-                    if (t.state == .Ready or t.state == .Running) {
+                // Only switch to a task that is explicitly ready to execute
+                if (t.state == .Ready) {
                     return next_idx;
                 }
             }
             next_idx = (next_idx + 1) % self.tasks.len;
         }
+
+        // 3. Fallback: If current task is still running and nothing else is ready, stay on it.
+        if (self.tasks[self.current_task_idx]) |curr| {
+            if (curr.state == .Running) return self.current_task_idx;
+        }
+
+        // 4. Absolute Fallback: Look for the Idle Task (traditionally Slot 1)
+        if (self.tasks[1] != null) return 1;
 
         return 0;
     }
@@ -193,7 +202,7 @@ pub const Scheduler = struct {
     pub fn yield(self: *Scheduler) void {
         if (!self.yield_enabled) return;
 
-        // Cleanup any dead tasks
+        // 1. Cleanup any dead tasks cleanly
         for (0..self.tasks.len) |i| {
             if (i == self.current_task_idx) continue;
             if (self.tasks[i]) |t| {
@@ -208,22 +217,26 @@ pub const Scheduler = struct {
             }
         }
 
+        // 2. Determine who runs next
         const next_idx = self.pickNextTask();
         if (next_idx == self.current_task_idx) return;
 
         const current_old = self.current_task_idx;
 
-        if (self.tasks[current_old]) |*curr| {
-            if (curr.state == .Running) curr.state = .Ready;
+        // 3. FIX: Mutate state via direct array access, not stack copy un-wrapping!
+        if (self.tasks[current_old] != null) {
+            if (self.tasks[current_old].?.state == .Running) {
+                self.tasks[current_old].?.state = .Ready;
+            }
         }
 
         self.current_task_idx = next_idx;
 
-        if (self.tasks[next_idx]) |*next| {
-            next.state = .Running;
+        if (self.tasks[next_idx] != null) {
+            self.tasks[next_idx].?.state = .Running;
         }
 
-        // Now this can see the internal identifier perfectly!
+        // 4. Fire assembly task switch safely
         switch_tasks(&self.tasks[current_old].?.stack_ptr, self.tasks[next_idx].?.stack_ptr);
     }
 };

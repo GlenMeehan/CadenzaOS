@@ -100,64 +100,6 @@ pub export fn memmove(dest: ?[*]u8, src: ?[*]const u8, n: usize) ?[*]u8 {
     return dest;
 }
 
-/// Handles early filesystem formatting and mounting.
-///
-/// CRITICAL ARCHITECTURAL NOTE ON MEMORY LIFECYCLE:
-/// This function executes within the context of Task 0. The underlying `ram_disk`
-/// and `dev` (BlockDevice) instances MUST be allocated on a permanent stack frame
-/// (like `kmain`'s stack) and passed here via mutable pointers.
-///
-/// If these structures were instantiated locally inside this function, their memory
-/// would be destroyed when this function returns, leaving `fs_global` filled with
-/// dangerous dangling pointers that would instantly crash the shell.
-fn genesisTask(
-    fs_already_exists: bool,
-    ram_disk: * @import("fs/ramdisk.zig").RamDisk,
-               dev: * @import("fs/block_device.zig").BlockDevice,
-               mgr: *scheduler.Scheduler,
-               idle_stack: []u8,
-               shell_stack: []u8,
-) void {
-    _ = ram_disk;
-
-    // 1. FILESYSTEM INITIALIZATION
-    if (!fs_already_exists) {
-        CodaFs.mkfs(allocator, dev) catch |err| {
-            @panic(@errorName(err));
-        };
-    }
-
-    const fs = CodaFs.mount(allocator, dev) catch |err| {
-        vga.writeString("Mount failed: ", 12, 4);
-        @panic(@errorName(err));
-    };
-
-    fs_global.device = fs.device;
-    fs_global.superblock = fs.superblock;
-    fs_global.space_manager = fs.space_manager;
-    fs_global.root_dir = fs.root_dir;
-
-    // 2. SYSTEM TASK REGISTRATION
-    if (conf.USE_SCHEDULER_SHELL) {
-        mgr.registerStaticTask(1, 1, idleTaskMain, idle_stack);
-        mgr.registerStaticTask(2, 2, shellTaskMain, shell_stack);
-    }
-}
-
-/// The Idle Task: Low-power fallback execution loop
-fn idleTaskMain() callconv(.c) void {
-    while (true) {
-        asm volatile ("hlt");
-    }
-}
-
-/// The Shell Task: New home for our interactive CLI
-fn shellTaskMain() callconv(.c) void {
-    shell.run(&fs_global, allocator);
-    while (true) {
-        asm volatile ("hlt");
-    }
-}
 
 // -----------------------------------------------------------------------------
 //  PANIC HANDLER (KERNEL-LOCAL)
@@ -516,32 +458,35 @@ pub export fn kmain() noreturn {
     }
 
     // =========================================================================
-    // PERMANENT STORAGE & STACK FRAME ALLOCATIONS
+    // PERMANENT STORAGE & FILE SYSTEM BRING UP
     // =========================================================================
     var ram_disk = @import("fs/ramdisk.zig").RamDisk.init(fs_ramdisk_buf[0..], 512);
     var dev = ram_disk.asBlockDevice();
 
-    // Allocate task stacks safely within kmain's permanent stack context
-    var idle_stack_buf: [16384]u8 align(16) = undefined;
-    var shell_stack_buf: [16384]u8 align(16) = undefined;
+    if (!fs_exists) {
+        CodaFs.mkfs(allocator, &dev) catch |err| {
+            @panic(@errorName(err));
+        };
+    }
+
+    const fs = CodaFs.mount(allocator, &dev) catch |err| {
+        vga.writeString("Mount failed: ", 12, 4);
+        @panic(@errorName(err));
+    };
+
+    fs_global.device = fs.device;
+    fs_global.superblock = fs.superblock;
+    fs_global.space_manager = fs.space_manager;
+    fs_global.root_dir = fs.root_dir;
 
     // =========================================================================
-    // EXPLICIT STEP: EXECUTE TASK 0 INITIALIZATION WORKER
-    // =========================================================================
-    genesisTask(
-        fs_exists,
-        &ram_disk,
-        &dev,
-        &scheduler.manager,
-        idle_stack_buf[0..],
-        shell_stack_buf[0..]
-    );
-
-    // =========================================================================
-    //  SHELL STARTUP
+    //  SHELL STARTUP WITH CONFIGURATION OPTIONS
     // =========================================================================
     if (conf.USE_SCHEDULER_SHELL) {
-        scheduler.manager.yield_enabled = false; // Kept false safely for verification!
+        // Turn the scheduler engine infrastructure ON so the background
+        // tasks can switch cleanly once they are dynamically spawned!
+        scheduler.manager.yield_enabled = true;
+
         shell.run(&fs_global, allocator);
         while (true) { asm volatile ("hlt"); }
     } else {

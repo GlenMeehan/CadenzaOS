@@ -56,21 +56,27 @@ fn draw_counter(vga: [*]volatile u16, pos: usize, val: u32) void {
 /// Puts the currently executing task to sleep for a specified number of milliseconds.
 /// Calculates required ticks dynamically based on the configured timer hardware frequency.
 pub fn sleep(ms: u64) void {
-    // 1. Calculate how many ticks to wait based on config.timer.frequency_hz
-    // Formula: ticks = (ms * frequency) / 1000
     const frequency = config.timer.frequency_hz;
     const ticks_to_wait = (ms * frequency) / 1000;
+    const wake_at = scheduler.manager.ticks + ticks_to_wait;
 
-    // 2. Access the global scheduler manager instance
-    if (scheduler.manager.tasks[scheduler.manager.current_task_idx]) |*t| {
-        // Defensive check: Task 0 (Shell) can sleep, but if it does,
-        // ensure other tasks exist to wake it up or prevent a dead lock!
-
-        // Target a absolute future tick count
-        t.wake_tick = scheduler.manager.ticks + ticks_to_wait;
+    // Set state to suspended
+    const my_idx = scheduler.manager.current_task_idx;
+    if (scheduler.manager.tasks[my_idx]) |*t| {
+        t.wake_tick = wake_at;
         t.state = .Suspended;
     }
 
-    // 3. Immediately yield this task's remaining time slot
+    // Yield to let other tasks run if available
     scheduler.manager.yield();
+
+    // Busy-wait until wake time in case yield returned immediately
+    while (scheduler.manager.ticks < wake_at) {
+        asm volatile ("hlt");
+    }
+
+    // Mark ourselves Ready again
+    if (scheduler.manager.tasks[my_idx]) |*t| {
+        if (t.state == .Suspended) t.state = .Ready;
+    }
 }
