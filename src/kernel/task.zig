@@ -58,24 +58,19 @@ fn draw_counter(vga: [*]volatile u16, pos: usize, val: u32) void {
 pub fn sleep(ms: u64) void {
     const frequency = config.timer.frequency_hz;
     const ticks_to_wait = (ms * frequency) / 1000;
-    const wake_at = scheduler.manager.ticks + ticks_to_wait;
-
-    // Set state to suspended
     const my_idx = scheduler.manager.current_task_idx;
+
     if (scheduler.manager.tasks[my_idx]) |*t| {
-        t.wake_tick = wake_at;
+        t.wake_tick = scheduler.manager.ticks + ticks_to_wait;
         t.state = .Suspended;
     }
 
-    // Yield to let other tasks run if available
-    scheduler.manager.yield();
-
-    // Busy-wait until wake time in case yield returned immediately
-    while (scheduler.manager.ticks < wake_at) {
-        asm volatile ("hlt");
+    // Keep yielding until our wake time is reached
+    while (scheduler.manager.ticks < scheduler.manager.tasks[my_idx].?.wake_tick) {
+        scheduler.manager.yield();
+        asm volatile ("nop"); // prevent tight spin if yield returns immediately
     }
 
-    // Mark ourselves Ready again
     if (scheduler.manager.tasks[my_idx]) |*t| {
         if (t.state == .Suspended) t.state = .Ready;
     }
