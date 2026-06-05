@@ -43,33 +43,39 @@ global exception14_asm
 ; ---------------------------------------------------------------------------
 
 %macro PUSH_REGS 0
-    push rbp
-    mov  rbp, rsp
-
-    push rax
-    push rcx
-    push rdx
-    push rbx
-    push rsi
-    push rdi
-    push r8
-    push r9
-    push r10
+    push r15
+    push r14
+    push r13
+    push r12
     push r11
+    push r10
+    push r9
+    push r8
+    push rdi
+    push rsi
+    push rbx
+    push rdx
+    push rcx
+    push rax
+    push rbp
 %endmacro
 
 %macro POP_REGS 0
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rbx
-    pop rdx
-    pop rcx
-    pop rax
     pop rbp
+    pop rax
+    pop rcx
+    pop rdx
+    pop rbx
+    pop rsi
+    pop rdi
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
 %endmacro
 
 ; ---------------------------------------------------------------------------
