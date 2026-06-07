@@ -76,6 +76,11 @@ pub var fs_global: CodaFs align(4096) linksection(".bss") = undefined;
 // A dedicated 16KB stack array sitting safely in the permanent .bss section
 var kmain_stack: [16384]u8 align(16) linksection(".bss") = undefined;
 
+// -----------------------------------------------------------------------------
+//  STATIC SHELL STACK - This buffer is statically allocated outside of kmain's stack frame
+// -----------------------------------------------------------------------------
+var shell_stack_buf: [16384]u8 align(16) = undefined;
+
 
 // -----------------------------------------------------------------------------
 //  FREESTANDING SUPPORT: memmove
@@ -138,16 +143,18 @@ pub fn panic(
 
 /// This function serves as the entry point for the managed Shell task.
 /// It wraps the true shell runner with the global kernel state variables.
-fn schedulerShellWrapper() void {
-    // Invoke your standard shell loop using the active global allocations
+fn shellTaskWrapper() callconv(.c) void {
+    // Force interrupts to be enabled inside the task context
+    asm volatile ("sti");
+
+    // Launch your interactive loop
     shell.run(&fs_global, allocator);
 
-    // Defensive programming: tasks should never return. If it breaks out, hang safely.
+    // Safety fallback if shell exits
     while (true) {
-        scheduler.manager.yield();
+        asm volatile ("hlt");
     }
 }
-
 
 // Ensure IRQ handlers are retained
 comptime {
@@ -480,14 +487,37 @@ pub export fn kmain() noreturn {
     fs_global.root_dir = fs.root_dir;
 
     // =========================================================================
-    //  SHELL STARTUP WITH CONFIGURATION OPTIONS
+    //  SHELL STARTUP WITH DEDICATED STACK SWAP
     // =========================================================================
     if (conf.USE_SCHEDULER_SHELL) {
-        // Turn the scheduler engine infrastructure ON so the background
-        // tasks can switch cleanly once they are dynamically spawned!
+        // 1. Calculate the absolute top of our private shell stack buffer
+        const stack_top = @intFromPtr(&shell_stack_buf) + shell_stack_buf.len;
+
+        // 2. HARDWARE SWAP: Force the CPU to leave the kernel boot stack
+        // and instantly start using our private shell stack buffer.
+        asm volatile (
+            \\ mov %[top], %%rsp
+            \\ xor %%rbp, %%rbp
+            :
+            : [top] "r" (stack_top)
+            : .{} // Passes an empty compile-time struct literal
+        );
+
+        // 3. Now that the CPU is physically isolated on its own stack,
+        // we register this exact execution state as Task 0.
+        scheduler.manager.registerCurrentThreadAsTask(0, 0);
+        scheduler.manager.current_task_idx = 0;
+
+        // 4. Safely enable the preemption engine
         scheduler.manager.yield_enabled = true;
 
+        // Unmask the hardware timer interrupts
+        asm volatile ("sti");
+
+        // 5. Run the shell natively. Every variable it allocates now lands
+        // cleanly inside 'shell_stack_buf', completely leaving the kernel stack behind.
         shell.run(&fs_global, allocator);
+
         while (true) { asm volatile ("hlt"); }
     } else {
         scheduler.manager.yield_enabled = false;
