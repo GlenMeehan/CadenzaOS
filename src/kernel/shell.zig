@@ -77,6 +77,11 @@ var last_command: conf.CommandID = .UNKNOWN;
 
 var anomaly_detected: bool = false; // The global "Messenger" flag
 
+
+// Dedicated command buffer — reset after every command execution
+var cmd_buf: [64 * 1024]u8 = undefined;  // 64KB per command
+var cmd_fba = std.heap.FixedBufferAllocator.init(&cmd_buf);
+
 // -----------------------------------------------------------------------------
 //  COMMAND REGISTRATION
 // -----------------------------------------------------------------------------
@@ -214,6 +219,7 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
 }
 
 fn execute(line: []const u8) void {
+    cmd_fba.reset();  // ← reset before every command
     const current_time = irupts.ticks; //used to monitor rapidity of keystrokes
     const tokens = parseArgs(line);
     if (tokens.len == 0) return;
@@ -267,7 +273,7 @@ fn execute(line: []const u8) void {
         const msg = if (is_critical)
         "!! SAFETY: Confirm critical action?"
         else
-            "!! THE CRITIC: Unusual sequence detected. Proceed?";
+            "Unusual sequence detected. Proceed?";
 
         if (!ui_prompt.confirm(msg)) {
             vga.writeString("Action cancelled.\n", 0x07, 0);
@@ -279,7 +285,7 @@ fn execute(line: []const u8) void {
             // By calling RECORD_HABIT again, we rapidly increase the score
             // of this new path, reducing the "Surprise Factor" for next time.
             _ = syscall.call(.RECORD_HABIT, @intFromEnum(last_command), @intFromEnum(current_cmd_id));
-            vga.writeString("Critic: Habit updated.\n", 0x07, 0);
+            vga.writeString("Habit updated.\n", 0x07, 0);
         }
     }
 
@@ -502,9 +508,7 @@ fn cmd_uptime(tokens: [][]const u8) void {
 // -----------------------------------------------------------------------------
 
 fn cmd_ls(args: [][]const u8) void {
-    var arena = std.heap.ArenaAllocator.init(g_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const alloc = cmd_fba.allocator();
 
     var target_lba = g_cwd_lba;
     var target_blocks = g_cwd_blocks;
@@ -523,7 +527,6 @@ fn cmd_ls(args: [][]const u8) void {
             return;
         }
     }
-
     const entries = g_fs.listDir(alloc, target_lba, target_blocks) catch |err| {
         vga.writeString("ls failed: ", 12, 0);
         vga.writeString(@errorName(err), 12, 0);
@@ -572,7 +575,7 @@ fn cmd_touch(args: [][]const u8) void {
         const dir_part = if (idx == 0) "/" else full_path[0..idx];
         filename = full_path[idx + 1 ..];
 
-        const result = g_fs.resolvePath(g_allocator, g_cwd_lba, dir_part) catch {
+        const result = g_fs.resolvePath(cmd_fba.allocator(), g_cwd_lba, dir_part) catch {
             vga.writeString("Error: Parent directory not found.\n", 0x0C, 0);
             return;
         };
@@ -580,7 +583,7 @@ fn cmd_touch(args: [][]const u8) void {
         parent_blocks = @intCast(result.blocks);
     }
 
-    g_fs.createFile(g_allocator, parent_lba, parent_blocks, filename) catch |err| {
+    g_fs.createFile(cmd_fba.allocator(), parent_lba, parent_blocks, filename) catch |err| {
         vga.writeString("Failed to create file: ", 0x0C, 0);
         vga.writeString(@errorName(err), 0x0C, 0);
         vga.writeString("\n", 0x07, 0);
@@ -593,9 +596,7 @@ fn cmd_stat(args: [][]const u8) void {
         return;
     }
 
-    var arena = std.heap.ArenaAllocator.init(g_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const alloc = cmd_fba.allocator();
 
     const filename = args[1];
 
@@ -645,9 +646,7 @@ fn cmd_cat(args: [][]const u8) void {
         return;
     }
 
-    var arena = std.heap.ArenaAllocator.init(g_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const alloc = cmd_fba.allocator();
 
     const filename = args[1];
 
@@ -725,9 +724,7 @@ fn cmd_rename(args: [][]const u8) void {
         return;
     }
 
-    var arena = std.heap.ArenaAllocator.init(g_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const alloc = cmd_fba.allocator();
 
     const old_name = args[1];
     const new_name = args[2];
@@ -791,9 +788,7 @@ fn cmd_cd(args: [][]const u8) void {
         return;
     }
 
-    var arena = std.heap.ArenaAllocator.init(g_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const alloc = cmd_fba.allocator();
 
     const path_str = args[1];
 
@@ -842,9 +837,7 @@ fn cmd_mv(args: [][]const u8) void {
         return;
     }
 
-    var arena = std.heap.ArenaAllocator.init(g_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const alloc = cmd_fba.allocator();
 
     const src_path = args[1];
     const dest_path = args[2];
@@ -908,9 +901,7 @@ fn cmd_edit(args: [][]const u8) void {
         return;
     }
 
-    var arena = std.heap.ArenaAllocator.init(g_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const alloc = cmd_fba.allocator();
 
     const filename = args[1];
 
@@ -935,7 +926,7 @@ fn cmd_edit(args: [][]const u8) void {
         meta_lba = entry.meta_extent.start_block;
     } else |_| {
         // Use g_allocator for write operations
-        g_fs.createFile(g_allocator, g_cwd_lba, g_cwd_blocks, filename) catch {
+        g_fs.createFile(cmd_fba.allocator(), g_cwd_lba, g_cwd_blocks, filename) catch {
             vga.writeString("Error: Could not create file\n", 12, 0);
             return;
         };
@@ -1108,10 +1099,17 @@ fn cmd_spawn(args: [][]const u8) void {
     // Search the task registry for a matching name
     for (task_registry) |entry| {
         if (std.mem.eql(u8, entry.name, task_name)) {
-            _ = scheduler.manager.registerDynamicTask(entry.entry, g_allocator) catch {
+            // We use a simple catch block that sets an indicator variable
+            var success: u8 = 1;
+            _ = scheduler.manager.registerDynamicTask(entry.entry) catch {
+                success = 0;
+            };
+
+            if (success == 0) {
                 vga.writeString("Error: Could not spawn task\n", 12, 0);
                 return;
-            };
+            }
+
             vga.writeString("Spawned: ", 10, 0);
             vga.writeString(task_name, 10, 0);
             vga.putChar('\n', 10, 0);
@@ -1279,9 +1277,7 @@ fn getNameFromId(id: conf.CommandID) ?[]const u8 {
 }
 
 fn saveComposer() !void {
-    var arena = std.heap.ArenaAllocator.init(g_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
+    const alloc = cmd_fba.allocator();
 
     const root_lba = g_fs.superblock.root_dir_extent_start;
     const sys_entry = g_fs.findFile(alloc, root_lba, "sys") catch |err| blk: {

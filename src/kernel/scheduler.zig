@@ -1,6 +1,8 @@
 // src/kernel/scheduler.zig
 const std = @import("std");
 const config = @import("config.zig");
+const bm = @import("bitmap.zig");
+const memory = @import("memory.zig");
 
 pub const TaskState = enum {
     Ready,
@@ -9,18 +11,30 @@ pub const TaskState = enum {
     Dead,
 };
 
-/// Represents the exact layout of registers on the stack during a context switch.
-/// This matches the x86_64 calling and interrupt convention state.
+/// Represents the layout of registers on the stack during a cooperative context switch.
 pub const TaskContext = packed struct {
-    // These match the 15 registers pushed/popped manually by switch_tasks
+    r15: u64, r14: u64, r13: u64, r12: u64,
+    r11: u64, r10: u64, r9:  u64, r8:  u64,
+    rbp: u64, rdi: u64, rsi: u64, rdx: u64,
+    rcx: u64, rbx: u64, rax: u64,
+    rip: u64,
+};
+
+/// NEW: Represents the exact layout of registers on the stack during a preemptive context switch.
+/// This matches the x86_64 hardware interrupt and iretq expectations perfectly.
+pub const InterruptContext = packed struct {
+    // 1. Registers pushed manually by our assembly stub macros
     r15: u64, r14: u64, r13: u64, r12: u64,
     r11: u64, r10: u64, r9:  u64, r8:  u64,
     rbp: u64, rdi: u64, rsi: u64, rdx: u64,
     rcx: u64, rbx: u64, rax: u64,
 
-    // Pushed automatically onto the stack by the CPU 'call' instruction,
-    // or manually fabricated for starting tasks (Task A & B)
+    // 2. Hardware Interrupt Frame pushed automatically by the CPU.
     rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
 };
 
 pub const Task = struct {
@@ -73,24 +87,37 @@ pub const Scheduler = struct {
     ) void {
         const stack_top = @intFromPtr(stack_buf.ptr) + stack_buf.len;
 
-        // Position our context tracking record precisely at the top of the buffer
-        var initial_sp = stack_top - @sizeOf(TaskContext);
+        // ---- FIX 1: Upgrade from TaskContext to InterruptContext ----
+        var initial_sp = stack_top - @sizeOf(InterruptContext);
         initial_sp = (initial_sp & ~@as(usize, 15)); // 16-byte alignment enforce
 
-        const context_ptr = @as(*TaskContext, @ptrFromInt(initial_sp));
+        // ---- FIX 2: Cast pointer to the correct InterruptContext structure ----
+        const context_ptr = @as(*InterruptContext, @ptrFromInt(initial_sp));
 
         // Clear all register fields cleanly to prepare for first context load
-        inline for (std.meta.fields(TaskContext)) |field| {
+        inline for (std.meta.fields(InterruptContext)) |field| {
             @field(context_ptr, field.name) = 0;
         }
 
         // Direct execution to our target function pointer when switched into
         context_ptr.rip = @intFromPtr(entry_point);
 
+        // ---- CRITICAL INTEL LONG MODE ARCHITECTURE FRAME SETUP ----
+        context_ptr.cs = 0x18;         // Your kernel's Code Segment Selector (0x18)
+        context_ptr.rflags = 0x202;    // 0x200 (Interrupts Enabled flag) + 0x02 (Reserved bit)
+
+        // Point RSP directly to the context block itself so it has a perfectly
+        // aligned, safe, writable zone within the allocated 4KB buffer.
+        context_ptr.rsp = initial_sp;
+        context_ptr.ss = 0x10;         // Your kernel's Data/Stack Segment Selector (0x20)
+        // -----------------------------------------------------------
+
         self.tasks[slot] = Task{
             .id = id,
             .stack_ptr = initial_sp,
             .state = .Ready,
+            // Ensure any extra fields required by your Task struct are here
+            // (like .wake_tick = 0, .stack_mem = stack_buf if required)
         };
     }
 
@@ -99,7 +126,6 @@ pub const Scheduler = struct {
     pub fn registerDynamicTask(
         self: *Scheduler,
         entry_point: *const fn() callconv(.c) void,
-                               allocator: std.mem.Allocator,
     ) !usize {
         // 1. Find a free slot
         var slot: ?usize = null;
@@ -114,19 +140,29 @@ pub const Scheduler = struct {
         // 2. Generate a unique ID automatically
         const id = self.nextId();
 
-        // 3. Allocate stack memory
-        const stack_buf = try allocator.alloc(u8, 4096);
+        // 3. Allocate stack using frame allocator (avoids heap fragmentation)
+        const phys_addr = bm.allocFrame() orelse return error.OutOfMemory;
+        const virt_addr = memory.physToVirt(phys_addr);
+        const stack_buf = @as([*]u8, @ptrFromInt(virt_addr))[0..bm.PAGE_SIZE];
 
-        // 4. Set up the initial context
+        // 4. Set up the initial context using InterruptContext natively
         const stack_top = @intFromPtr(stack_buf.ptr) + stack_buf.len;
-        var initial_sp = stack_top - @sizeOf(TaskContext);
+        var initial_sp = stack_top - @sizeOf(InterruptContext);
         initial_sp = (initial_sp & ~@as(usize, 15));
 
-        const context_ptr = @as(*TaskContext, @ptrFromInt(initial_sp));
-        inline for (std.meta.fields(TaskContext)) |field| {
+        const context_ptr = @as(*InterruptContext, @ptrFromInt(initial_sp));
+        inline for (std.meta.fields(InterruptContext)) |field| {
             @field(context_ptr, field.name) = 0;
         }
+
+        // Populate the hardware frame fields exactly how iretq expects them
         context_ptr.rip = @intFromPtr(entry_point);
+        context_ptr.cs = 0x18;         // Kernel Code Segment
+        context_ptr.rflags = 0x202;     // Interrupts Enabled Flag
+        // Point RSP directly to the context block itself so it has a perfectly
+        // aligned, safe, writable zone within the allocated 4KB buffer.
+        context_ptr.rsp = initial_sp;
+        context_ptr.ss = 0x10;         // Kernel Data Segment
 
         // 5. Register the task
         self.tasks[slot.?] = Task{
@@ -175,69 +211,82 @@ pub const Scheduler = struct {
             }
         }
 
-        // 2. Strict Round-Robin tracking using direct array optional checks
+        // 2. Strict Round-Robin tracking allowing Ready or Running tasks to schedule
         var next_idx = (self.current_task_idx + 1) % self.tasks.len;
         while (next_idx != self.current_task_idx) {
             if (self.tasks[next_idx]) |t| {
-                // Only switch to a task that is explicitly ready to execute
-                if (t.state == .Ready) {
+                // FIX: Accept .Ready OR .Running tasks so the shell (Slot 0) isn't skipped
+                if (t.state == .Ready or t.state == .Running) {
                     return next_idx;
                 }
             }
             next_idx = (next_idx + 1) % self.tasks.len;
         }
 
-        // 3. Fallback: If current task is still running and nothing else is ready, stay on it.
+        // 3. Fallback: If nothing else is available, stay on current task
         if (self.tasks[self.current_task_idx]) |curr| {
-            if (curr.state == .Running) return self.current_task_idx;
+            if (curr.state == .Running or curr.state == .Ready) return self.current_task_idx;
         }
 
-        // 4. Absolute Fallback: Look for the Idle Task (traditionally Slot 1)
-        if (self.tasks[1] != null) return 1;
-
+        // 4. Ultimate Architectural Fallback: Return to the Shell (Slot 0)
         return 0;
     }
 
     /// Initiates a cooperative context switch.
+    /// Initiates a cooperative context switch. (DISABLED FOR NOW)
     pub fn yield(self: *Scheduler) void {
-        if (!self.yield_enabled) return;
+        // Completely neutralized to focus purely on preemption
+        _ = self;
+    }
 
-        // 1. Cleanup any dead tasks cleanly
-        for (0..self.tasks.len) |i| {
-            if (i == self.current_task_idx) continue;
-            if (self.tasks[i]) |t| {
+    /// Specialized entry point for the assembly IRQ0 stub.
+    /// Receives the old stack pointer, switches tasks if preemption is allowed,
+    /// and returns the stack pointer of the task that should execute next.
+    pub export fn preempt_handler(interrupted_stack_ptr: usize) usize {
+        if (!manager.yield_enabled) return interrupted_stack_ptr;
+
+        // Cleanup dead tasks
+        for (0..manager.tasks.len) |i| {
+            if (manager.tasks[i]) |t| {
                 if (t.state == .Dead) {
-                    if (t.stack_mem) |mem| {
-                        if (self.allocator) |alloc| {
-                            alloc.free(mem);
-                        }
+                    if (t.stack_mem) |mem_slice| {
+                        const phys = memory.virtToPhys(@intFromPtr(mem_slice.ptr));
+                        bm.freeFrame(phys);
                     }
-                    self.tasks[i] = null;
+                    manager.tasks[i] = null;
                 }
             }
         }
 
-        // 2. Determine who runs next
-        const next_idx = self.pickNextTask();
-        if (next_idx == self.current_task_idx) return;
+        const next_idx = manager.pickNextTask();
+        if (next_idx == manager.current_task_idx) return interrupted_stack_ptr;
 
-        const current_old = self.current_task_idx;
+        const current_old = manager.current_task_idx;
 
-        // 3. FIX: Mutate state via direct array access, not stack copy un-wrapping!
-        if (self.tasks[current_old] != null) {
-            if (self.tasks[current_old].?.state == .Running) {
-                self.tasks[current_old].?.state = .Ready;
+        // ---- SANITIZE SHELL SEGMENTS ON FIRST INTERRUPT ----
+        // If we are interrupting the shell (Task 0) for the first time,
+        // force its stack segment out of null state (0x0000) into a valid selector (0x20)
+        if (current_old == 0 and interrupted_stack_ptr != 0) {
+            const frame = @as(*InterruptContext, @ptrFromInt(interrupted_stack_ptr));
+            if (frame.ss == 0) {
+                frame.ss = 0x10;
+                frame.cs = 0x18; // Ensure it matches your working CS exactly
             }
         }
+        // ----------------------------------------------------
 
-        self.current_task_idx = next_idx;
-
-        if (self.tasks[next_idx] != null) {
-            self.tasks[next_idx].?.state = .Running;
+        if (manager.tasks[current_old]) |*curr| {
+            if (curr.state == .Running) curr.state = .Ready;
         }
 
-        // 4. Fire assembly task switch safely
-        switch_tasks(&self.tasks[current_old].?.stack_ptr, self.tasks[next_idx].?.stack_ptr);
+        // Save old stack pointer raw
+        manager.tasks[current_old].?.stack_ptr = interrupted_stack_ptr;
+
+        // Switch to new task
+        manager.current_task_idx = next_idx;
+        manager.tasks[next_idx].?.state = .Running;
+
+        return manager.tasks[next_idx].?.stack_ptr;
     }
 };
 
@@ -245,3 +294,5 @@ pub const Scheduler = struct {
 //  GLOBAL MANAGER INSTANCE
 // -----------------------------------------------------------------------------
 pub var manager: Scheduler = undefined;
+
+

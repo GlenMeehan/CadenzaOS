@@ -59,6 +59,22 @@ pub export fn irq0_handler() callconv(.c) void {
         vga.writeStringAt(row, s_pos + s_len, "s ", 0x07, 0);
     }
 
+// ---- NEW PREEMPTIVE HANDOFF ENGINE ----
+    // 1. Manually check and wake up tasks whose sleep timers have expired
+    inline for (&scheduler.manager.tasks) |*maybe_task| {
+        if (maybe_task.*) |*t| {
+            if (t.state == .Suspended and ticks >= t.wake_tick) {
+                t.state = .Ready;
+            }
+        }
+    }
+
+    // 2. If preemption is globally unmasked, force an implicit context yield
+    if (scheduler.manager.yield_enabled) {
+        scheduler.manager.yield();
+    }
+    // ----------------------------------------
+
     // 3. EOI: Tell the hardware we processed the interrupt
     io.outb(0x20, 0x20);
 }

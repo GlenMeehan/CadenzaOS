@@ -54,7 +54,7 @@ var ticks: u64 = 0;
 // -----------------------------------------------------------------------------
 
 // Early static heap used with FixedBufferAllocator (bootstrap heap)
-var heap_buffer: [1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
+var heap_buffer: [4  * 1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
 
 // Global FixedBufferAllocator — lifetime = whole kernel
 var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);

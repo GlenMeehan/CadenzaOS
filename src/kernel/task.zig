@@ -56,22 +56,11 @@ fn draw_counter(vga: [*]volatile u16, pos: usize, val: u32) void {
 /// Puts the currently executing task to sleep for a specified number of milliseconds.
 /// Calculates required ticks dynamically based on the configured timer hardware frequency.
 pub fn sleep(ms: u64) void {
-    const frequency = config.timer.frequency_hz;
-    const ticks_to_wait = (ms * frequency) / 1000;
-    const my_idx = scheduler.manager.current_task_idx;
-
-    if (scheduler.manager.tasks[my_idx]) |*t| {
-        t.wake_tick = scheduler.manager.ticks + ticks_to_wait;
-        t.state = .Suspended;
-    }
-
-    // Keep yielding until our wake time is reached
-    while (scheduler.manager.ticks < scheduler.manager.tasks[my_idx].?.wake_tick) {
-        scheduler.manager.yield();
-        asm volatile ("nop"); // prevent tight spin if yield returns immediately
-    }
-
-    if (scheduler.manager.tasks[my_idx]) |*t| {
-        if (t.state == .Suspended) t.state = .Ready;
+    // Temporarily turn sleep into a standard calibrated delay loop
+    // instead of calling scheduler.manager.yield()
+    var i: u64 = 0;
+    const target = ms * 10000; // Adjust multiplier based on your QEMU speed
+    while (i < target) : (i += 1) {
+        asm volatile ("nop");
     }
 }

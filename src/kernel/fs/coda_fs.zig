@@ -396,15 +396,12 @@ pub const CodaFs = struct {
     /// Caller must free the returned slice.
     pub fn listDir(fs: *CodaFs, allocator: std.mem.Allocator, dir_lba: u64, dir_blocks: u64) ![]DirEntry {
         _ = dir_blocks;
-
         const is_root = (dir_lba == fs.superblock.root_dir_extent_start);
-
         var meta: FileMeta = undefined;
         if (!is_root) {
             meta = try fs.readFileMeta(allocator, dir_lba);
             if (meta.file_type != .Directory) return error.NotADirectory;
         }
-
         const total_blocks = if (is_root) fs.superblock.root_dir_extent_blocks else meta.extent_count;
         const entries_per_block = fs.device.block_size / @sizeOf(DirEntry);
         const max_entries = total_blocks * entries_per_block;
@@ -413,7 +410,6 @@ pub const CodaFs = struct {
         defer allocator.free(workspace);
 
         var valid_count: usize = 0;
-
         var b: u32 = 0;
         while (b < total_blocks) : (b += 1) {
             const current_lba = if (is_root) dir_lba + b else meta.extents[b].start_block;

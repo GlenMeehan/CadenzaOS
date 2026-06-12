@@ -21,6 +21,7 @@ extern exceptionHandlerWrapper
 extern irq0_handler
 extern irq1_handler
 extern irq12_handler
+extern preempt_handler
 
 global irq0_stub
 global irq1_stub
@@ -83,9 +84,51 @@ global exception14_asm
 ; ---------------------------------------------------------------------------
 
 irq0_stub:
-    PUSH_REGS
+    ; 1. Push registers in the exact order Zig's TaskContext expects
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
+    push rbp
+    push rdi
+    push rsi
+    push rdx
+    push rcx
+    push rbx
+    push rax
+
+    ; 2. Call your passive clock increment and uptime display function
     call irq0_handler
-    POP_REGS
+
+    ; 3. Pass the current stack pointer to the preemption engine
+    mov rdi, rsp
+    call preempt_handler
+
+    ; 4. Switch stacks to the chosen task's stack pointer
+    mov rsp, rax
+
+    ; 5. Pop all 15 registers off the target stack
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rbp
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
+
+    ; 6. True hardware interrupt return
     iretq
 
 irq1_stub:

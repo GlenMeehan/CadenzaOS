@@ -75,7 +75,8 @@ echo "✅ Build & Update complete."
 # Launch QEMU automatically after build
 qemu-system-x86_64 \
       -drive format=raw,file=$IMG,cache=directsync,snapshot=off \
-      -m 1024 -monitor stdio -no-reboot -no-shutdown -vga std
+      -m 1024 -monitor stdio -no-reboot -no-shutdown -vga std \
+      -d int,cpu_reset -D qemu.log
 #qemu-system-x86_64 \
   #-drive format=raw,file=$IMG \
   #-m 1024 -monitor stdio -no-reboot -no-shutdown -vga std
