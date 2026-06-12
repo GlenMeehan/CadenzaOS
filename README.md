@@ -108,3 +108,4 @@ Power: shutdown, reboot.
 ✅ Phase 5: CodaFS Extent Tracking & PIT Standardization.
 
 🔄 Phase 6 (In-Progress): Multitasking. Implementing the Task Scheduler, Context Switching logic, and the transition to a multi-process environment.
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/GlenMeehan/CadenzaOS)
