@@ -369,12 +369,58 @@ pub const CodaFs = struct {
         try fs.space_manager.flushToDisk(allocator, fs.superblock.sm_start_block, fs.superblock.sm_block_count);
     }
 
-    /// Stub — not yet implemented.
-    pub fn readFile(fs: *CodaFs, path: []const u8, out: []u8) !usize {
-        _ = fs;
-        _ = path;
-        _ = out;
-        return error.NotImplemented;
+    /// Reads the contents of a file specified by `path` into the `out` buffer.
+    /// Returns the exact number of bytes successfully read.
+    pub fn readFile(fs: *CodaFs, allocator: std.mem.Allocator, path: []const u8, out: []u8) !usize {
+        // 1. Resolve the path to get its metadata block LBA
+        const path_res = try fs.resolvePath(allocator, fs.superblock.root_dir_extent_start, path);
+        if (path_res.is_directory) return error.IsADirectory;
+
+        // 2. Load the FileMeta structure from disk to find the data extents
+        const meta = try fs.readFileMeta(allocator, path_res.lba);
+
+        // Ensure the caller's buffer is large enough to hold the file data
+        if (out.len < meta.size_bytes) return error.BufferTooSmall;
+
+        const block_size = fs.device.block_size;
+        var bytes_copied: usize = 0;
+        var blocks_read: u32 = 0;
+
+        // 3. Allocate a single block-sized scratch buffer for streaming disk data
+        const scratch_buf = try allocator.alloc(u8, block_size);
+        defer allocator.free(scratch_buf);
+
+        // 4. Iterate through each physical extent allocated to the file
+        var ext_idx: usize = 0;
+        while (ext_idx < meta.extent_count) : (ext_idx += 1) {
+            const extent = meta.extents[ext_idx];
+            var block_offset: u64 = 0;
+
+            // Stream every block inside this contiguous extent
+            while (block_offset < extent.block_count) : (block_offset += 1) {
+                const current_lba = extent.start_block + block_offset;
+
+                // Read block using telemetry to keep cycle metrics accurate
+                _ = try fs.readBlocksWithTelemetry(current_lba, scratch_buf);
+
+                // Calculate how much actual data is left to copy from this block
+                const remaining_bytes = meta.size_bytes - bytes_copied;
+                const chunk_size = if (remaining_bytes < block_size) remaining_bytes else block_size;
+
+                // Copy from scratch space into the target memory destination
+                @memcpy(out[bytes_copied .. bytes_copied + chunk_size], scratch_buf[0..chunk_size]);
+
+                bytes_copied += chunk_size;
+                blocks_read += 1;
+
+                // Break early if we've completely consumed the logical file size
+                if (bytes_copied >= meta.size_bytes) {
+                    return bytes_copied;
+                }
+            }
+        }
+
+        return bytes_copied;
     }
 
     /// Stub — not yet implemented.

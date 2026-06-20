@@ -6,3 +6,6 @@ archive/
 *.elf
 qemu.log
 *.iso
+.zig-cache/
+.zig-cache/
+.zig-cache/

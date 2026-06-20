@@ -1096,10 +1096,9 @@ fn cmd_spawn(args: [][]const u8) void {
 
     const task_name = args[1];
 
-    // Search the task registry for a matching name
+    // 1. Search the static compile-time task registry first
     for (task_registry) |entry| {
         if (std.mem.eql(u8, entry.name, task_name)) {
-            // We use a simple catch block that sets an indicator variable
             var success: u8 = 1;
             _ = scheduler.manager.registerDynamicTask(entry.entry) catch {
                 success = 0;
@@ -1110,16 +1109,65 @@ fn cmd_spawn(args: [][]const u8) void {
                 return;
             }
 
-            vga.writeString("Spawned: ", 10, 0);
+            vga.writeString("Spawned static task: ", 10, 0);
             vga.writeString(task_name, 10, 0);
             vga.putChar('\n', 10, 0);
             return;
         }
     }
 
-    vga.writeString("Error: Unknown task '", 12, 0);
-    vga.writeString(task_name, 12, 0);
-    vga.writeString("'\n", 12, 0);
+    // 2. Fallback: Use the shell's cleanly injected file system and allocator pointers
+    var path_buf: [70]u8 = undefined;
+    if (task_name.len > 64) {
+        vga.writeString("Error: Name too long\n", 12, 0);
+        return;
+    }
+    const path = std.fmt.bufPrint(&path_buf, "/{s}", .{task_name}) catch return;
+
+    // Use the file-scope globals that were populated by shell.run()
+    const fs = g_fs;
+    const allocator = g_allocator;
+
+    // Check if the file exists on disk by looking for its directory record
+    if (fs.findFile(allocator, fs.superblock.root_dir_extent_start, task_name)) |meta_lba| {
+        _ = meta_lba;
+
+        // Exact physical size of our staging binary prog1.bin
+        const file_size = 4236;
+
+        // Allocate raw, persistent memory space from the kernel heap for the application
+        const prog_buf = allocator.alloc(u8, file_size) catch {
+            vga.writeString("Error: Out of memory for task allocation\n", 12, 0);
+            return;
+        };
+
+        // Stream the machine code from disk extents straight into our allocated RAM buffer
+        _ = fs.readFile(allocator, path, prog_buf) catch {
+            vga.writeString("Error: Failed to read binary from disk\n", 12, 0);
+            allocator.free(prog_buf);
+            return;
+        };
+
+        // Reinterpret the memory buffer start pointer into a executable C-convention function pointer
+        const entry_fn = @as(*const fn () callconv(.c) void, @ptrCast(prog_buf.ptr));
+
+        // Hand the execution address over to your preemptive scheduler engine
+        _ = scheduler.manager.registerDynamicTask(entry_fn) catch {
+            vga.writeString("Error: Scheduler rejected dynamic binary\n", 12, 0);
+            allocator.free(prog_buf);
+            return;
+        };
+
+        vga.writeString("Spawned dynamic disk task: ", 10, 0);
+        vga.writeString(task_name, 10, 0);
+        vga.writeString("\n", 10, 0);
+        return;
+    } else |_| {
+        // Not found in registry and not found on disk
+        vga.writeString("Error: Unknown task or file '", 12, 0);
+        vga.writeString(task_name, 12, 0);
+        vga.writeString("'\n", 12, 0);
+    }
 }
 
 // -----------------------------------------------------------------------------

@@ -39,6 +39,7 @@ const bd = @import("fs/block_device.zig").BlockDevice;
 const ata = @import("drivers/ata.zig");
 const scheduler = @import("scheduler.zig");
 const task = @import("task.zig");
+const bin_loader = @import("fs/binary_loader.zig");
 
 pub const STACK_SIZE = 0x40000;         // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
@@ -485,6 +486,40 @@ pub export fn kmain() noreturn {
     fs_global.superblock = fs.superblock;
     fs_global.space_manager = fs.space_manager;
     fs_global.root_dir = fs.root_dir;
+
+    // Run the embedded application installation staging pipeline
+    bin_loader.installEmbeddedApps(allocator, &fs_global) catch |err| {
+        vga.writeString("Application injection failure: ", 12, 5);
+        @panic(@errorName(err));
+    };
+
+    // ... Right after bin_loader.installEmbeddedApps(allocator, &fs_global) ...
+
+    //vga.writeString("\n🔍 Verifying prog1.bin read...", 10, 6);
+
+    // 1. Allocate a buffer large enough to hold the file (4236 bytes)
+    const test_buf = allocator.alloc(u8, 4236) catch |err| {
+        @panic(@errorName(err));
+    };
+    defer allocator.free(test_buf);
+
+    // 2. Call our new readFile function
+    const bytes_read = fs_global.readFile(allocator, "/prog1", test_buf) catch |err| {
+        vga.writeString("\n❌ Read failed: ", 12, 7);
+        vga.writeString(@errorName(err), 12, 7);
+        @panic(@errorName(err));
+    };
+
+    // Silence the unused variable error for bytes_read
+    _ = bytes_read;
+
+    // 3. Print a success indicator to the screen
+    //vga.writeString("\n✅ Read successful!", 10, 8);
+
+    // Silence the unused capture by using a blank identifier in the loop
+    for (test_buf[0..4]) |_| {
+        // We can leave this empty now, Zig is happy with the underscore
+    }
 
     // =========================================================================
     //  SHELL STARTUP WITH DEDICATED STACK SWAP

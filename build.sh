@@ -22,11 +22,36 @@ if [ "$1" == "run" ]; then
     exit 0
 fi
 
+if [ "$1" == "clean" ]; then
+    echo "🧹 Removing disk image..."
+    rm -f "$IMG"
+    echo "✅ Disk image removed. Run ./build.sh to create a fresh one."
+    exit 0
+fi
+
 # --- 1. Clean Phase ---
 # Since we are not in 'run' mode, we perform a full rebuild.
-# We delete the old image so the kernel's partitioning logic triggers fresh.
-echo "🧹 Cleaning old disk image..."
-rm -f "$IMG"
+# Check if an existing disk image is present and ask the user whether to
+# preserve the filesystem or start fresh.
+PRESERVE_FS=false
+if [ -f "$IMG" ]; then
+    echo "💾 Existing disk image found."
+    read -p "Preserve filesystem? [Y/n]: " choice
+    case "$choice" in
+        n|N)
+            echo "🧹 Cleaning old disk image..."
+            rm -f "$IMG"
+            ;;
+        *)
+            echo "✅ Filesystem will be preserved."
+            PRESERVE_FS=true
+            ;;
+    esac
+else
+    # No existing image — nothing to clean
+    echo "🆕 No existing disk image found. A fresh one will be created."
+fi
+
 mkdir -p "$BUILD"
 
 # --- 2. Build Phase ---
@@ -60,15 +85,31 @@ nasm -f bin "$SRC/stage2/stage2.asm" -o "$BUILD/stage2.bin"
 truncate -s 1024 "$BUILD/stage2.bin"
 
 # --- 6. Install Phase ---
-# Create a fresh 10MB disk image
-echo "🆕 Creating new 10MB disk image..."
-dd if=/dev/zero of="$IMG" bs=512 count=20480 status=none
+if [ "$PRESERVE_FS" = false ]; then
+    # Create a fresh 10MB disk image
+    echo "🆕 Creating new 10MB disk image..."
+    dd if=/dev/zero of="$IMG" bs=512 count=20480 status=none
+fi
 
 echo "💾 Writing OS sectors..."
-# We use conv=notrunc so dd doesn't wipe the rest of the 10MB image
+# We use conv=notrunc so dd doesn't wipe the rest of the 10MB image.
+# When preserving the filesystem, only the boot/stage2/kernel sectors
+# (0..2047) are overwritten — the CodaFS partition (2048+) is untouched.
 dd if="$BUILD/boot.bin" of="$IMG" bs=512 count=1 conv=notrunc status=none
 dd if="$BUILD/stage2.bin" of="$IMG" bs=512 seek=1 conv=notrunc status=none
 dd if="$BUILD/kernel.bin" of="$IMG" bs=512 seek=3 conv=notrunc status=none
+
+# -------------------------------------------------------------------------
+#  APPLICATION BINARY STORE STAGING
+# -------------------------------------------------------------------------
+APPS_DIR="$BUILD/apps"
+if [ -f "$APPS_DIR/prog1.bin" ]; then
+    echo "📦 Staging prog1.bin into disk image at LBA 1024..."
+    dd if="$APPS_DIR/prog1.bin" of="$IMG" bs=512 seek=1024 conv=notrunc status=none
+else
+    echo "⚠️ Warning: prog1.bin not found in $APPS_DIR, skipping binary store injection."
+fi
+# -------------------------------------------------------------------------
 
 echo "✅ Build & Update complete."
 
@@ -77,6 +118,7 @@ qemu-system-x86_64 \
       -drive format=raw,file=$IMG,cache=directsync,snapshot=off \
       -m 1024 -monitor stdio -no-reboot -no-shutdown -vga std \
       -d int,cpu_reset -D qemu.log
+
 #qemu-system-x86_64 \
   #-drive format=raw,file=$IMG \
   #-m 1024 -monitor stdio -no-reboot -no-shutdown -vga std
