@@ -1126,7 +1126,10 @@ fn cmd_spawn(args: [][]const u8) void {
 
     // Use the file-scope globals that were populated by shell.run()
     const fs = g_fs;
-    const allocator = g_allocator;
+    const allocator = cmd_fba.allocator();
+
+    //Clear interrupts so the scheduler cannot context switch mid-read
+    asm volatile ("cli");
 
     // Check if the file exists on disk by looking for its directory record
     if (fs.findFile(allocator, fs.superblock.root_dir_extent_start, task_name)) |meta_lba| {
@@ -1161,9 +1164,20 @@ fn cmd_spawn(args: [][]const u8) void {
         vga.writeString("Spawned dynamic disk task: ", 10, 0);
         vga.writeString(task_name, 10, 0);
         vga.writeString("\n", 10, 0);
+        //Re-enable interrupts right before returning success
+        asm volatile ("sti");
         return;
-    } else |_| {
+    } else |find_err| {
         // Not found in registry and not found on disk
+        //Re-enable interrupts on failure path too!
+
+//==============DEBUG=============================
+        vga.writeString("findFile error: ", 14, 0);
+        vga.writeString(@errorName(find_err), 14, 0);
+        vga.putChar('\n', 14, 0);
+//==============DEBUG=============================
+
+        asm volatile ("sti");
         vga.writeString("Error: Unknown task or file '", 12, 0);
         vga.writeString(task_name, 12, 0);
         vga.writeString("'\n", 12, 0);

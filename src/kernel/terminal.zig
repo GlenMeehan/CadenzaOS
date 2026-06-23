@@ -198,6 +198,7 @@ pub fn commitHistory() void {
 }
 
 pub fn handleKeyEvent(ev: KeyEvent) void {
+    asm volatile ("cli"); // Guard the state machine change
     switch (ev) {
         .char => |c| {
             switch (c) {
@@ -223,6 +224,7 @@ pub fn handleKeyEvent(ev: KeyEvent) void {
             .Delete => deleteUnderCursor(),
         },
     }
+    asm volatile ("sti"); // Restore preemption
 }
 
 pub fn startNewLine() void {
