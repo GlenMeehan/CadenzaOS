@@ -8,7 +8,7 @@ const FileMeta = @import("coda_file.zig").FileMeta;
 const Extent = @import("coda_sm.zig").Extent;
 const DirEntry = @import("coda_file.zig").DirEntry;
 
-pub const APP_LBA_START: u64 = 1024;
+pub const APP_LBA_START: u64 = 2000;
 pub const APP_SECTORS: u32 = 9; // 4236 bytes rounded up to 512-byte boundaries
 
 pub fn installEmbeddedApps(allocator: std.mem.Allocator, fs: *CodaFs) !void {

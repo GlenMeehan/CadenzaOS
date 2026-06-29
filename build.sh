@@ -105,7 +105,7 @@ dd if="$BUILD/kernel.bin" of="$IMG" bs=512 seek=3 conv=notrunc status=none
 APPS_DIR="$BUILD/apps"
 if [ -f "$APPS_DIR/prog1.bin" ]; then
     echo "📦 Staging prog1.bin into disk image at LBA 1024..."
-    dd if="$APPS_DIR/prog1.bin" of="$IMG" bs=512 seek=1024 conv=notrunc status=none
+    dd if="$APPS_DIR/prog1.bin" of="$IMG" bs=512 seek=2000 conv=notrunc status=none
 else
     echo "⚠️ Warning: prog1.bin not found in $APPS_DIR, skipping binary store injection."
 fi

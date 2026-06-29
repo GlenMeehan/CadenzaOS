@@ -269,7 +269,7 @@ pm_entry:
     ; PD: map [0 .. 16 MiB) using 2 MiB pages (PS | RW | P = 0x83)
     mov edi, PD_ADDR
     mov eax, 0x00000000     ; Physical start address
-    mov ebx, 0x08000000     ; Physical end address (128 MiB ceiling — maps 8 entries)
+    mov ebx, 0x40000000     ; Physical end address (1GB ceiling — maps 512 entries)
     mov ecx, eax
     shr ecx, 21             ; Initial PD index (phys_addr / 2 MiB)
 

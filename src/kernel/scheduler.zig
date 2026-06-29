@@ -43,6 +43,7 @@ pub const Task = struct {
     state: TaskState,
     wake_tick: u64 = 0,
     stack_mem: ?[]u8 = null,
+    code_mem: ?[]u8 = null,
 };
 
 pub const Scheduler = struct {
@@ -126,6 +127,7 @@ pub const Scheduler = struct {
     pub fn registerDynamicTask(
         self: *Scheduler,
         entry_point: *const fn() callconv(.c) void,
+        code_mem: ?[]u8,
     ) !usize {
         // 1. Find a free slot
         var slot: ?usize = null;
@@ -171,6 +173,7 @@ pub const Scheduler = struct {
             .state = .Ready,
             .wake_tick = 0,
             .stack_mem = stack_buf,
+            .code_mem = code_mem,
         };
 
         return slot.?;
@@ -253,6 +256,11 @@ pub const Scheduler = struct {
                         const phys = memory.virtToPhys(@intFromPtr(mem_slice.ptr));
                         bm.freeFrame(phys);
                     }
+                    if (t.code_mem) |code_slice| {
+                        const phys = @intFromPtr(code_slice.ptr); // already physical — cmd_spawn never applied physToVirt here
+                        const frame_count = (code_slice.len + bm.PAGE_SIZE - 1) / bm.PAGE_SIZE;
+                        bm.freeContiguous(phys, frame_count);
+                    }
                     manager.tasks[i] = null;
                 }
             }
@@ -288,6 +296,25 @@ pub const Scheduler = struct {
 
         return manager.tasks[next_idx].?.stack_ptr;
     }
+
+    /// Entry point for the int 0x80 "task exit" trap.
+    /// Marks the currently running task as Dead and immediately switches away —
+    /// the dying task's stack frame is discarded and never resumed.
+    /// Actual frame cleanup (stack_mem/code_mem) happens later, in
+    /// preempt_handler's existing cleanup pass on the next timer tick.
+    pub export fn task_exit_handler(stack_ptr: usize) usize {
+        _ = stack_ptr;
+
+        if (manager.tasks[manager.current_task_idx]) |*t| {
+            t.state = .Dead;
+        }
+
+        const next_idx = manager.pickNextTask();
+        manager.current_task_idx = next_idx;
+        manager.tasks[next_idx].?.state = .Running;
+        return manager.tasks[next_idx].?.stack_ptr;
+    }
+
 };
 
 // -----------------------------------------------------------------------------

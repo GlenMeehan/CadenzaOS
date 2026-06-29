@@ -28,6 +28,7 @@ const keyboard = @import("inputs/keyboard");
 const irupts = @import("irupts.zig");
 const scheduler = @import("scheduler.zig");
 const task = @import("task.zig");
+const bitmap = @import("bitmap.zig");
 
 
 // --------------------------------
@@ -211,7 +212,7 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
         const line = term.takeLine();
 
         // 2. The microsecond Enter is pressed, execute and repeat cleanly
-        conductor.tick();
+        //conductor.tick();
         term.commitHistory();
         execute(line);
         term.consumeLine();
@@ -249,7 +250,6 @@ fn execute(line: []const u8) void {
             },
         }
     }
-
     // 2. THE LOGIC CHECK (Markov + Surprise Logic)
     // The syscall now returns 1 if (Surprise > Threshold)
     var is_anomalous = false;
@@ -264,7 +264,6 @@ fn execute(line: []const u8) void {
         .DEV    => (current_cmd_id == .SHUTDOWN or current_cmd_id == .DEL), // Added .DEL here for testing
         .GAMING => (current_cmd_id == .DEL), // Added .DEL here for testing
     };
-
     // FORCE PROMPT FOR DELETE
     const force_prompt = (current_cmd_id == .DEL);
 
@@ -288,7 +287,6 @@ fn execute(line: []const u8) void {
             vga.writeString("Habit updated.\n", 0x07, 0);
         }
     }
-
     // 4. THE EXECUTION LOOP
     for (commands) |c| {
         if (mem.eqlNoSimd(u8, c.name, cmd_name)) {
@@ -297,7 +295,6 @@ fn execute(line: []const u8) void {
             break;
         }
     }
-
     // 5. POST-EXECUTION UPDATES
     if (found and current_cmd_id != .UNKNOWN) {
         // Important: Update 'last_command' so the NEXT command
@@ -306,13 +303,16 @@ fn execute(line: []const u8) void {
 
         // Auto-save the habit table if the system is "Optimal"
         const current_tempo = syscall.call(.GET_TEMPO, 0, 0);
+
         if (current_tempo == @intFromEnum(conductor.ConductorState.Optimal)) {
-            saveComposer() catch {};
+            saveComposer() catch |err| {
+                vga.writeString("saveComposer FAILED: ", 12, 0);
+                vga.writeString(@errorName(err), 12, 0);
+            };
         }
     } else if (!found) {
         vga.writeString("Unknown command.\n", 0x07, 0);
     }
-
 }
 
 // -----------------------------------------------------------------------------
@@ -1100,7 +1100,7 @@ fn cmd_spawn(args: [][]const u8) void {
     for (task_registry) |entry| {
         if (std.mem.eql(u8, entry.name, task_name)) {
             var success: u8 = 1;
-            _ = scheduler.manager.registerDynamicTask(entry.entry) catch {
+            _ = scheduler.manager.registerDynamicTask(entry.entry, null) catch {
                 success = 0;
             };
 
@@ -1125,58 +1125,65 @@ fn cmd_spawn(args: [][]const u8) void {
     const path = std.fmt.bufPrint(&path_buf, "/{s}", .{task_name}) catch return;
 
     // Use the file-scope globals that were populated by shell.run()
+    // NOTE: allocator is strictly used here for temporary tracking and metadata checks, NOT for program code storage.
     const fs = g_fs;
     const allocator = cmd_fba.allocator();
 
-    //Clear interrupts so the scheduler cannot context switch mid-read
+    // Clear interrupts so the scheduler cannot context switch mid-allocation/mid-read
     asm volatile ("cli");
 
     // Check if the file exists on disk by looking for its directory record
     if (fs.findFile(allocator, fs.superblock.root_dir_extent_start, task_name)) |meta_lba| {
         _ = meta_lba;
 
-        // Exact physical size of our staging binary prog1.bin
+        // Exact physical size of our staging binary prog1.bin (4236 bytes)
         const file_size = 4236;
 
-        // Allocate raw, persistent memory space from the kernel heap for the application
-        const prog_buf = allocator.alloc(u8, file_size) catch {
-            vga.writeString("Error: Out of memory for task allocation\n", 12, 0);
+        // 3. Physical Frame Allocation (Bypasses PageAllocator's single-page limit)
+        // Since prog1.bin is 4236 bytes, it requires exactly 2 contiguous 4KiB frames (8192 bytes total).
+        // Grabbing these straight from bitmap.zig ensures the shell's cmd_fba.reset() won't track or wipe them.
+        const frame1 = bitmap.allocContiguous(2) orelse {
+            vga.writeString("Error: Out of contiguous physical memory for task frames\n", 12, 0);
+            asm volatile ("sti");
             return;
         };
+        // 4. Construct a secure slice across our dedicated physical memory blocks
+        const prog_ptr: [*]u8 = @ptrFromInt(frame1);
+        const prog_buf = prog_ptr[0..file_size];
+        const code_mem_slice = prog_ptr[0 .. 2 * bitmap.PAGE_SIZE];
 
-        // Stream the machine code from disk extents straight into our allocated RAM buffer
+        // 5. Stream the machine code from disk extents straight into our persistent RAM buffer
         _ = fs.readFile(allocator, path, prog_buf) catch {
             vga.writeString("Error: Failed to read binary from disk\n", 12, 0);
-            allocator.free(prog_buf);
+            bitmap.freeContiguous(frame1, 2);
+            asm volatile ("sti");
             return;
         };
 
-        // Reinterpret the memory buffer start pointer into a executable C-convention function pointer
+        // 6. Reinterpret the memory buffer start pointer into an executable C-convention function pointer
         const entry_fn = @as(*const fn () callconv(.c) void, @ptrCast(prog_buf.ptr));
-
-        // Hand the execution address over to your preemptive scheduler engine
-        _ = scheduler.manager.registerDynamicTask(entry_fn) catch {
+        // 7. Hand the execution address over to your preemptive scheduler engine
+        _ = scheduler.manager.registerDynamicTask(entry_fn, code_mem_slice) catch {
             vga.writeString("Error: Scheduler rejected dynamic binary\n", 12, 0);
-            allocator.free(prog_buf);
+            bitmap.freeContiguous(frame1, 2);
+            asm volatile ("sti");
             return;
         };
 
         vga.writeString("Spawned dynamic disk task: ", 10, 0);
         vga.writeString(task_name, 10, 0);
         vga.writeString("\n", 10, 0);
-        //Re-enable interrupts right before returning success
+
+        // Re-enable interrupts right before returning success
         asm volatile ("sti");
         return;
     } else |find_err| {
-        // Not found in registry and not found on disk
-        //Re-enable interrupts on failure path too!
-
-//==============DEBUG=============================
+        // Debug output for finding errors on disk tracking partitions
         vga.writeString("findFile error: ", 14, 0);
         vga.writeString(@errorName(find_err), 14, 0);
         vga.putChar('\n', 14, 0);
-//==============DEBUG=============================
 
+        // Re-enable interrupts on failure path too!
         asm volatile ("sti");
         vga.writeString("Error: Unknown task or file '", 12, 0);
         vga.writeString(task_name, 12, 0);
@@ -1339,7 +1346,12 @@ fn getNameFromId(id: conf.CommandID) ?[]const u8 {
 }
 
 fn saveComposer() !void {
-    const alloc = cmd_fba.allocator();
+// Create a local 4KB buffer on the stack for file system tracking
+    //var a: [20]u8 = undefined;
+    //vga.writeString(conv.toHex(usize, g_fs.superblock.root_dir_extent_blocks , &a), 14, 0);
+    var scratch_buffer: [8192]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&scratch_buffer);
+    const alloc = fba.allocator();
 
     const root_lba = g_fs.superblock.root_dir_extent_start;
     const sys_entry = g_fs.findFile(alloc, root_lba, "sys") catch |err| blk: {

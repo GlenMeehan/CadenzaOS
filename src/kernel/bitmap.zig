@@ -168,3 +168,60 @@ pub fn freeFrame(phys_addr: usize) void {
 
     markFree(page_index);
 }
+
+/// Find the first run of `count` consecutive free pages.
+/// Returns the starting page index or null if no such run exists.
+fn findFirstFreeRun(count: usize) ?usize {
+    if (count == 0) return null;
+
+    var run_start: usize = 0;
+    var run_len: usize = 0;
+    var page_index: usize = 0;
+
+    while (page_index < total_pages) : (page_index += 1) {
+        if (!isUsed(page_index)) {
+            if (run_len == 0) run_start = page_index;
+            run_len += 1;
+            if (run_len == count) return run_start;
+        } else {
+            run_len = 0;
+        }
+    }
+
+    return null;
+}
+
+/// Atomically allocate `count` consecutive 4 KiB frames as a single unit.
+/// Returns the physical address of the first frame, or null if no
+/// sufficiently large contiguous run of free frames exists.
+///
+/// Use this instead of calling allocFrame() multiple times when contiguity
+/// is required — separate allocFrame() calls can each succeed individually
+/// while landing on non-adjacent pages (e.g. after fragmentation from
+/// earlier frees), which this avoids by finding the whole run up front
+/// before marking anything used.
+pub fn allocContiguous(count: usize) ?usize {
+    const page_index = findFirstFreeRun(count) orelse return null;
+
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        markUsed(page_index + i);
+    }
+
+    return page_index * PAGE_SIZE;
+}
+
+/// Free `count` consecutive frames starting at `phys_addr`.
+/// Counterpart to allocContiguous().
+pub fn freeContiguous(phys_addr: usize, count: usize) void {
+    const start_page = phys_addr / PAGE_SIZE;
+
+    if (start_page + count > total_pages) {
+        @panic("Attempted to free invalid contiguous frame range");
+    }
+
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        markFree(start_page + i);
+    }
+}

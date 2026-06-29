@@ -55,7 +55,7 @@ var ticks: u64 = 0;
 // -----------------------------------------------------------------------------
 
 // Early static heap used with FixedBufferAllocator (bootstrap heap)
-var heap_buffer: [4  * 1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
+var heap_buffer: [10  * 1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
 
 // Global FixedBufferAllocator — lifetime = whole kernel
 var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
@@ -81,6 +81,8 @@ var kmain_stack: [16384]u8 align(16) linksection(".bss") = undefined;
 //  STATIC SHELL STACK - This buffer is statically allocated outside of kmain's stack frame
 // -----------------------------------------------------------------------------
 var shell_stack_buf: [16384]u8 align(16) = undefined;
+extern const _kernel_end: u8;
+extern fn isr80_stub() callconv(.c) void;
 
 
 // -----------------------------------------------------------------------------
@@ -327,6 +329,7 @@ pub export fn kmain() noreturn {
     idt.setGate(32, @intFromPtr(&irq0_stub));
     idt.setGate(33, @intFromPtr(&irq1_stub));
     idt.setGate(44, @intFromPtr(&irq12_stub));
+    idt.setGate(0x80, @intFromPtr(&isr80_stub));
 
     pic.remap(32, 40);
     pic.unmaskIrq(@as(u8, 0));  // timer
@@ -378,15 +381,18 @@ pub export fn kmain() noreturn {
     bm.init(regions);
     vga.step(5);
 
+    const mem_mod = @import("memory.zig");
+
     // Kernel image
-    bm.markUsedRange(info.kernel_start, info.kernel_end);
+    const real_kernel_end_virt = @intFromPtr(&_kernel_end);
+    const real_kernel_end_phys = mem_mod.virtToPhys(real_kernel_end_virt);
+    bm.markUsedRange(info.kernel_start, real_kernel_end_phys);
 
     // Stack
     bm.markUsedRange(info.stack_top - STACK_SIZE, info.stack_top);
     vga.step(6);
 
     // Heap
-    const mem_mod = @import("memory.zig");
     const heap_virt = @intFromPtr(&heap_buffer[0]);
     const heap_phys = mem_mod.virtToPhys(heap_virt);
     bm.markUsedRange(heap_phys, heap_phys + heap_buffer.len);
@@ -416,6 +422,14 @@ pub export fn kmain() noreturn {
     vga.writeString(conv.toHex(u64, bmRange.start, &buf_bm_range), 15, 0);
     vga.writeString("Bitmap end:   0x", 15, 0);
     vga.writeString(conv.toHex(u64, bmRange.end, &buf_bm_range), 15, 0);
+
+    // Shell's dedicated Task 0 stack (must be reserved — it's live for the
+    // entire session once shell.run() starts, but isn't covered by the
+    // original boot "Stack" range since it's a separate static buffer)
+    const shell_stack_virt = @intFromPtr(&shell_stack_buf[0]);
+    const shell_stack_phys = mem_mod.virtToPhys(shell_stack_virt);
+    bm.markUsedRange(shell_stack_phys, shell_stack_phys + shell_stack_buf.len);
+
 
     // -------------------------------------------------------------------------
     //  FRAME ALLOCATOR STRESS TEST
