@@ -25,7 +25,7 @@ extern irq0_handler
 extern irq1_handler
 extern irq12_handler
 extern preempt_handler
-extern task_exit_handler
+extern syscall_handler
 
 global irq0_stub
 global irq1_stub
@@ -154,7 +154,7 @@ isr80_stub:
     push rax
 
     mov rdi, rsp
-    call task_exit_handler
+    call syscall_handler
 
     mov rsp, rax
 

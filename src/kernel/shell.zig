@@ -1099,10 +1099,12 @@ fn cmd_spawn(args: [][]const u8) void {
     // 1. Search the static compile-time task registry first
     for (task_registry) |entry| {
         if (std.mem.eql(u8, entry.name, task_name)) {
+            asm volatile ("cli");
             var success: u8 = 1;
             _ = scheduler.manager.registerDynamicTask(entry.entry, null) catch {
                 success = 0;
             };
+            asm volatile ("sti");
 
             if (success == 0) {
                 vga.writeString("Error: Could not spawn task\n", 12, 0);

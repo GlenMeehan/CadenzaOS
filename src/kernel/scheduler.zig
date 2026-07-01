@@ -3,6 +3,8 @@ const std = @import("std");
 const config = @import("config.zig");
 const bm = @import("bitmap.zig");
 const memory = @import("memory.zig");
+const vga = @import("vga.zig");
+const conv = @import("convert.zig");
 
 pub const TaskState = enum {
     Ready,
@@ -23,13 +25,13 @@ pub const TaskContext = packed struct {
 /// NEW: Represents the exact layout of registers on the stack during a preemptive context switch.
 /// This matches the x86_64 hardware interrupt and iretq expectations perfectly.
 pub const InterruptContext = packed struct {
-    // 1. Registers pushed manually by our assembly stub macros
-    r15: u64, r14: u64, r13: u64, r12: u64,
-    r11: u64, r10: u64, r9:  u64, r8:  u64,
-    rbp: u64, rdi: u64, rsi: u64, rdx: u64,
-    rcx: u64, rbx: u64, rax: u64,
-
-    // 2. Hardware Interrupt Frame pushed automatically by the CPU.
+    // 1. Manually-pushed registers, in actual low-to-high memory order
+    //    (i.e., reverse of push order — last pushed = lowest address = first field)
+    rax: u64, rbx: u64, rcx: u64, rdx: u64,
+    rsi: u64, rdi: u64, rbp: u64,
+    r8:  u64, r9:  u64, r10: u64, r11: u64,
+    r12: u64, r13: u64, r14: u64, r15: u64,
+    // 2. Hardware Interrupt Frame pushed automatically by the CPU (unchanged — already correct)
     rip: u64,
     cs: u64,
     rflags: u64,
@@ -143,9 +145,9 @@ pub const Scheduler = struct {
         const id = self.nextId();
 
         // 3. Allocate stack using frame allocator (avoids heap fragmentation)
-        const phys_addr = bm.allocFrame() orelse return error.OutOfMemory;
+        const phys_addr = bm.allocContiguous(2) orelse return error.OutOfMemory;
         const virt_addr = memory.physToVirt(phys_addr);
-        const stack_buf = @as([*]u8, @ptrFromInt(virt_addr))[0..bm.PAGE_SIZE];
+        const stack_buf = @as([*]u8, @ptrFromInt(virt_addr))[0..bm.PAGE_SIZE * 2];
 
         // 4. Set up the initial context using InterruptContext natively
         const stack_top = @intFromPtr(stack_buf.ptr) + stack_buf.len;
@@ -254,7 +256,7 @@ pub const Scheduler = struct {
                 if (t.state == .Dead) {
                     if (t.stack_mem) |mem_slice| {
                         const phys = memory.virtToPhys(@intFromPtr(mem_slice.ptr));
-                        bm.freeFrame(phys);
+                        bm.freeContiguous(phys, 2);
                     }
                     if (t.code_mem) |code_slice| {
                         const phys = @intFromPtr(code_slice.ptr); // already physical — cmd_spawn never applied physToVirt here
@@ -302,17 +304,24 @@ pub const Scheduler = struct {
     /// the dying task's stack frame is discarded and never resumed.
     /// Actual frame cleanup (stack_mem/code_mem) happens later, in
     /// preempt_handler's existing cleanup pass on the next timer tick.
-    pub export fn task_exit_handler(stack_ptr: usize) usize {
-        _ = stack_ptr;
+    pub export fn syscall_handler(stack_ptr: usize) usize {
+        const ctx = @as(*InterruptContext, @ptrFromInt(stack_ptr));
 
-        if (manager.tasks[manager.current_task_idx]) |*t| {
-            t.state = .Dead;
+        switch (ctx.rax) {
+            0 => { // EXIT
+                if (manager.tasks[manager.current_task_idx]) |*t| {
+                    t.state = .Dead;
+                }
+                const next_idx = manager.pickNextTask();
+                manager.current_task_idx = next_idx;
+                manager.tasks[next_idx].?.state = .Running;
+                return manager.tasks[next_idx].?.stack_ptr;
+            },
+            else => {
+                // Unknown syscall for now — no-op, resume the same task.
+                return stack_ptr;
+            },
         }
-
-        const next_idx = manager.pickNextTask();
-        manager.current_task_idx = next_idx;
-        manager.tasks[next_idx].?.state = .Running;
-        return manager.tasks[next_idx].?.stack_ptr;
     }
 
 };
