@@ -46,6 +46,7 @@ pub const Task = struct {
     wake_tick: u64 = 0,
     stack_mem: ?[]u8 = null,
     code_mem: ?[]u8 = null,
+    code_phys: usize = 0,
 };
 
 pub const Scheduler = struct {
@@ -130,6 +131,7 @@ pub const Scheduler = struct {
         self: *Scheduler,
         entry_point: *const fn() callconv(.c) void,
         code_mem: ?[]u8,
+        code_phys: usize,
     ) !usize {
         // 1. Find a free slot
         var slot: ?usize = null;
@@ -176,6 +178,7 @@ pub const Scheduler = struct {
             .wake_tick = 0,
             .stack_mem = stack_buf,
             .code_mem = code_mem,
+            .code_phys = code_phys,
         };
 
         return slot.?;
@@ -317,9 +320,26 @@ pub const Scheduler = struct {
                 manager.tasks[next_idx].?.state = .Running;
                 return manager.tasks[next_idx].?.stack_ptr;
             },
-            else => {
-                // Unknown syscall for now — no-op, resume the same task.
+            1 => { // PRINT_STRING
+                const phys_ptr = blk: {
+                    if (manager.tasks[manager.current_task_idx]) |t| {
+                        if (t.code_phys != 0) {
+                            // rdi is a link-time offset from binary base (0x0)
+                            // translate to real physical address using stored frame base
+                            break :blk t.code_phys + ctx.rdi;
+                        }
+                    }
+                    // Static task or unknown — treat rdi as already physical
+                    break :blk ctx.rdi;
+                };
+                const virt_ptr = memory.physToVirt(phys_ptr);
+                const ptr: [*]const u8 = @ptrFromInt(virt_ptr);
+                const len: usize = ctx.rsi;
+                vga.writeString(ptr[0..len], 15, 0);
                 return stack_ptr;
+            },
+            else => {
+                return stack_ptr; // unknown syscall — no-op
             },
         }
     }

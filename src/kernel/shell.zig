@@ -1101,7 +1101,7 @@ fn cmd_spawn(args: [][]const u8) void {
         if (std.mem.eql(u8, entry.name, task_name)) {
             asm volatile ("cli");
             var success: u8 = 1;
-            _ = scheduler.manager.registerDynamicTask(entry.entry, null) catch {
+            _ = scheduler.manager.registerDynamicTask(entry.entry, null, 0) catch {
                 success = 0;
             };
             asm volatile ("sti");
@@ -1165,7 +1165,7 @@ fn cmd_spawn(args: [][]const u8) void {
         // 6. Reinterpret the memory buffer start pointer into an executable C-convention function pointer
         const entry_fn = @as(*const fn () callconv(.c) void, @ptrCast(prog_buf.ptr));
         // 7. Hand the execution address over to your preemptive scheduler engine
-        _ = scheduler.manager.registerDynamicTask(entry_fn, code_mem_slice) catch {
+        _ = scheduler.manager.registerDynamicTask(entry_fn, code_mem_slice, frame1) catch {
             vga.writeString("Error: Scheduler rejected dynamic binary\n", 12, 0);
             bitmap.freeContiguous(frame1, 2);
             asm volatile ("sti");
