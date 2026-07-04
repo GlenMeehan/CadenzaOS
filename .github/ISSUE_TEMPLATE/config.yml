@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a Question / Start a Discussion
+    url: https://github.com/glenmeehan/cadenzaos/discussions
+    about: For questions, architectural discussions, and general conversation, please use GitHub Discussions rather than opening an issue.
+  - name: Code of Conduct
+    url: https://github.com/glenmeehan/cadenzaos/blob/main/CODE_OF_CONDUCT.md
+    about: Please read our Code of Conduct before participating.

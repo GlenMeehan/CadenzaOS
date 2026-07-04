@@ -1,0 +1,25 @@
+CadenzaOS
+Copyright 2024-2025 Glen Meehan
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file for the full license text.
+
+------------------------------------------------------------------------
+
+THIRD-PARTY ATTRIBUTIONS
+
+No third-party code has been incorporated into the CadenzaOS core tree
+at this time. This file will be updated if permissive third-party code
+is accepted into the codebase in the future.
+
+------------------------------------------------------------------------
+
+ACKNOWLEDGEMENTS
+
+CadenzaOS is implemented in the Zig programming language (ziglang.org).
+The Zig toolchain is used for compilation but its source code is not
+incorporated into this project.
+
+Hardware interface specifications referenced during development include
+the Intel 64 and IA-32 Architectures Software Developer's Manual and
+the ATA/ATAPI Command Set standard.

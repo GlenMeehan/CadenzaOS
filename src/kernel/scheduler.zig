@@ -114,9 +114,6 @@ pub const Scheduler = struct {
         initial_sp = (initial_sp & ~@as(usize, 15));
 
 
-        //var buf: [32]u8 = undefined;
-        //vga.writeString(conv.toHex(usize, initial_sp, &buf), 15, 0);
-
         const context_ptr = @as(*InterruptContext, @ptrFromInt(initial_sp));
         inline for (std.meta.fields(InterruptContext)) |field| {
             @field(context_ptr, field.name) = 0;
@@ -282,9 +279,6 @@ pub const Scheduler = struct {
                 return manager.tasks[next_idx].?.stack_ptr;
             },
             1 => { // PRINT_STRING
-                //var b: [20]u8 = undefined;
-                //vga.writeString("DBG rdi=", 14, 0);
-                //vga.writeString(conv.toHex(u64, ctx.rdi, &b), 14, 0);
                 const phys_ptr = blk: {
                     if (manager.tasks[manager.current_task_idx]) |t| {
                         // Check if rdi falls within code frames (already physical)

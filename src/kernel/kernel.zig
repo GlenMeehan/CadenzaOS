@@ -220,6 +220,21 @@ pub export fn kmain() noreturn {
         vga.writeString("STATUS: System Partition Found!\n", 10, 0);
 
         vga.writeString("RESTORE: Populating RAM from Disk...\n", 11, 0);
+
+        // =========================================================================
+        //  RAMDISK HYDRATION
+        //  On every boot, the full disk image is loaded from ATA into the RAM
+        //  disk buffer (fs_ramdisk_buf) before the filesystem mounts on top of it.
+        //  This means:
+        //  - "Preserve filesystem" boots: existing CodaFS data is loaded from ATA
+        //    into RAM, then mounted — all reads/writes go to RAM during the session,
+        //    with writes flushed back to ATA disk via RamDisk.writeBlocksImpl.
+        //  - Fresh boots: fs_ramdisk_buf is zeroed first (@memset in kmain),
+        //    then mkfs() initialises a new CodaFS in RAM, written through to ATA.
+        //  The ramdisk is the live filesystem during a session — ATA is just
+        //  persistent backing storage. RAMDISK_SIZE must be >= disk image size
+        //  (currently both 10MB) or reads near the end of disk will OutOfRange.
+        // =========================================================================
         ata.AtaDevice.readBlocks(null, partition_start, fs_ramdisk_buf[0..]) catch |err| {
             vga.writeString("ERROR: Restoration failed! Type: ", 12, 0);
             vga.writeString(@errorName(err), 12, 0);
