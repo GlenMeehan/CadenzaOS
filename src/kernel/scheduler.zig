@@ -6,6 +6,8 @@ const memory = @import("memory.zig");
 const vga = @import("vga.zig");
 const conv = @import("convert.zig");
 
+const SCRATCH_PAGE_PHYS: usize = 0x7000;
+
 pub const TaskState = enum {
     Ready,
     Running,
@@ -80,51 +82,6 @@ pub const Scheduler = struct {
         };
     }
 
-    /// NEW: Manually primes a static memory slice with an initial execution frame.
-    /// This allows us to load external tasks (like taskA_main) into the timeline.
-    pub fn registerStaticTask(
-        self: *Scheduler,
-        slot: usize,
-        id: usize,
-        entry_point: *const fn() callconv(.c) void,
-                              stack_buf: []u8
-    ) void {
-        const stack_top = @intFromPtr(stack_buf.ptr) + stack_buf.len;
-
-        // ---- FIX 1: Upgrade from TaskContext to InterruptContext ----
-        var initial_sp = stack_top - @sizeOf(InterruptContext);
-        initial_sp = (initial_sp & ~@as(usize, 15)); // 16-byte alignment enforce
-
-        // ---- FIX 2: Cast pointer to the correct InterruptContext structure ----
-        const context_ptr = @as(*InterruptContext, @ptrFromInt(initial_sp));
-
-        // Clear all register fields cleanly to prepare for first context load
-        inline for (std.meta.fields(InterruptContext)) |field| {
-            @field(context_ptr, field.name) = 0;
-        }
-
-        // Direct execution to our target function pointer when switched into
-        context_ptr.rip = @intFromPtr(entry_point);
-
-        // ---- CRITICAL INTEL LONG MODE ARCHITECTURE FRAME SETUP ----
-        context_ptr.cs = 0x18;         // Your kernel's Code Segment Selector (0x18)
-        context_ptr.rflags = 0x202;    // 0x200 (Interrupts Enabled flag) + 0x02 (Reserved bit)
-
-        // Point RSP directly to the context block itself so it has a perfectly
-        // aligned, safe, writable zone within the allocated 4KB buffer.
-        context_ptr.rsp = initial_sp;
-        context_ptr.ss = 0x10;         // Your kernel's Data/Stack Segment Selector (0x20)
-        // -----------------------------------------------------------
-
-        self.tasks[slot] = Task{
-            .id = id,
-            .stack_ptr = initial_sp,
-            .state = .Ready,
-            // Ensure any extra fields required by your Task struct are here
-            // (like .wake_tick = 0, .stack_mem = stack_buf if required)
-        };
-    }
-
     /// Dynamically allocates a stack and registers a new task into the first free slot.
     /// Returns the slot index on success, or an error if no slots are available.
     pub fn registerDynamicTask(
@@ -155,6 +112,10 @@ pub const Scheduler = struct {
         const stack_top = @intFromPtr(stack_buf.ptr) + stack_buf.len;
         var initial_sp = stack_top - @sizeOf(InterruptContext);
         initial_sp = (initial_sp & ~@as(usize, 15));
+
+
+        //var buf: [32]u8 = undefined;
+        //vga.writeString(conv.toHex(usize, initial_sp, &buf), 15, 0);
 
         const context_ptr = @as(*InterruptContext, @ptrFromInt(initial_sp));
         inline for (std.meta.fields(InterruptContext)) |field| {
@@ -262,7 +223,7 @@ pub const Scheduler = struct {
                         bm.freeContiguous(phys, 2);
                     }
                     if (t.code_mem) |code_slice| {
-                        const phys = @intFromPtr(code_slice.ptr); // already physical — cmd_spawn never applied physToVirt here
+                        const phys = memory.virtToPhys(@intFromPtr(code_slice.ptr));
                         const frame_count = (code_slice.len + bm.PAGE_SIZE - 1) / bm.PAGE_SIZE;
                         bm.freeContiguous(phys, frame_count);
                     }
@@ -321,21 +282,71 @@ pub const Scheduler = struct {
                 return manager.tasks[next_idx].?.stack_ptr;
             },
             1 => { // PRINT_STRING
+                //var b: [20]u8 = undefined;
+                //vga.writeString("DBG rdi=", 14, 0);
+                //vga.writeString(conv.toHex(u64, ctx.rdi, &b), 14, 0);
                 const phys_ptr = blk: {
                     if (manager.tasks[manager.current_task_idx]) |t| {
+                        // Check if rdi falls within code frames (already physical)
                         if (t.code_phys != 0) {
-                            // rdi is a link-time offset from binary base (0x0)
-                            // translate to real physical address using stored frame base
-                            break :blk t.code_phys + ctx.rdi;
+                            const code_end = t.code_phys + (2 * bm.PAGE_SIZE);
+                            if (ctx.rdi >= t.code_phys and ctx.rdi < code_end) {
+                                break :blk ctx.rdi;
+                            }
                         }
+                        // Check if rdi falls within stack frames
+                        // Only attempt virtToPhys if rdi looks like a valid virtual address
+                        if (t.stack_mem) |stack_slice| {
+                            const kernel_offset: u64 = 0xFFFFFF8000000000;
+                            if (ctx.rdi >= kernel_offset) {
+                                const stack_phys = memory.virtToPhys(@intFromPtr(stack_slice.ptr));
+                                const stack_end = stack_phys + stack_slice.len;
+                                const rdi_phys = memory.virtToPhys(ctx.rdi);
+                                if (rdi_phys >= stack_phys and rdi_phys < stack_end) {
+                                    break :blk rdi_phys;
+                                }
+                            }
+                        }
+                        // Fallback: treat as offset from code base
+                        if (t.code_phys != 0) break :blk t.code_phys + ctx.rdi;
                     }
-                    // Static task or unknown — treat rdi as already physical
                     break :blk ctx.rdi;
                 };
+
                 const virt_ptr = memory.physToVirt(phys_ptr);
                 const ptr: [*]const u8 = @ptrFromInt(virt_ptr);
                 const len: usize = ctx.rsi;
-                vga.writeString(ptr[0..len], 15, 0);
+                const colour: u8 = if (ctx.rdx == 0) 0x0F else @truncate(ctx.rdx);
+                const fg: u8 = colour & 0x0F;
+                const bg: u8 = (colour >> 4) & 0x0F;
+                vga.writeString(ptr[0..len], fg, bg);
+                return stack_ptr;
+            },
+            2 => { // GET_SCRATCH_BYTE — rdi=offset, returns value in rax via context
+                const offset = ctx.rdi;
+                if (offset < 4096) {
+                    const scratch_virt = memory.physToVirt(SCRATCH_PAGE_PHYS + offset);
+                    const val = @as(*volatile u8, @ptrFromInt(scratch_virt)).*;
+                    // Return value to caller via rax in the saved context
+                    ctx.rax = val;
+                }
+                return stack_ptr;
+            },
+            3 => { // SET_SCRATCH_BYTE — rdi=offset, rsi=value
+                const offset = ctx.rdi;
+                const value: u8 = @truncate(ctx.rsi);
+                if (offset < 4096) {
+                    const scratch_virt = memory.physToVirt(SCRATCH_PAGE_PHYS + offset);
+                    @as(*volatile u8, @ptrFromInt(scratch_virt)).* = value;
+                }
+                return stack_ptr;
+            },
+            4 => { // PRINT_CHAR — rdi=character, rsi=colour
+                const char: u8 = @truncate(ctx.rdi);
+                const colour: u8 = if (ctx.rsi == 0) 0x0F else @truncate(ctx.rsi);
+                const fg: u8 = colour & 0x0F;
+                const bg: u8 = (colour >> 4) & 0x0F;
+                vga.putChar(char, fg, bg);
                 return stack_ptr;
             },
             else => {

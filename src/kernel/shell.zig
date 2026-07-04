@@ -29,6 +29,7 @@ const irupts = @import("irupts.zig");
 const scheduler = @import("scheduler.zig");
 const task = @import("task.zig");
 const bitmap = @import("bitmap.zig");
+const memory = @import("memory.zig");
 
 
 // --------------------------------
@@ -1150,9 +1151,10 @@ fn cmd_spawn(args: [][]const u8) void {
             return;
         };
         // 4. Construct a secure slice across our dedicated physical memory blocks
-        const prog_ptr: [*]u8 = @ptrFromInt(frame1);
-        const prog_buf = prog_ptr[0..file_size];
-        const code_mem_slice = prog_ptr[0 .. 2 * bitmap.PAGE_SIZE];
+        const prog_ptr_phys: [*]u8 = @ptrFromInt(frame1);
+        const prog_buf = prog_ptr_phys[0..file_size];
+        const code_virt = memory.physToVirt(frame1);
+        const code_mem_slice = (@as([*]u8, @ptrFromInt(code_virt)))[0 .. 2 * bitmap.PAGE_SIZE];
 
         // 5. Stream the machine code from disk extents straight into our persistent RAM buffer
         _ = fs.readFile(allocator, path, prog_buf) catch {

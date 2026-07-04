@@ -40,6 +40,7 @@ const ata = @import("drivers/ata.zig");
 const scheduler = @import("scheduler.zig");
 const task = @import("task.zig");
 const bin_loader = @import("fs/binary_loader.zig");
+const memory = @import("memory.zig");
 
 pub const STACK_SIZE = 0x40000;         // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
@@ -429,6 +430,14 @@ pub export fn kmain() noreturn {
     const shell_stack_virt = @intFromPtr(&shell_stack_buf[0]);
     const shell_stack_phys = mem_mod.virtToPhys(shell_stack_virt);
     bm.markUsedRange(shell_stack_phys, shell_stack_phys + shell_stack_buf.len);
+
+    // Scratch page for external binaries (physical 0x7000 - 0x7FFF)
+    bm.markUsedRange(0x7000, 0x8000);
+
+    //Zero scratch page at boot so the counter starts clean:
+    const scratch_virt = memory.physToVirt(0x7000);
+    const scratch_ptr: [*]u8 = @ptrFromInt(scratch_virt);
+    @memset(scratch_ptr[0..4096], 0);
 
 
     // -------------------------------------------------------------------------
