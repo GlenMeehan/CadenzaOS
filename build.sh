@@ -18,7 +18,8 @@ if [ "$1" == "run" ]; then
     echo "🚀 Just launching QEMU (Existing disk state preserved)..."
     qemu-system-x86_64 \
       -drive format=raw,file=$IMG \
-      -m 1024 -monitor stdio -no-reboot -no-shutdown -vga std
+      -m 1024 -monitor stdio -no-reboot -no-shutdown -vga std \
+      -serial file:serial.log
     exit 0
 fi
 
@@ -117,7 +118,15 @@ echo "✅ Build & Update complete."
 qemu-system-x86_64 \
       -drive format=raw,file=$IMG,cache=directsync,snapshot=off \
       -m 1024 -monitor stdio -no-reboot -no-shutdown -vga std \
-      -d int,cpu_reset -D qemu.log
+      -d int,cpu_reset -D qemu.log \
+      -serial file:serial.log
+
+
+#qemu-system-x86_64 \
+      #-drive format=raw,file=$IMG,cache=directsync,snapshot=off \
+      #-m 1024 -monitor stdio -no-reboot -no-shutdown -vga std \
+      #-d int,cpu_reset -D qemu.log \
+      #-serial stdio
 
 #qemu-system-x86_64 \
   #-drive format=raw,file=$IMG \

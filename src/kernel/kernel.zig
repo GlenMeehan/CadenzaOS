@@ -187,6 +187,7 @@ export fn kernel_entry() void {
 
 /// Main kernel entry point.
 pub export fn kmain() noreturn {
+
     // 1. Calculate the top of our new stack array
     const new_sp = @intFromPtr(&kmain_stack) + kmain_stack.len;
 
@@ -208,6 +209,7 @@ pub export fn kmain() noreturn {
     idt.init();
 
     vga.writeString("Probing Disk...\n", 15, 0);
+
 
     // -------------------------------------------------------------------------
     //  DISK / FILESYSTEM RESTORE OR INIT

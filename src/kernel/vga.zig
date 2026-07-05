@@ -14,6 +14,7 @@
 
 const conv = @import("convert.zig");
 const io = @import("port_io.zig");
+const serial = @import("drivers/serial.zig");
 
 // VGA text buffer (80×25 characters, 2 bytes per cell)
 const VGA = @as([*]volatile u16, @ptrFromInt(0xB8000));
@@ -32,6 +33,7 @@ pub var cursor_col: usize = 0;
 /// Write a string starting at the next available line.
 /// Uses cursor tracking and putChar().
 pub fn writeString(s: []const u8, fg: u8, bg: u8) void {
+    //serial.writeString(s);
     nextLine();
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
@@ -74,6 +76,7 @@ pub fn clearScreen(fg: u8, bg: u8) void {
 
 /// Write raw text using putChar() without moving to a new line first.
 pub fn writeRaw(s: []const u8, fg: u8, bg: u8) void {
+    //serial.writeString(s);
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
         putChar(s[i], fg, bg);
@@ -87,6 +90,7 @@ pub fn writeRaw(s: []const u8, fg: u8, bg: u8) void {
 /// Write a single character at the current cursor position.
 /// Handles newline, wrapping, and scrolling.
 pub fn putChar(c: u8, fg: u8, bg: u8) void {
+    serial.putChar(c);
     const color = (@as(u16, bg) << 12) | (@as(u16, fg) << 8);
 
     if (c == '\n') {
