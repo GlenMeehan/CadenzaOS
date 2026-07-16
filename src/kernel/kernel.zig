@@ -41,6 +41,9 @@ const scheduler = @import("scheduler.zig");
 const task = @import("task.zig");
 const bin_loader = @import("fs/binary_loader.zig");
 const memory = @import("memory.zig");
+const boot_info_mod = @import("boot_info.zig");
+const serial = @import("drivers/serial.zig");
+const fb = @import("framebuffer.zig");
 
 pub const STACK_SIZE = 0x40000;         // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
@@ -187,6 +190,22 @@ export fn kernel_entry() void {
 
 /// Main kernel entry point.
 pub export fn kmain() noreturn {
+
+    // Initialise serial FIRST so all subsequent output is captured
+    serial.init();
+    const boot_info = boot_info_mod.get();
+
+    if (boot_info.graphics_mode == 1) {
+        fb.init(
+            0x3E000000,
+                @intCast(boot_info.fb_stride),
+                @intCast(boot_info.fb_width),
+                @intCast(boot_info.fb_height),
+                @intCast(boot_info.fb_bpp),
+        );
+        vga.graphics_mode = true;
+    }
+
 
     // 1. Calculate the top of our new stack array
     const new_sp = @intFromPtr(&kmain_stack) + kmain_stack.len;

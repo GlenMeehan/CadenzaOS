@@ -340,7 +340,15 @@ pub const Scheduler = struct {
                 const colour: u8 = if (ctx.rsi == 0) 0x0F else @truncate(ctx.rsi);
                 const fg: u8 = colour & 0x0F;
                 const bg: u8 = (colour >> 4) & 0x0F;
-                vga.putChar(char, fg, bg);
+
+                // A. Print the digit character
+                const buf = [1]u8{char};
+                vga.writeString(&buf, fg, bg);
+
+                // B. Force a newline immediately after printing the character
+                const newline = [1]u8{'\n'};
+                vga.writeString(&newline, fg, bg);
+
                 return stack_ptr;
             },
             else => {

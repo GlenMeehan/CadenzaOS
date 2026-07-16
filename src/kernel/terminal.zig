@@ -22,6 +22,7 @@ const mem = @import("memory.zig");
 const config = @import("config.zig");
 const keyboard = @import("inputs/keyboard.zig");
 const scheduler = @import("scheduler.zig");
+const fb = @import("framebuffer.zig");
 
 const MAX_LINE = config.TERMINAL_LINE_SIZE;
 const MAX_HISTORY = 32;
@@ -76,11 +77,13 @@ pub fn setPredictor(func: PredictorFn) void {
 // -----------------------------------------------------------------------------
 
 fn inCanvasMode() bool {
-    // Canvas mode is only valid on the original row, before we hit the hard
-    // right boundary. We also avoid the last column (79) to prevent wrapping.
     if (cursor_row != canvas_row) return false;
-    if (cursor_row >= 25) return false;
-    return prompt_start + line_len < 79;
+    const max_rows: usize = if (vga.graphics_mode) @as(usize, fb.getRows()) else 25;
+    if (cursor_row >= max_rows) return false;
+
+    // Dynamically check against the total column width minus 1
+    const max_cols = if (vga.graphics_mode) @as(usize, fb.getCols()) else 80;
+    return prompt_start + line_len < (max_cols - 1);
 }
 
 fn inStreamMode() bool {
@@ -98,10 +101,19 @@ pub fn processChar(ch: u8) void {
             cursor_pos -= 1;
             line_len -= 1;
 
-            // Backspace is always handled via hardware cursor and overwrite.
-            vga.moveCursorLeft();
-            vga.putChar(' ', 15, 0);
-            vga.moveCursorLeft();
+            if (inCanvasMode()) {
+                redrawLine();
+            } else {
+                // Stream mode backspace
+                const current_col = if (vga.graphics_mode) fb.cursor_col else vga.cursor_col;
+                const current_row = if (vga.graphics_mode) fb.cursor_row else vga.cursor_row;
+
+                if (current_col > 0) {
+                    vga.setCursor(current_row, current_col - 1);
+                    vga.putChar(' ', 15, 0);
+                    vga.setCursor(current_row, current_col - 1);
+                }
+            }
         }
         return;
     }
@@ -138,23 +150,26 @@ fn isPrintable(ch: u8) bool {
 
 pub fn takeLine() []const u8 {
     while (true) {
-        // 1. First, drain the raw ring buffer keys into the line buffer (from Option A)
+        // 1. First, drain the raw ring buffer keys into the line buffer
+        //    (Show the solid cursor right before we wait or poll for characters)
+        if (vga.graphics_mode) fb.setCursorVisible(true);
+
         pollKeyboard();
 
-        // 2. Check if a full line is ready (user pressed Enter)
+        // 2. Erase the cursor immediately once a key lands, so text rendering doesn't smear it
+        //if (vga.graphics_mode) fb.setCursorVisible(false);
+
+        // 3. Check if a full line is ready (user pressed Enter)
         if (line_ready.load(.acquire)) {
             return line_buffer[0..line_len];
         }
 
-        // 3. THE FIX: The line isn't ready. Stop spinning!
-        // Tell the scheduler to put the Shell (Task 0) to sleep.
+        // 4. The line isn't ready. Stop spinning!
         if (scheduler.manager.tasks[0]) |*shell_task| {
             shell_task.state = .Ready;
         }
 
-        // 4. Immediately give up the rest of our time slot.
-        // The CPU jumps away to run other things, completely ignoring the shell
-        // until the keyboard interrupt wakes it up.
+        // 5. Immediately give up the rest of our time slot.
         scheduler.manager.yield();
     }
 }
@@ -232,8 +247,8 @@ pub fn startNewLine() void {
     line_len = 0;
 
     // Capture the current VGA cursor as the start of our Canvas line.
-    prompt_start = vga.cursor_col;
-    cursor_row = vga.cursor_row;
+    prompt_start = vga.getCursorCol();
+    cursor_row = vga.getCursorRow();
     canvas_row = cursor_row;
 }
 
@@ -266,19 +281,20 @@ fn setCursorToLogical() void {
 }
 
 fn clearCanvasRegion() void {
-    // Clear from prompt_start to column 78 (avoid 79/80 to prevent wrapping).
+    const max_cols = if (vga.graphics_mode) @as(usize, fb.getCols()) else 80;
     var col: usize = prompt_start;
-    while (col < 79) : (col += 1) {
+    while (col < (max_cols - 1)) : (col += 1) {
         vga.setCursor(cursor_row, col);
         vga.putChar(' ', 15, 0);
     }
 }
 
 fn drawRealTextOnCanvas() void {
+    const max_cols = if (vga.graphics_mode) @as(usize, fb.getCols()) else 80;
     var i: usize = 0;
     while (i < line_len) : (i += 1) {
         const target_col = prompt_start + i;
-        if (target_col >= 79) break; // Hard boundary
+        if (target_col >= (max_cols - 1)) break;
 
         vga.setCursor(cursor_row, target_col);
         vga.putChar(line_buffer[i], 15, 0);
@@ -286,17 +302,17 @@ fn drawRealTextOnCanvas() void {
 }
 
 fn drawGhostText() void {
-    // Ghost text only appears when cursor is at end and in Canvas mode.
     if (cursor_pos != line_len) return;
     if (!inCanvasMode()) return;
 
     const prediction = getPrediction(line_buffer[0..line_len]);
     if (prediction.len == 0) return;
 
+    const max_cols = if (vga.graphics_mode) @as(usize, fb.getCols()) else 80;
     var j: usize = 0;
     while (j < prediction.len) : (j += 1) {
         const ghost_col = prompt_start + line_len + j;
-        if (ghost_col >= 79) break; // Hard boundary
+        if (ghost_col >= (max_cols - 1)) break;
 
         vga.setCursor(cursor_row, ghost_col);
         vga.putChar(prediction[j], 8, 0);
@@ -306,7 +322,13 @@ fn drawGhostText() void {
 fn redrawLine() void {
     // Redraw is only safe/meaningful in Canvas mode.
     if (!inCanvasMode()) return;
-    if (cursor_row > 24) return;
+
+    // TEMPORARY SAFETY GUARD (Adjust if your graphics canvas supports more rows)
+    const max_rows = if (vga.graphics_mode) @as(usize, fb.getRows()) else 25;
+    if (cursor_row >= max_rows) return;
+
+    // Turn the cursor off before rendering new letters so it doesn't leave ghosts
+    if (vga.graphics_mode) fb.setCursorVisible(false);
 
     clearCanvasRegion();
     drawRealTextOnCanvas();
@@ -431,9 +453,15 @@ fn abortLine() void {
 
 fn clearScreen() void {
     vga.clearScreen(15, 0);
-    vga.cursor_col = prompt_start + cursor_pos + 1;
-    vga.updateCursorHardware();
+    vga.setCursor(0, 0);
     vga.writeString("Cadenza> ", 3, 0);
+
+    // Anchor our input tracking exactly where the prompt finished printing
+    prompt_start = if (vga.graphics_mode) fb.cursor_col else vga.cursor_col;
+    cursor_row = if (vga.graphics_mode) fb.cursor_row else vga.cursor_row;
+    canvas_row = cursor_row;
+    cursor_pos = 0;
+    line_len = 0;
 }
 
 fn deleteUnderCursor() void {

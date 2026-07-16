@@ -15,9 +15,14 @@
 const conv = @import("convert.zig");
 const io = @import("port_io.zig");
 const serial = @import("drivers/serial.zig");
+const fb = @import("framebuffer.zig");
 
 // VGA text buffer (80×25 characters, 2 bytes per cell)
 const VGA = @as([*]volatile u16, @ptrFromInt(0xB8000));
+
+// Set to true when VESA graphics mode is active.
+// Disables VGA text buffer writes and hardware cursor updates.
+pub var graphics_mode: bool = false;
 
 const WIDTH  = 80;
 const HEIGHT = 25;
@@ -34,6 +39,10 @@ pub var cursor_col: usize = 0;
 /// Uses cursor tracking and putChar().
 pub fn writeString(s: []const u8, fg: u8, bg: u8) void {
     //serial.writeString(s);
+    if (graphics_mode) {
+        fb.writeString(s, fg, bg);
+        return;
+    }
     nextLine();
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
@@ -50,6 +59,10 @@ pub fn writeStringAt(
     fg: u8,
     bg: u8,
 ) void {
+    if (graphics_mode) {
+        fb.writeStringAt(row, col, s, fg, bg);
+        return;
+    }
     const color = (@as(u16, bg) << 12) | (@as(u16, fg) << 8);
 
     var i: usize = 0;
@@ -62,6 +75,10 @@ pub fn writeStringAt(
 /// Clear the entire screen to the given fg/bg colors.
 /// Resets cursor to (0,0).
 pub fn clearScreen(fg: u8, bg: u8) void {
+    if (graphics_mode) {
+        fb.clearScreen(fg, bg);
+        return;
+    }
     const color = (@as(u16, bg) << 12) | (@as(u16, fg) << 8);
     const blank = color | 0x20; // space
 
@@ -90,9 +107,15 @@ pub fn writeRaw(s: []const u8, fg: u8, bg: u8) void {
 /// Write a single character at the current cursor position.
 /// Handles newline, wrapping, and scrolling.
 pub fn putChar(c: u8, fg: u8, bg: u8) void {
-    serial.putChar(c);
-    const color = (@as(u16, bg) << 12) | (@as(u16, fg) << 8);
+    if (graphics_mode) {
+        fb.putChar(c, fg, bg);
+        return;
+    }
 
+    //serial.putChar(c);
+    //if (graphics_mode) return; // skip VGA text buffer in graphics mode
+
+    const color = (@as(u16, bg) << 12) | (@as(u16, fg) << 8);
     if (c == '\n') {
         cursor_row += 1;
         cursor_col = 0;
@@ -100,19 +123,14 @@ pub fn putChar(c: u8, fg: u8, bg: u8) void {
         VGA[cursor_row * WIDTH + cursor_col] = color | c;
         cursor_col += 1;
     }
-
-    // Wrap horizontally
     if (cursor_col >= WIDTH) {
         cursor_col = 0;
         cursor_row += 1;
     }
-
-    // Scroll if needed
     if (cursor_row >= HEIGHT) {
         scroll();
         cursor_row = HEIGHT - 1;
     }
-
     updateCursorHardware();
 }
 
@@ -124,6 +142,7 @@ pub fn putChar(c: u8, fg: u8, bg: u8) void {
 /// Row 1 → row 0, row 2 → row 1, etc.
 /// Last row is cleared.
 pub fn scroll() void {
+    if (graphics_mode) return; // framebuffer.zig handles scrolling
     // Shift rows upward
     var row: usize = 1;
     while (row < HEIGHT) : (row += 1) {
@@ -147,6 +166,8 @@ pub fn scroll() void {
 /// Move the cursor to the first empty line.
 /// If no empty line exists, scroll the screen.
 pub fn nextLine() void {
+    if (graphics_mode) return; // framebuffer.zig handles cursor in graphics mode
+
     var row: usize = 0;
 
     // Search for a fully blank row
@@ -183,16 +204,24 @@ pub fn nextLine() void {
 
 /// Set the cursor to an explicit (row, col) position.
 pub fn setCursor(row: usize, col: usize) void {
+    // Always update local VGA trackers for fallback visibility
     cursor_row = row;
     cursor_col = col;
-    updateCursorHardware();
+
+    if (graphics_mode) {
+        fb.cursor_row = @intCast(row);
+        fb.cursor_col = @intCast(col);
+    } else {
+        updateCursorHardware();
+    }
 }
 
 /// Move cursor left by one column (no wrapping).
 pub fn moveCursorLeft() void {
-    if (cursor_col > 0) {
-        cursor_col -= 1;
-        updateCursorHardware();
+    const col = getCursorCol();
+    const row = getCursorRow();
+    if (col > 0) {
+        setCursor(row, col - 1);
     }
 }
 
@@ -206,6 +235,8 @@ pub fn moveCursorRight() void {
 
 /// Update the VGA hardware cursor via ports 0x3D4/0x3D5.
 pub fn updateCursorHardware() void {
+    if (graphics_mode) return; // no hardware cursor in graphics mode
+
     const pos: u16 = @intCast(cursor_row * WIDTH + cursor_col);
 
     io.outb(0x3D4, 0x0F);
@@ -243,4 +274,16 @@ pub fn hexDump(data: []const u16, words_to_show: usize) void {
         // New line every 8 words (16 bytes)
         if ((i + 1) % 8 == 0) writeString("\n", 15, 0);
     }
+}
+
+
+//Make vga.cursor_col and vga.cursor_row read/write from fb when in graphics mode
+pub fn getCursorCol() usize {
+    if (graphics_mode) return fb.cursor_col;
+    return cursor_col;
+}
+
+pub fn getCursorRow() usize {
+    if (graphics_mode) return fb.cursor_row;
+    return cursor_row;
 }
