@@ -2,6 +2,8 @@
 
 > *An operating system that learns how you work — and uses that knowledge to protect you.*
 
+![CadenzaOS shell](screenshot_real.png)
+
 CadenzaOS is a 64-bit operating system built from scratch in [Zig 0.16.0](https://ziglang.org/),
 running on bare-metal x86-64 hardware. It is not a Unix clone or a teaching exercise in the
 traditional sense: CadenzaOS is an exploration of what an OS looks like when **behavioural
