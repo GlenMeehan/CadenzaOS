@@ -771,7 +771,7 @@ fn cmd_mkdir(args: [][]const u8) void {
 
     const dir_name = args[1];
 
-    g_fs.createEntry(g_allocator, g_cwd_lba, g_cwd_blocks, dir_name, .Directory) catch |err| {
+g_fs.createEntry(cmd_fba.allocator(), g_cwd_lba, g_cwd_blocks, dir_name, .Directory) catch |err| {
         if (err == error.AlreadyExists) {
             vga.writeString("Error: Name already taken.\n", 12, 0);
         } else {

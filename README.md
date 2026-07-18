@@ -1,111 +1,283 @@
 🎹 CadenzaOS
-An operating system built from scratch using the Zig programming language. CadenzaOS focuses on a clean, educational architecture with a custom filesystem and a responsive, predictive kernel-level shell.
 
-🚀 Recent Architectural Milestones
-Validated Extent Management: CodaFS now features a fully functional Space Manager that tracks disk health via extent-list summation rather than simple bitmasking.
 
-Human-Centric Telemetry: The Kernel now converts raw PIT ticks into a real-time decimal uptime display (MM:SS) and provides high-fidelity disk usage reports via the new df implementation.
+An operating system that learns how you work — and uses that knowledge to protect you.
 
-Buffer-Safe String Synthesis: Implementation of sequential memory-copying patterns for shell output, ensuring atomic VGA writes and preventing buffer overflows during complex string building.
+![CadenzaOS shell](screenshot.png)
 
-🧠 Core Systems
-🎼 The Conductor
-Standardized Time: Implementation of a fixed 100Hz Programmable Interval Timer (PIT) frequency. This provides a universal "tick" (10ms) that ensures consistent command velocity monitoring and uptime tracking.
+CadenzaOS is a 64-bit operating system built from scratch in Zig 0.16.0,
+running on bare-metal x86-64 hardware. It is not a Unix clone or a teaching exercise in the
+traditional sense: CadenzaOS is an exploration of what an OS looks like when behavioural
+intelligence is a first-class kernel concern rather than a bolt-on application layer.
 
-State Machine: Automatically shifts between Optimal, Discordant, and Critical states based on I/O latency.
+The kernel observes, models, and acts on user and program behaviour in real time — flagging
+anomalies, adapting security policy, and learning what "normal" looks like for your specific
+deployment. The goal is an OS where the kernel itself is the first line of defence, not a
+passive substrate waiting to be told what to do.
 
-Velocity Entropy: Monitors command input speed. High-velocity "mashing" triggers policy-based cooling periods to prevent accidental spamming.
 
-📂 CodaFS (Adaptive Filesystem)
-Extent-Based Storage: Efficient block management using an ArrayListUnmanaged of extents to track free and allocated space.
+✨ What makes CadenzaOS different
 
-Space Accounting: The df command performs a real-time census of the free-list to report Total, Used, and Free blocks.
+Most operating systems treat security as something you add on top: antivirus software, firewalls,
+sandboxes. CadenzaOS treats it as something built in from the ground up:
 
-Write-Through Integrity: Workspace mirroring to physical ATA storage for reliable persistence.
 
-🏛️ Syscall Gateway
-Subsystem Abstraction: Centralized syscall.zig serves as the single entry point for user-facing commands to request kernel services.
+The Conductor — a kernel-level state machine that monitors command velocity, I/O latency,
+and system rhythm, shifting between Optimal, Discordant, and Critical states in real time.
+The Composer — a Markov chain engine that learns your command sequences and uses that model
+to detect anomalous behaviour. If a sequence of commands looks statistically unusual for this
+user on this system, the kernel notices — before any damage is done.
+Policy-aware superblock — the filesystem itself carries a policy mode (ADMIN, DEV,
+GAMING) that governs how aggressively the Conductor responds to anomalies. Hardware-level
+policy, not application-level configuration.
+Behavioural syscall tracking — the kernel's syscall gateway is the natural point to extend
+this model from user commands to program behaviour: which syscalls does a program normally make,
+in what sequence, with what frequency?
 
-Security: Implements compile-time bounds checking on enums to prevent unauthorized memory access across the gateway.
 
-🧠 The Composer (Predictive Shell)
-Markov Chain "Brain": A transition-based heuristic engine that learns your command sequences in real-time.
+This positions CadenzaOS as a research platform and proof of concept for adaptive security at
+the kernel level — particularly relevant for constrained-use deployments (kiosk systems,
+industrial terminals, secure workstations) where the set of normal operations is well-defined and
+deviations are meaningful signals.
 
-Ghost-Text Prediction: Contextual command suggestions that appear even on empty lines based on session history.
 
-📂 CodaFS (Adaptive Filesystem)
-Extent-Based Storage: Efficient block management for file growth and directory handling.
+🚀 Current capabilities
 
-Policy-Aware Superblock: Hardware-level enums (Admin, Dev, Gaming) dictate the Conductor's behavioral bias and shell security constraints.
+CadenzaOS boots on real x86-64 hardware (legacy BIOS) and in QEMU. The following all work today:
 
-Write-Through Integrity: Workspace mirroring to physical ATA storage for reliable persistence.
+Boot & hardware
 
-🛠️ Command Suite
-Filesystem: ls, cd, mkdir, touch, edit, cat, rm, mv, rename, stat, df (Disk Free).
 
-System: policy, vitals, history, clear, uptime (Human-readable clock), sync.
+Custom two-stage bootloader (boot.asm → stage2.asm) with E820 memory detection
+Long mode transition with identity-mapped + higher-half page tables
+ATA PIO disk driver (read/write, LBA28)
+PS/2 keyboard driver with scan code translation
+VGA text mode driver (80×25) and VESA framebuffer driver (800×600×24bpp)
+Serial port output (COM1, 38400 baud) mirrored alongside VGA/framebuffer
+Physical frame allocator (bitmap.zig) with explicit reserved ranges for all kernel structures
 
-Power: shutdown, reboot.
 
-🏗 Project Structure
-../Cadenza/
-├── src
-│   ├── boot
-│   │   └── boot.asm
-│   ├── kernel
-│   │   ├── arch_utils.s
-│   │   ├── bitmap.zig
-│   │   ├── boot_info.zig
-│   │   ├── conductor.zig
-│   │   ├── config.zig
-│   │   ├── convert.zig
-│   │   ├── debug.zig
-│   │   ├── drivers
-│   │   │   ├── ata.zig
-│   │   │   └── mouse.zig
-│   │   ├── E820Store.zig
-│   │   ├── e820_test.zig
-│   │   ├── E820.zig
-│   │   ├── frame_allocator.zig
-│   │   ├── fs
-│   │   │   ├── ata_block_device.zig
-│   │   │   ├── block_device.zig
-│   │   │   ├── coda_file.zig
-│   │   │   ├── coda_fs.zig
-│   │   │   ├── coda_sm.zig
-│   │   │   └── ramdisk.zig
-│   │   ├── idt.zig
-│   │   ├── inputs
-│   │   │   ├── keyboard.zig
-│   │   │   └── key_event.zig
-│   │   ├── interrupts
-│   │   │   └── irq_stubs.asm
-│   │   ├── irupts.zig
-│   │   ├── kernel.zig
-│   │   ├── memory.zig
-│   │   ├── page_allocator.zig
-│   │   ├── panic.zig
-│   │   ├── pic.zig
-│   │   ├── port_io.zig
-│   │   ├── security.zig
-│   │   ├── shell.zig
-│   │   ├── syscall.zig
-│   │   ├── system.zig
-│   │   ├── terminal.zig
-│   │   ├── tests.zig
-│   │   ├── ui
-│   │   │   └── prompt.zig
-│   │   ├── vga.zig
-│   │   └── vitals.zig
-│   └── stage2
-│       └── stage2.asm
+Filesystem — CodaFS
+
+
+Custom extent-based filesystem with persistent superblock, space manager, and directory tree
+Survives reboots — write-through to ATA via RAM disk backing
+Full directory support: nested directories, extent-based file growth
+Commands: ls, cd, mkdir, touch, edit, cat, stat, del, mv, rename, df
+
+
+Shell & terminal
+
+
+Predictive ghost-text completion via Markov chain (composer.dat persisted in sys/)
+Command history navigation
+Velocity entropy monitoring — high-speed command input triggers policy-based responses
+Anomaly detection — statistically unusual command sequences prompt confirmation
+Real-time uptime display (MM:SS) and disk usage reporting
+
+
+Multitasking & binaries
+
+
+Preemptive multitasking via IRQ0 timer with full InterruptContext save/restore
+Dynamic task spawning and clean task exit (int $0x80, rax=0)
+External binary loading from CodaFS — flat binaries compiled separately, loaded and executed
+as tasks at runtime
+Syscall interface (int $0x80) for external programs:
+
+rax=0: EXIT
+rax=1: PRINT_STRING (pointer + length + colour)
+rax=2: GET_SCRATCH_BYTE (persistent cross-spawn scratch page)
+rax=3: SET_SCRATCH_BYTE
+rax=4: PRINT_CHAR
 
 
 
-⏳ Roadmap
-✅ Phase 4: Markov Brain & Persistence.
 
-✅ Phase 5: CodaFS Extent Tracking & PIT Standardization.
 
-🔄 Phase 6 (In-Progress): Multitasking. Implementing the Task Scheduler, Context Switching logic, and the transition to a multi-process environment.
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/GlenMeehan/CadenzaOS)
+
+🛠 Building
+
+Requirements
+
+ToolVersionNotesZig0.16.0 exactlyOther versions will not compileNASMAny recentBootloader assemblyGNU binutils (as, ld, objcopy)Any recentKernel linkingQEMU6.0+qemu-system-x86_64
+
+Zig 0.16.0 can be downloaded from ziglang.org/download.
+
+Build and run
+
+bashgit clone https://github.com/GlenMeehan/cadenzaos.git
+cd cadenzaos
+./build.sh
+
+build.sh assembles the bootloader, compiles the kernel, links everything, creates a 10MB disk
+image, and launches QEMU automatically.
+
+bash# Run without rebuilding (preserves filesystem state)
+./build.sh run
+
+# Wipe the disk image and start fresh
+./build.sh clean && ./build.sh
+
+Monitor serial output
+
+Serial output (all kernel and shell text) is mirrored to serial.log:
+
+bashtail -f serial.log
+
+External binaries
+
+External programs live in cadenzaprograms/. Build and stage prog1 with:
+
+bashcd cadenzaprograms
+zig build-exe prog1.zig -target x86_64-freestanding -mcpu=x86_64 -O Debug \
+    -fno-stack-protector --script linker.ld -femit-bin=../build/apps/prog1.elf
+objcopy -O binary ../build/apps/prog1.elf ../build/apps/prog1.bin
+cd ..
+dd if=build/apps/prog1.bin of=build/disk.img bs=512 seek=2000 conv=notrunc
+
+
+🏗 Project structure
+
+cadenzaos/
+├── src/
+│   ├── boot/
+│   │   └── boot.asm              # Stage 1 — MBR bootloader
+│   ├── stage2/
+│   │   └── stage2.asm            # Stage 2 — long mode transition, VESA init
+│   └── kernel/
+│       ├── kernel.zig            # kmain — boot sequence and hardware init
+│       ├── scheduler.zig         # Preemptive task scheduler + syscall dispatch
+│       ├── shell.zig             # Interactive shell and command dispatch
+│       ├── terminal.zig          # Line editor with ghost-text prediction
+│       ├── conductor.zig         # Behavioural state machine
+│       ├── vga.zig               # VGA text mode driver
+│       ├── framebuffer.zig       # VESA framebuffer text renderer
+│       ├── font.zig              # Embedded 8×16 bitmap font
+│       ├── bitmap.zig            # Physical frame allocator
+│       ├── memory.zig            # Address translation (physToVirt/virtToPhys)
+│       ├── boot_info.zig         # BootInfo structure (passed from stage2)
+│       ├── drivers/
+│       │   ├── ata.zig           # ATA PIO disk driver
+│       │   ├── serial.zig        # COM1 serial output
+│       │   └── mouse.zig         # PS/2 mouse driver
+│       └── fs/
+│           ├── coda_fs.zig       # CodaFS filesystem implementation
+│           ├── coda_file.zig     # File and directory entry types
+│           ├── coda_sm.zig       # Space manager (extent allocator)
+│           ├── block_device.zig  # Block device abstraction
+│           └── ramdisk.zig       # RAM disk (write-through to ATA)
+├── cadenzaprograms/
+│   ├── prog1.zig                 # Example external binary
+│   └── linker.ld                 # Linker script for external binaries
+├── linker.ld                     # Kernel linker script
+├── build.sh                      # Build and run script
+├── GOVERNANCE.md
+├── CONTRIBUTING.md
+└── CODE_OF_CONDUCT.md
+
+
+🗺 Roadmap
+
+✅ Phase 1 — Foundation
+
+
+Custom BIOS bootloader (two-stage, E820, long mode)
+Physical frame allocator with full .bss coverage
+ATA PIO disk driver and basic VGA text output
+
+
+✅ Phase 2 — Filesystem
+
+
+CodaFS custom filesystem with extents and persistence
+Write-through RAM disk backing to ATA
+Full directory tree and file operations
+
+
+✅ Phase 3 — Shell & Intelligence
+
+
+Interactive shell with command history
+The Conductor — behavioural state machine with policy modes
+The Composer — Markov chain prediction with ghost-text completion
+Velocity entropy monitoring and anomaly detection
+
+
+✅ Phase 4 — Multitasking & Binaries
+
+
+Preemptive multitasking via IRQ0 timer with context switching
+External binary loading and execution from CodaFS
+Syscall interface (int $0x80) for kernel services
+Clean task exit and physical frame reclamation
+
+
+✅ Phase 5 — Display & Debug
+
+
+VESA framebuffer driver (800×600×24bpp) with bitmap font renderer
+Serial port output (COM1) mirrored alongside VGA/framebuffer
+Toggleable VGA text / VESA graphics mode
+
+
+🔄 Phase 6 — Stabilisation (current)
+
+
+VESA mode compatibility improvements for real hardware
+Position-independent code (PIC) for external binaries
+External binary build system improvements
+Bug fixes and robustness improvements across all subsystems
+
+
+📋 Phase 7 — Behavioural Security
+
+
+Extend modelling from command sequences to per-program syscall patterns
+"Safe mode" — anomalous programs suspended pending operator review
+Richer Conductor states and policy responses
+Formal documentation of the behavioural security model
+
+
+📋 Phase 8 — Privilege Separation
+
+
+Per-task virtual address spaces
+Ring 3 user mode with enforced privilege boundary
+Proper syscall gate (SYSCALL/SYSRET or int-based with privilege check)
+Memory protection between tasks
+
+
+🔭 Phase 9 — Ecosystem
+
+
+Graphical shell leveraging the VESA framebuffer
+Package/binary management for installing programs into CodaFS
+Network stack (minimal, educational)
+More syscalls: file I/O, inter-task communication, timer services
+
+
+
+🤝 Contributing
+
+CadenzaOS welcomes contributions. Please read CONTRIBUTING.md before
+submitting a pull request, and note that all contributions require a DCO sign-off
+(Signed-off-by: in every commit).
+
+The project is in bootstrap phase — see GOVERNANCE.md for the full
+governance model. All pull requests are reviewed by the project lead before merging.
+
+Good first issues are tagged on the tracker — these are scoped to not require deep knowledge
+of the scheduler or memory subsystems.
+
+
+📜 Licence
+
+Apache License 2.0 — see LICENSE for the full text.
+
+
+👤 Author
+
+Glen Meehan — Project Lead
+📧 glen.meehan@protonmail.com
+Built with Zig · Runs on bare metal · No dependencies
