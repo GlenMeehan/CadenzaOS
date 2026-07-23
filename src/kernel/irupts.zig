@@ -17,6 +17,7 @@ const keyboard = @import("inputs/keyboard.zig");
 const task = @import("task.zig");
 const config = @import("config.zig");
 const scheduler = @import("scheduler.zig");
+const apic = @import("apic.zig");
 
 pub var ticks: u64 = 0;
 
@@ -76,7 +77,11 @@ pub export fn irq0_handler() callconv(.c) void {
     // ----------------------------------------
 
     // 3. EOI: Tell the hardware we processed the interrupt
-    io.outb(0x20, 0x20);
+    if (config.timer.use_apic) {
+        apic.sendEoi();
+    } else {
+        io.outb(0x20, 0x20); // Legacy Master PIC EOI
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -89,7 +94,12 @@ pub export fn irq1_handler() callconv(.c) void {
     keyboard.handleScancode(scancode);
 
     // 2. Send EOI to master PIC
-    io.outb(0x20, 0x20);
+    // EOI: Match active controller
+    if (config.timer.use_apic) {
+        apic.sendEoi();
+    } else {
+        io.outb(0x20, 0x20); // Master PIC EOI
+    }
 
     // 3. REACTIVE YIELD LEFT-OVER: COMMENTED OUT COMPLETELY
     // if (task.manager.tasks[0]) |*shell| {
@@ -159,9 +169,13 @@ pub export fn irq12_handler() callconv(.c) void {
         vga.writeStringAt(5, 63, conv.toHex(u8, dy_u8, &buf2), 15, 0);
     }
 
-    // EOI: slave PIC first, then master PIC
-    io.outb(0xA0, 0x20); // slave
-    io.outb(0x20, 0x20); // master
+    // EOI: Match active interrupt controller
+    if (config.timer.use_apic) {
+        apic.sendEoi();
+    } else {
+        io.outb(0xA0, 0x20); // slave PIC EOI
+        io.outb(0x20, 0x20); // master PIC EOI
+    }
 }
 
 

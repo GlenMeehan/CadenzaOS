@@ -44,6 +44,7 @@ const memory = @import("memory.zig");
 const boot_info_mod = @import("boot_info.zig");
 const serial = @import("drivers/serial.zig");
 const fb = @import("framebuffer.zig");
+const apic = @import("apic.zig");
 
 pub const STACK_SIZE = 0x40000;         // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
@@ -477,6 +478,77 @@ pub export fn kmain() noreturn {
 
 
     // -------------------------------------------------------------------------
+    //  APIC VIRTUAL MEMORY INITIALIZATION
+    // -------------------------------------------------------------------------
+    // Read the actual current page table base from CR3 (Perfect!)
+    var cr3: usize = 0;
+    asm volatile ("mov %%cr3, %[cr3]" : [cr3] "=r" (cr3));
+
+    // 1. Map Local APIC using the exact constant apic.zig reads from
+    mem_mod.mapPage(cr3, apic.LAPIC_VIRT_BASE, apic.LAPIC_PHYS_BASE, mem_mod.FLAGS_MMIO) catch {
+        @panic("Failed to dynamically map Local APIC");
+    };
+
+    // 2. Map I/O APIC using the exact constant apic.zig reads from
+    mem_mod.mapPage(cr3, apic.IOAPIC_VIRT_BASE, apic.IOAPIC_PHYS_BASE, mem_mod.FLAGS_MMIO) catch {
+        @panic("Failed to dynamically map I/O APIC");
+    };
+    vga.writeString("APIC Hardware Mapped Safely!", 15, 0);
+
+
+    // -------------------------------------------------------------------------
+    //  APIC FEATURE-FLAGGED PROBE
+    // -------------------------------------------------------------------------
+    apic.enableApicSoftware();
+    apic.initLapicTimer(0x20);
+    apic.initIoApicKeyboard();
+    apic.initIoApicMouse();
+
+    // NOW IT IS SAFE TO FLIP THE HANDOFF SWITCH!
+    conf.timer.use_apic = true;
+
+    // Print a quick confirmation that we can read back from the LAPIC
+    const lapic_id = apic.probeApicId();
+    vga.writeStringAt(1, 0, "LAPIC Active Core ID: ", 0x0A, 0);
+    var id_buf: [16]u8 = undefined;
+    const id_str = conv.u32ToStr(&id_buf, lapic_id);
+    vga.writeStringAt(1, 22, id_str, 0x0E, 0);
+
+    // Import your newly updated apic module
+    // Probe the hardware ID safely while PIC handles current system traffic
+    const core_id = apic.probeApicId();
+
+    //while (true) { asm volatile ("hlt"); }
+
+    var buf_id: [16]u8 = undefined;
+    vga.writeString(" -> Detected Bootstrap Core APIC ID: ", 15, 0);
+    vga.writeString(conv.toHex(u64, core_id, &buf_id), 15, 0);
+
+
+
+    // -------------------------------------------------------------------------
+    // APIC HARDWARE REALITY CHECK
+    // -------------------------------------------------------------------------
+    vga.clearScreen(0, 0);
+    vga.writeString("A\r\n", 15, 0);
+
+    const raw_lapic = apic.debugRawLapic();
+    vga.writeString("B\r\n", 15, 0);
+
+    const raw_ioapic = apic.debugRawIoApic();
+    vga.writeString("C\r\n", 15, 0);
+
+    var buf_l: [16]u8 = undefined;
+    var buf_i: [16]u8 = undefined;
+    vga.writeString("RAW LAPIC: ", 15, 0);
+    vga.writeString(conv.toHex(u64, raw_lapic, &buf_l), 15, 0);
+    vga.writeString(" RAW IOAPIC: ", 15, 0);
+    vga.writeString(conv.toHex(u64, raw_ioapic, &buf_i), 15, 0);
+    vga.writeString("D\r\n", 15, 0);
+    // Freeze to read the values clearly
+    //while (true) { asm volatile ("hlt"); }
+
+    // -------------------------------------------------------------------------
     //  FRAME ALLOCATOR STRESS TEST
     // -------------------------------------------------------------------------
     var addrs: [128]usize = undefined;
@@ -500,6 +572,8 @@ pub export fn kmain() noreturn {
     } else {
         vga.writeString("Allocator not reusing frames!", 15, 4);
     }
+
+    bm.freeFrame(reused);
 
     var buf_status: [16]u8 = undefined;
     const status = io.inb(0x64); // keyboard controller status port

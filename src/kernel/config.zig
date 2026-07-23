@@ -163,6 +163,13 @@ pub const timer = struct {
     ///
     /// 100 Hz = 10 ms timer interval.
     pub const frequency_hz: u32 = 100;
+
+    /// Toggle to switch interrupt acknowledgement (EOI) and hardware
+    /// timer source from the legacy 8259 PIC to the Local APIC.
+    ///
+    /// false: System uses legacy PIC/PIT (Safe fallback).
+    /// true : System enables and routes ticks via Local APIC.
+    pub var use_apic: bool = false;
 };
 
 
