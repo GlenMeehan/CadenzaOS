@@ -258,3 +258,4 @@ Apache License 2.0 — see [`LICENSE`](LICENSE) for the full text.
 **Glen Meehan** — Project Lead  
 📧 glen.meehan@protonmail.com  
 *Built with [Zig](https://ziglang.org/) · Runs on bare metal · No dependencies*
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/GlenMeehan/CadenzaOS)
