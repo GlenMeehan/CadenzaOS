@@ -1,0 +1,718 @@
+     1                                  ; src/stage2/stage2.asm
+     2                                  ;
+     3                                  ; Stage 2 Bootloader — Real Mode → Protected Mode → Long Mode → Kernel
+     4                                  ; ---------------------------------------------------------------------
+     5                                  ; Loaded by Stage 1 at 0x7E00.
+     6                                  ; Responsibilities:
+     7                                  ;   • Detect physical memory map via BIOS E820
+     8                                  ;   • Load the kernel from disk (ATA PIO) into physical memory at 1 MiB
+     9                                  ;   • Build a minimal 4-level page table (identity + higher-half mirror)
+    10                                  ;   • Transition CPU: Real Mode → Protected Mode → Long Mode
+    11                                  ;   • Enable SSE and jump to the kernel entry point
+    12                                  
+    13                                  [org 0x7E00]
+    14                                  [bits 16]
+    15                                  
+    16                                  start:
+    17                                      ;cli             ; <--- Disable hardware interrupts IMMEDIATELY
+    18                                      ;cld             ; Clear direction flag
+    19                                  
+    20                                      ; Mask all hardware interrupts on Master and Slave PICs
+    21 00000000 B0FF                        mov al, 0xFF
+    22 00000002 E6A1                        out 0xA1, al                ; Slave PIC mask
+    23 00000004 E621                        out 0x21, al                ; Master PIC mask
+    24                                  
+    25                                  ; ---JUMP TO ENTRY POINT IMMEDIATELY ---
+    26 00000006 EB17                    jmp start2
+    27 00000008 90                      nop
+    28                                  
+    29                                  ;==================================================================================================
+    30                                  ; MEMORY MAP CONSTANTS
+    31                                  ;==================================================================================================
+    32                                  
+    33                                  E820_BUF         equ 0x9000          ; E820 memory map storage buffer
+    34                                  MMAP_COUNT       equ 0x8FF8          ; E820 entry count (32-bit word)
+    35                                  
+    36                                  KERNEL_OFFSET    equ 0xFFFFFFFF80000000
+    37                                  KERNEL_LOAD_PHYS equ 0x00100000          ; Physical load address: 1 MiB
+    38                                  %include "build/kernel_info.inc"         ; Defines KERNEL_SECTORS
+     1                              <1> KERNEL_SECTORS equ 1435
+     2                              <1> KERNEL_ENTRY equ 0xffffff80001523d0
+    39                                  
+    40                                  EARLY_STACK_TOP  equ 0x70000          ; Early stack top (grows downward)
+    41                                  KERNEL_STACK_TOP equ 0xC0000          ; Kernel stack top (grows downward)
+    42                                  KERNEL_PHYS_ENTRY equ KERNEL_LOAD_PHYS + (KERNEL_ENTRY - KERNEL_OFFSET)
+    43                                  
+    44                                  ; Page table base addresses (each table is one 4 KiB page)
+    45                                  PML4_ADDR        equ 0x1000          ; Page Map Level 4
+    46                                  PDPT_ADDR        equ 0x2000          ; Page Directory Pointer Table
+    47                                  PD_ADDR          equ 0x3000          ; Page Directory (2 MiB pages)
+    48                                  
+    49                                  VBE_MODE_INFO    equ 0xA000         ; Safe buffer to hold VBE mode details temporarily
+    50                                  
+    51                                  ; GRAPHICS CONFIGURATION
+    52                                  ; 0 = Legacy VGA Text Mode (80x25)
+    53                                  ; 1 = VESA Graphics Mode (1024x768x32)
+    54                                  GRAPHICS_MODE_SEL equ 0
+    55                                  
+    56                                  ;==================================================================================================
+    57                                  ; BOOT INFO STRUCTURE
+    58                                  ; Passed from Stage 2 to the kernel via RDI.
+    59                                  ; Layout (all fields are 64-bit / 8-byte aligned):
+    60                                  ;   0x00  kernel_phys_start
+    61                                  ;   0x08  kernel_phys_end
+    62                                  ;   0x10  kernel_size_bytes
+    63                                  ;   0x18  kernel_stack_top
+    64                                  ;   0x20  e820_entry_count   (32-bit, zero-extended)
+    65                                  ;   0x24  graphics_mode      (0 = VGA, 1 = VESA)
+    66                                  ;   0x28  e820_buffer_addr
+    67                                  ;   0x30  pml4_addr
+    68                                  ;   0x38  framebuffer_addr   (64-bit physical pointer to VESA LFB)
+    69                                  ;==================================================================================================
+    70                                  
+    71                                  BOOT_INFO_ADDR   equ 0x7000
+    72 00000009 E0                      ata_drive_sel: db 0xE0   ; Default: primary master (0xE0)
+    73                                  
+    74                                  ; =========================================================================
+    75                                  ; DATA SECTION (Safe from execution because it's placed below code/loops)
+    76                                  ; =========================================================================
+    77                                  
+    78 0000000A 90<rep 2h>              align 4
+    79                                  kernel_dap:
+    80 0000000C 10                          db 0x10                       ; DAP size (16 bytes)
+    81 0000000D 00                          db 0x00                       ; Reserved
+    82                                  dap_sector_count:
+    83 0000000E 2000                        dw 32                         ; Read 32 sectors per chunk
+    84                                  dap_buffer_off:
+    85 00000010 0000                        dw 0x0000                     ; Buffer offset
+    86                                  dap_buffer_seg:
+    87 00000012 0010                        dw 0x1000                     ; Buffer segment (0x1000 * 16 = 0x10000 physical)
+    88                                  dap_lba_low:
+    89 00000014 03000000                    dd 3                          ; Starting LBA (Sector 3)
+    90                                  dap_lba_high:
+    91 00000018 00000000                    dd 0                          ; Upper 32 bits of 64-bit LBA
+    92                                  
+    93 0000001C 80                      boot_drive:        db 0x80        ; Single definition for drive ID
+    94 0000001D 9B05                    sectors_remaining: dw KERNEL_SECTORS
+    95                                  
+    96                                  
+    97                                  
+    98                                  ;==================================================================================================
+    99                                  ; REAL MODE ENTRY POINT
+   100                                  ;==================================================================================================
+   101                                  
+   102                                  start2:
+   103                                      ; 1. Preserve DL (Boot drive ID passed by Stage 1 / BIOS)
+   104 0000001F 8816[1C00]                  mov [boot_drive], dl
+   105                                  
+   106                                      ; 2. Ensure segment registers are 0 for real mode setup
+   107 00000023 31C0                        xor ax, ax
+   108 00000025 8ED8                        mov ds, ax
+   109 00000027 8EC0                        mov es, ax
+   110 00000029 8ED0                        mov ss, ax
+   111 0000002B BC0050                      mov sp, 0x5000
+   112                                  
+   113                                  ; --- ENTER UNREAL MODE ---
+   114                                  ; Force dynamic patch of GDT descriptor base address
+   115                                      ; gdt_start is an offset from ORG 0x7E00 (e.g. 0x7E20)
+   116 0000002E 66B8[58010000]              mov eax, gdt_start
+   117 00000034 66A3[8201]                  mov [gdt_descriptor + 2], eax
+   118 00000038 0F0116[8001]                lgdt [gdt_descriptor]
+   119                                  
+   120 0000003D FA                          cli
+   121                                  
+   122 0000003E 0F20C0                      mov eax, cr0
+   123 00000041 0C01                        or al, 0x01                 ; Protection Enable
+   124 00000043 0F22C0                      mov cr0, eax
+   125                                  
+   126 00000046 EB00                        jmp $+2                     ; Flush pipeline
+   127                                  
+   128 00000048 BB1000                      mov bx, 0x10                ; Selector 0x10
+   129 0000004B 8EE3                        mov fs, bx                  ; Load 4 GiB limits into FS descriptor cache
+   130                                  
+   131 0000004D 24FE                        and al, 0xFE                ; Clear PE (Return to Real Mode)
+   132 0000004F 0F22C0                      mov cr0, eax
+   133                                  
+   134 00000052 EB00                        jmp $+2                     ; Flush pipeline
+   135                                  
+   136 00000054 FB                          sti
+   137                                  
+   138                                  ; 3. Loop to read the entire kernel in 32-sector (16 KiB) chunks
+   139                                  ; --- INITIALIZE HIGH MEMORY DESTINATION POINTER ---
+   140 00000055 66BF00001000                mov edi, KERNEL_LOAD_PHYS       ; EDI = 0x00100000 (1 MiB)
+   141                                  
+   142                                  .read_kernel_loop:
+   143 0000005B 833E[1D00]00                cmp word [sectors_remaining], 0
+   144 00000060 746C                        je .disk_read_ok
+   145                                  
+   146                                      ; 1. Determine chunk size (max 32 sectors = 16 KiB)
+   147 00000062 A1[1D00]                    mov ax, [sectors_remaining]
+   148 00000065 83F820                      cmp ax, 32
+   149 00000068 7603                        jbe .set_chunk_size
+   150 0000006A B82000                      mov ax, 32
+   151                                  
+   152                                  .set_chunk_size:
+   153 0000006D A3[0E00]                    mov [dap_sector_count], ax
+   154                                  
+   155                                      ; 2. ALWAYS reset bounce buffer segment to 0x1000 (Physical 0x10000)
+   156                                      ; This prevents dap_buffer_seg from ever advancing into Video RAM (0xA000/0xB800)
+   157 00000070 C706[1200]0010              mov word [dap_buffer_seg], 0x1000
+   158 00000076 C706[1000]0000              mov word [dap_buffer_off], 0x0000
+   159                                  
+   160                                      ; 3. Call BIOS Extended Read (INT 13h, AH=42h) into low RAM bounce buffer
+   161 0000007C 8D36[0C00]                  lea si, [kernel_dap]
+   162 00000080 8A16[1C00]                  mov dl, [boot_drive]
+   163 00000084 B442                        mov ah, 0x42
+   164 00000086 CD13                        int 0x13
+   165 00000088 723A                        jc .disk_read_failed
+   166                                  
+   167                                      ; 4. Copy the loaded chunk from low RAM (0x10000) to High RAM [FS:EDI]
+   168                                      ; Convert sector count to dword count (sectors * 512 / 4 = sectors * 128)
+   169 0000008A 660FB70E[0E00]              movzx ecx, word [dap_sector_count]
+   170 00000090 66C1E107                    shl ecx, 7                      ; Multiply by 128 dwords (512 bytes per sector)
+   171                                  
+   172 00000094 66BE00000100                mov esi, 0x00010000             ; Source physical address (0x1000:0000)
+   173                                  
+   174 0000009A 1E                          push ds
+   175 0000009B 31C0                        xor ax, ax
+   176 0000009D 8ED8                        mov ds, ax                      ; Ensure DS=0 for source indexing
+   177                                  
+   178                                  .copy_chunk:
+   179 0000009F 67668B06                    a32 mov eax, [esi]              ; Load 32-bit dword from low RAM bounce buffer
+   180 000000A3 6467668907                  a32 mov [fs:edi], eax           ; Store 32-bit dword to high RAM (1 MiB+) using Unreal Mode FS
+   181 000000A8 6683C604                    add esi, 4
+   182 000000AC 6683C704                    add edi, 4
+   183 000000B0 E2ED                        loop .copy_chunk
+   184                                  
+   185 000000B2 1F                          pop ds                          ; Restore DS
+   186                                  
+   187                                      ; 5. Update LBA and remaining sector counts
+   188 000000B3 660FB706[0E00]              movzx eax, word [dap_sector_count]
+   189 000000B9 2906[1D00]                  sub [sectors_remaining], ax
+   190 000000BD 660106[1400]                add dword [dap_lba_low], eax
+   191                                  
+   192 000000C2 EB97                        jmp .read_kernel_loop
+   193                                  
+   194                                  .disk_read_failed:
+   195 000000C4 B40E                        mov ah, 0x0E
+   196 000000C6 B045                        mov al, 'E'
+   197 000000C8 CD10                        int 0x10
+   198 000000CA FA                          cli
+   199                                  .error_loop:
+   200 000000CB F4                          hlt
+   201 000000CC EBFD                        jmp .error_loop
+   202                                  
+   203                                  .disk_read_ok:
+   204                                      ; Signal successful kernel disk read ('R')
+   205 000000CE B40E                        mov ah, 0x0E
+   206 000000D0 B052                        mov al, 'R'
+   207 000000D2 CD10                        int 0x10
+   208                                  
+   209                                  
+   210                                  ;==================================================================================================
+   211                                  ; E820 MEMORY MAP DETECTION
+   212                                  ;==================================================================================================
+   213                                  
+   214 000000D4 BF0090                      mov di, E820_BUF
+   215 000000D7 6631DB                      xor ebx, ebx
+   216 000000DA 31ED                        xor bp, bp              ; bp = entry count
+   217                                  
+   218                                  .e820_loop:
+   219 000000DC 66BA50414D53                mov edx, 0x534D4150     ; 'SMAP' signature required by BIOS
+   220 000000E2 66B820E80000                mov eax, 0xE820
+   221 000000E8 66B918000000                mov ecx, 24              ; Each E820 entry is 24 bytes
+   222 000000EE CD15                        int 0x15
+   223 000000F0 7216                        jc  .e820_done          ; Carry set = end of list or error
+   224 000000F2 663D50414D53                cmp eax, 0x534D4150     ; BIOS must echo 'SMAP' on success
+   225 000000F8 750E                        jne .e820_done
+   226                                  
+   227 000000FA 83C718                      add di, 24
+   228 000000FD 45                          inc bp
+   229                                  
+   230 000000FE 83FD20                      cmp bp, 32              ; Safety check: Limit to 32 entries to prevent overflow
+   231 00000101 7D05                        jge .e820_done
+   232                                  
+   233 00000103 6685DB                      test ebx, ebx           ; ebx = 0 means this was the last entry
+   234 00000106 75D4                        jnz .e820_loop
+   235                                  
+   236                                  .e820_done:
+   237 00000108 660FB7C5                    movzx eax, bp
+   238 0000010C 66A3F88F                    mov [MMAP_COUNT], eax   ; Store final entry count
+   239                                  
+   240                                      ; Signal E820 complete ('M')
+   241 00000110 B40E                        mov ah, 0x0E
+   242 00000112 B04D                        mov al, 'M'
+   243 00000114 CD10                        int 0x10
+   244                                  
+   245                                  
+   246                                  ;==================================================================================================
+   247                                  ; GRAPHICS INITIALIZATION (TOGGLEABLE)
+   248                                  ;==================================================================================================
+   249                                  
+   250                                  %if GRAPHICS_MODE_SEL == 1
+   251                                          ; --- ATTEMPT VESA GRAPHICS INIT ---
+   252                                          mov ax, 0x4F01
+   253                                          mov cx, 0x0115           ; Query: 1024x768x32bpp (no LFB bit for query)
+   254                                          mov di, VBE_MODE_INFO
+   255                                          int 0x10
+   256                                          cmp al, 0x4F             ; Check if VBE is supported natively
+   257                                          jne .vesa_fail
+   258                                  
+   259                                          mov ax, 0x4F02
+   260                                          mov bx, 0x4115           ; Set: 1024x768x32bpp + LFB bit
+   261                                          int 0x10
+   262                                          cmp al, 0x4F             ; Verify mode successfully engaged
+   263                                          jne .vesa_fail
+   264                                  
+   265                                          jmp .graphics_done
+   266                                  
+   267                                      .vesa_fail:
+   268                                          jmp $                    ; Hard hang if VESA requested but configuration fails
+   269                                      %else
+   270                                          ; --- FALLBACK TO LEGACY VGA TEXT MODE ---
+   271 00000116 B80300                          mov ax, 0x03
+   272 00000119 CD10                            int 0x10
+   273                                      %endif
+   274                                  
+   275                                  .graphics_done:
+   276                                      ; Signal Real-Mode Display Configuration Complete
+   277 0000011B B40E                        mov ah, 0x0E
+   278                                      %if GRAPHICS_MODE_SEL == 1
+   279                                          mov al, 'V'              ; 'V' = VESA active
+   280                                      %else
+   281 0000011D B047                            mov al, 'G'              ; 'G' = Legacy VGA active
+   282                                      %endif
+   283 0000011F CD10                        int 0x10
+   284                                  
+   285                                  ;==================================================================================================
+   286                                  ; RESET SEGMENTS POST-BIOS CALLS
+   287                                  ;==================================================================================================
+   288 00000121 31C0                        xor ax, ax
+   289 00000123 8ED8                        mov ds, ax
+   290 00000125 8EC0                        mov es, ax
+   291                                  
+   292                                      ; Signal GDT structure copies finished ('G')
+   293                                      ;This section commented out as GDT now moved to below ENABLE A20
+   294                                      ;mov ah, 0x0E
+   295                                      ;mov al, 'G'
+   296                                      ;int 0x10
+   297                                  
+   298                                  
+   299                                  ;==================================================================================================
+   300                                  ; ENABLE A20 LINE
+   301                                  ;==================================================================================================
+   302                                  
+   303 00000127 E492                        in  al, 0x92
+   304 00000129 0C02                        or  al, 2
+   305 0000012B E692                        out 0x92, al
+   306                                  
+   307                                  ;==================================================================================================
+   308                                  ; LOAD AND INSTALL GDT
+   309                                  ;==================================================================================================
+   310                                  
+   311                                      ; Copy GDT data to its fixed physical location
+   312 0000012D BE[5801]                    mov si, gdt_start
+   313 00000130 BF0005                      mov di, gdt_base
+   314 00000133 B92800                      mov cx, gdt_end - gdt_start
+   315 00000136 F3A4                        rep movsb
+   316                                  
+   317                                      ; Build a rock-solid GDT descriptor right on the stack
+   318                                      ; This bypasses relative label calculations entirely
+   319 00000138 666800050000                push dword 0x0500                   ; Push physical base pointer (gdt_base)
+   320 0000013E 6A27                        push word (gdt_end - gdt_start - 1) ; Push GDT size limit (0x2F)
+   321                                  
+   322 00000140 89E3                        mov bx, sp                          ; Point BX to our stack frame
+   323 00000142 0F0117                      lgdt [bx]                           ; Load GDTR directly from stack memory
+   324 00000145 83C406                      add sp, 6                           ; Clean up the stack frame
+   325                                  
+   326                                      ; Clear screen
+   327                                      ;mov ax, 0x0003      ; INT 10h mode 3 = 80x25 text, clears screen
+   328                                      ;int 0x10
+   329                                  
+   330                                  ; Clear interrupts before any mode switches!
+   331 00000148 FA                          cli                     ; Mask all hardware interrupts
+   332                                  
+   333                                  ;==================================================================================================
+   334                                  ; ENTER PROTECTED MODE
+   335                                  ;==================================================================================================
+   336                                  
+   337 00000149 0F20C0                      mov eax, cr0
+   338 0000014C 6683C801                    or  eax, 1
+   339                                  
+   340                                      ; Print '£' (Code Page 437 character 0x9C) to indicate disk failure, then halt
+   341                                      ;mov ah, 0x0E
+   342                                      ;mov al, 0x9C              ; 0x9C = '£' symbol in VGA video memory / CP437
+   343                                      ;mov bh, 0x00              ; Page number 0
+   344                                      ;mov bl, 0x07              ; Light gray on black
+   345                                      ;int 0x10
+   346                                      ;cli
+   347                                  ;.error_loop:
+   348                                      ;hlt
+   349                                     ;jmp .error_loop
+   350                                  
+   351 00000150 0F22C0                      mov cr0, eax
+   352                                      ; Far jump flushes prefetch pipeline and binds CS to 32-bit segment descriptor
+   353 00000153 EA[8901]0800                jmp 0x08:pm_entry
+   354                                  
+   355                                  ;==================================================================================================
+   356                                  ; DATA SECTION (must remain before [BITS 32] boundary)
+   357                                  ;==================================================================================================
+   358                                  
+   359                                  gdt_base equ 0x500          ; Fixed physical address target for active GDT
+   360                                  
+   361                                  align 8
+   362                                  gdt_start:
+   363 00000158 0000000000000000            dq 0x0000000000000000   ; Null descriptor         (selector 0x00)
+   364 00000160 FFFF0000009ACF00            dq 0x00CF9A000000FFFF   ; 32-bit code segment     (selector 0x08)
+   365 00000168 FFFF00000092CF00            dq 0x00CF92000000FFFF   ; 32-bit data segment     (selector 0x10)
+   366 00000170 FFFF0000009AAF00            dq 0x00AF9A000000FFFF   ; Flags=0xA (L=1, D/B=0, Granular=1), Access=0x9A
+   367 00000178 0000000000920000            dq 0x0000920000000000   ; 64-bit data segment     (selector 0x20) <-- ADD THIS
+   368                                  gdt_end:
+   369                                  
+   370                                  gdt_descriptor:
+   371 00000180 2700                        dw gdt_end - gdt_start - 1   ; Limit = size of GDT - 1
+   372 00000182 [58010000]                  dd gdt_start                 ; Base = address of gdt_start
+   373                                  
+   374                                  message_pm:
+   375 00000186 504D21                      db 'P', 'M', '!'
+   376                                  
+   377                                  ;==================================================================================================
+   378                                  ; PROTECTED MODE (32-bit Execution Frame)
+   379                                  ;==================================================================================================
+   380                                  
+   381                                  [BITS 32]
+   382                                  pm_entry:
+   383                                      ; Bind structural data segments to target 32-bit data descriptor
+   384 00000189 66B81000                    mov ax, 0x10
+   385 0000018D 8ED8                        mov ds, ax
+   386 0000018F 8EC0                        mov es, ax
+   387 00000191 8ED0                        mov ss, ax
+   388 00000193 BC00000700                  mov esp, EARLY_STACK_TOP
+   389                                  
+   390                                      ; Print logs to 0xB8000 ONLY when legacy VGA text layout is active
+   391                                      %if GRAPHICS_MODE_SEL == 0
+   392 00000198 BE[86010000]                    mov esi, message_pm
+   393 0000019D BF00800B00                      mov edi, 0xB8000
+   394 000001A2 B903000000                      mov ecx, 3
+   395                                      .print_loop:
+   396 000001A7 AC                              lodsb
+   397 000001A8 B40F                            mov ah, 0x0F            ; Attribute: white text, black background
+   398 000001AA 66AB                            stosw
+   399 000001AC E2F9                            loop .print_loop
+   400                                      %endif
+   401                                  
+   402                                  ;==================================================================================================
+   403                                  ; COPY KERNEL TO 1 MiB PHYSICAL ADDRESS
+   404                                  ;==================================================================================================
+   405                                  
+   406 000001AE BE00000100                  mov esi, 0x00010000                     ; Source: 16-bit BIOS load buffer (0x10000)
+   407 000001B3 BF00001000                  mov edi, KERNEL_LOAD_PHYS               ; Destination: 1 MiB physical (0x100000)
+   408 000001B8 B980CD0200                  mov ecx, (KERNEL_SECTORS * 512) / 4     ; Count in 32-bit DWORDs
+   409 000001BD F3A5                        rep movsd
+   410                                  
+   411                                      %if GRAPHICS_MODE_SEL == 0
+   412                                          ; Signal kernel payload extraction/copy completed successfully ('K')
+   413 000001BF 66C7050C800B004B0F              mov word [0xB800C], 0x0F4B
+   414                                      %endif
+   415                                  
+   416                                  ;==================================================================================================
+   417                                  ; FILL BOOT INFO STRUCTURE
+   418                                  ;==================================================================================================
+   419                                  
+   420                                      ; kernel_phys_start (offset 0x00)
+   421 000001C8 C70500700000000010-         mov dword [BOOT_INFO_ADDR + 0x00], KERNEL_LOAD_PHYS
+   421 000001D1 00                 
+   422 000001D2 C70504700000000000-         mov dword [BOOT_INFO_ADDR + 0x04], 0x00000000
+   422 000001DB 00                 
+   423                                  
+   424                                      ; kernel_size_bytes = KERNEL_SECTORS × 512
+   425 000001DC B89B050000                  mov eax, KERNEL_SECTORS
+   426 000001E1 69C000020000                imul eax, 512
+   427                                  
+   428                                      ; kernel_phys_end (offset 0x08)
+   429 000001E7 89C2                        mov edx, eax
+   430 000001E9 81C200001000                add edx, KERNEL_LOAD_PHYS
+   431 000001EF 891508700000                mov dword [BOOT_INFO_ADDR + 0x08], edx
+   432 000001F5 C7050C700000000000-         mov dword [BOOT_INFO_ADDR + 0x0C], 0x00000000
+   432 000001FE 00                 
+   433                                  
+   434                                      ; kernel_size_bytes (offset 0x10)
+   435 000001FF A310700000                  mov dword [BOOT_INFO_ADDR + 0x10], eax
+   436 00000204 C70514700000000000-         mov dword [BOOT_INFO_ADDR + 0x14], 0x00000000
+   436 0000020D 00                 
+   437                                  
+   438                                      ; kernel_stack_top (offset 0x18)
+   439 0000020E C7051870000000000C-         mov dword [BOOT_INFO_ADDR + 0x18], KERNEL_STACK_TOP
+   439 00000217 00                 
+   440 00000218 C7051C700000000000-         mov dword [BOOT_INFO_ADDR + 0x1C], 0x00000000
+   440 00000221 00                 
+   441                                  
+   442                                      ; e820_entry_count (offset 0x20)
+   443 00000222 A1F88F0000                  mov eax, [MMAP_COUNT]
+   444 00000227 A320700000                  mov dword [BOOT_INFO_ADDR + 0x20], eax
+   445                                  
+   446                                      ; graphics_mode identifier (offset 0x24 - overrides legacy alignment padding)
+   447 0000022C C70524700000000000-         mov dword [BOOT_INFO_ADDR + 0x24], GRAPHICS_MODE_SEL
+   447 00000235 00                 
+   448                                  
+   449                                      ; e820_buffer_addr (offset 0x28)
+   450 00000236 C70528700000009000-         mov dword [BOOT_INFO_ADDR + 0x28], E820_BUF
+   450 0000023F 00                 
+   451 00000240 C7052C700000000000-         mov dword [BOOT_INFO_ADDR + 0x2C], 0x00000000
+   451 00000249 00                 
+   452                                  
+   453                                      ; pml4_addr (offset 0x30)
+   454 0000024A C70530700000001000-         mov dword [BOOT_INFO_ADDR + 0x30], PML4_ADDR
+   454 00000253 00                 
+   455 00000254 C70534700000000000-         mov dword [BOOT_INFO_ADDR + 0x34], 0x00000000
+   455 0000025D 00                 
+   456                                  
+   457                                      ; framebuffer_addr (offset 0x38)
+   458 0000025E A128A00000                  mov eax, [VBE_MODE_INFO + 40]   ; Read linear framebuffer physical pointer from VBE struct
+   459 00000263 A338700000                  mov dword [BOOT_INFO_ADDR + 0x38], eax
+   460 00000268 C7053C700000000000-         mov dword [BOOT_INFO_ADDR + 0x3C], 0x00000000
+   460 00000271 00                 
+   461                                  
+   462                                      ; fb_stride — bytes per scan line (offset 0x40)
+   463 00000272 0FB70510A00000              movzx eax, word [VBE_MODE_INFO + 0x10]
+   464 00000279 A340700000                  mov dword [BOOT_INFO_ADDR + 0x40], eax
+   465 0000027E C70544700000000000-         mov dword [BOOT_INFO_ADDR + 0x44], 0
+   465 00000287 00                 
+   466                                  
+   467                                      ; fb_width — pixels per row (offset 0x48)
+   468 00000288 0FB70512A00000              movzx eax, word [VBE_MODE_INFO + 0x12]
+   469 0000028F A348700000                  mov dword [BOOT_INFO_ADDR + 0x48], eax
+   470 00000294 C7054C700000000000-         mov dword [BOOT_INFO_ADDR + 0x4C], 0
+   470 0000029D 00                 
+   471                                  
+   472                                      ; fb_height — pixels per column (offset 0x50)
+   473 0000029E 0FB70514A00000              movzx eax, word [VBE_MODE_INFO + 0x14]
+   474 000002A5 A350700000                  mov dword [BOOT_INFO_ADDR + 0x50], eax
+   475 000002AA C70554700000000000-         mov dword [BOOT_INFO_ADDR + 0x54], 0
+   475 000002B3 00                 
+   476                                  
+   477                                      ; fb_bpp — bits per pixel (offset 0x58)
+   478 000002B4 0FB60519A00000              movzx eax, byte [VBE_MODE_INFO + 0x19]
+   479 000002BB A358700000                  mov dword [BOOT_INFO_ADDR + 0x58], eax
+   480 000002C0 C7055C700000000000-         mov dword [BOOT_INFO_ADDR + 0x5C], 0
+   480 000002C9 00                 
+   481                                  
+   482                                  ;==================================================================================================
+   483                                  ; BUILD PAGE TABLES FOR LONG MODE
+   484                                  ; Layout: PML4[0] → PDPT[0] → PD → 2 MiB pages covering [0 .. 16 MiB)
+   485                                  ;==================================================================================================
+   486                                  
+   487                                      ; 1. Zero all 3 page tables (12 KiB total = 3072 dwords)
+   488 000002CA BF00100000                  mov edi, PML4_ADDR
+   489 000002CF B9000C0000                  mov ecx, 3072
+   490 000002D4 31C0                        xor eax, eax
+   491 000002D6 F3AB                        rep stosd
+   492                                  
+   493                                      ; 2. Set up PML4 Entries (PML4[0] and PML4[510] -> PDPT_ADDR)
+   494 000002D8 BF00100000                  mov edi, PML4_ADDR
+   495 000002DD B803200000                  mov eax, PDPT_ADDR | 0x03
+   496                                  
+   497 000002E2 8907                        mov [edi + 0 * 8], eax              ; PML4[0]   (Identity map)
+   498 000002E4 C7470400000000              mov dword [edi + 0 * 8 + 4], 0
+   499                                  
+   500 000002EB 8987F00F0000                mov [edi + 510 * 8], eax            ; PML4[510] (Kernel high-half base: 0xFFFFFF8000000000)
+   501 000002F1 C787F40F0000000000-         mov dword [edi + 510 * 8 + 4], 0
+   501 000002FA 00                 
+   502                                  
+   503 000002FB 8987F80F0000                mov [edi + 511 * 8], eax            ; PML4[511] (High-half recursive/upper base)
+   504 00000301 C787FC0F0000000000-         mov dword [edi + 511 * 8 + 4], 0
+   504 0000030A 00                 
+   505                                  
+   506                                      ; 3. Set up PDPT Entries (PDPT[0], PDPT[510], PDPT[511] -> PD_ADDR)
+   507 0000030B BF00200000                  mov edi, PDPT_ADDR
+   508 00000310 B803300000                  mov eax, PD_ADDR | 0x03
+   509                                  
+   510 00000315 8907                        mov [edi + 0 * 8], eax              ; PDPT[0]
+   511 00000317 C7470400000000              mov dword [edi + 0 * 8 + 4], 0
+   512                                  
+   513 0000031E 8987F00F0000                mov [edi + 510 * 8], eax            ; PDPT[510]
+   514 00000324 C787F40F0000000000-         mov dword [edi + 510 * 8 + 4], 0
+   514 0000032D 00                 
+   515                                  
+   516 0000032E 8987F80F0000                mov [edi + 511 * 8], eax            ; PDPT[511]
+   517 00000334 C787FC0F0000000000-         mov dword [edi + 511 * 8 + 4], 0
+   517 0000033D 00                 
+   518                                  
+   519                                      ; 4. Map 16 MiB (8 x 2 MiB Huge Pages) into PD
+   520 0000033E BF00300000                  mov edi, PD_ADDR
+   521 00000343 B800000000                  mov eax, 0x00000000                 ; Start physical address 0x0
+   522 00000348 BB00000001                  mov ebx, 0x01000000                 ; 16 MiB ceiling
+   523 0000034D 31C9                        xor ecx, ecx
+   524                                  
+   525                                  map_kernel_pages:
+   526 0000034F 39D8                        cmp eax, ebx
+   527 00000351 7D1B                        jge .done_mapping_kernel
+   528                                  
+   529 00000353 89C2                        mov edx, eax
+   530 00000355 81CA83000000                or  edx, 0x83                       ; Present + Writable + Huge (2 MiB)
+   531 0000035B 8914CF                      mov [edi + ecx * 8], edx
+   532 0000035E C744CF0400000000            mov dword [edi + ecx * 8 + 4], 0    ; Upper 32 bits explicitly 0 (NX bit = 0)
+   533                                  
+   534 00000366 0500002000                  add eax, 0x200000
+   535 0000036B 41                          inc ecx
+   536 0000036C EBE1                        jmp map_kernel_pages
+   537                                  
+   538                                  .done_mapping_kernel:
+   539                                  
+   540                                      ; 5. Map Framebuffer (0x3E000000)
+   541 0000036E A128A00000                  mov eax, [VBE_MODE_INFO + 40]
+   542 00000373 250000E0FF                  and eax, 0xFFE00000
+   543 00000378 0D83000000                  or  eax, 0x83
+   544 0000037D 8987800F0000                mov [edi + 496 * 8], eax
+   545 00000383 C787840F0000000000-         mov dword [edi + 496 * 8 + 4], 0
+   545 0000038C 00                 
+   546                                  
+   547 0000038D C70538700000000000-         mov dword [BOOT_INFO_ADDR + 0x38], 0x3E000000
+   547 00000396 3E                 
+   548 00000397 C7053C700000000000-         mov dword [BOOT_INFO_ADDR + 0x3C], 0x00000000
+   548 000003A0 00                 
+   549                                  
+   550                                      %if GRAPHICS_MODE_SEL == 0
+   551 000003A1 66C70506800B00540F              mov word [0xB8006], 0x0F54      ; Signal 'T'
+   552                                      %endif
+   553                                  
+   554                                  ;==================================================================================================
+   555                                  ; ENABLE LONG MODE
+   556                                  ;==================================================================================================
+   557                                  
+   558                                      ; Register PML4 physical anchor address to CR3
+   559 000003AA B800100000                  mov eax, PML4_ADDR
+   560 000003AF 0F22D8                      mov cr3, eax
+   561                                  
+   562                                      ; Enable Physical Address Extension (PAE)
+   563 000003B2 0F20E0                      mov eax, cr4
+   564 000003B5 83C820                      or  eax, 1 << 5
+   565 000003B8 0F22E0                      mov cr4, eax
+   566                                  
+   567                                      %if GRAPHICS_MODE_SEL == 0
+   568 000003BB 66C70508800B00500F              mov word [0xB8008], 0x0F50      ; Signal 'P'
+   569                                      %endif
+   570                                  
+   571                                      ; Assert EFER.LME via MSR 0xC0000080
+   572 000003C4 B9800000C0                  mov ecx, 0xC0000080
+   573 000003C9 0F32                        rdmsr
+   574 000003CB 0D00010000                  or  eax, 1 << 8
+   575 000003D0 0F30                        wrmsr
+   576                                  
+   577                                      %if GRAPHICS_MODE_SEL == 0
+   578 000003D2 66C7050A800B00450F              mov word [0xB800A], 0x0F45      ; Signal 'E'
+   579                                      %endif
+   580                                  
+   581                                  ;==================================================================================================
+   582                                  ; ACTIVATE LONG MODE (Activate Paging Engine)
+   583                                  ;==================================================================================================
+   584                                  
+   585                                      %if GRAPHICS_MODE_SEL == 0
+   586                                          ; Signal structural paging operations ongoing ('Q')
+   587 000003DB 66C7050E800B00510F              mov word [0xB800E], 0x0F51
+   588                                      %endif
+   589                                  
+   590                                      ; Forcing CR0.PG active while LME state is asserted handles transition to 64-bit mode
+   591 000003E4 0F20C0                      mov eax, cr0
+   592 000003E7 0D00000080                  or  eax, 0x80000000
+   593 000003EC 0F22C0                      mov cr0, eax
+   594                                  
+   595                                      print_far_ptr:
+   596 000003EF BE[11040000]                mov esi, long_mode_ptr   ; ESI = address of far pointer
+   597 000003F4 BF00800B00                  mov edi, 0xb8000         ; VGA text memory
+   598 000003F9 B90A000000                  mov ecx, 10              ; print 10 bytes
+   599                                  
+   600                                  .print_loop:
+   601 000003FE 8A06                        mov al, [esi]            ; load byte
+   602 00000400 B40F                        mov ah, 0x0F             ; white-on-black
+   603 00000402 668907                      mov [edi], ax            ; write character
+   604 00000405 46                          inc esi
+   605 00000406 83C702                      add edi, 2               ; next VGA cell
+   606 00000409 E2F3                        loop .print_loop
+   607                                  
+   608                                      ; Execute structural far jump to transition segment selector mapping into Long Mode execution
+   609 0000040B FF2D[11040000]                  jmp far [long_mode_ptr]
+   610                                  
+   611                                  
+   612                                  ;==================================================================================================
+   613                                  ; LONG MODE (64-bit Native Execution Pipeline)
+   614                                  ;==================================================================================================
+   615                                  
+   616                                  VGA_TEXT equ 0xB8000
+   617                                  long_mode_ptr:
+   618 00000411 [250C000000000000]          dq long_mode_entry    ; 64-bit offset
+   619 00000419 1800                        dw 0x18               ; 64-bit code segment selector
+   620                                  
+   621                                  [BITS 64]
+   622                                  
+   623                                  ; 256 entries * 16 bytes = 4096 bytes
+   624                                  idt64:
+   625 0000041B 0000000000000000-           times 256 dq 0
+   625 0000041B <rep 100h>         
+   626                                  idt64_end:
+   627                                  
+   628                                  ; IDTR structure: limit (2 bytes) + base (8 bytes)
+   629                                  idtr64:
+   630 00000C1B 0000                        dw 0          ; limit
+   631 00000C1D 0000000000000000            dq 0          ; base
+   632                                  
+   633                                  long_mode_entry:
+   634 00000C25 66C7042510800B002A-         mov word [0xB8010], 0x0F2A
+   634          ******************       warning: implicit DEFAULT ABS is deprecated [-w+implicit-abs-deprecated]
+   634 00000C2E 0F                 
+   635 00000C2F 66C7042520800B0052-         mov word [0xB8020], 0x0F52
+   635 00000C38 0F                 
+   636                                      ; Zero out active fallback tracking descriptor spaces (Flat layout invariant)
+   637 00000C39 66B82000                    mov ax, 0x20       ; 64-bit data segment
+   638 00000C3D 8ED8                        mov ds, ax
+   639 00000C3F 8EC0                        mov es, ax
+   640 00000C41 8ED0                        mov ss, ax         ; valid, present data descriptor
+   641                                  
+   642                                  
+   643                                      ; Implement native 64-bit stack layout conforming to System V ABI alignment requirements
+   644 00000C43 48B80000080080FFFF-         mov rax, 0xFFFFFF8000080000
+   644 00000C4C FF                 
+   645 00000C4D 4883E0F0                    and rax, -16            ; Clamp allocation to clean 16-byte boundary frame
+   646 00000C51 4889C4                      mov rsp, rax
+   647 00000C54 4883EC08                    sub rsp, 8              ; Standard alignment offset footprint reservation
+   648                                  
+   649                                      ; --- NEW: set up a blank IDT ---
+   650 00000C58 488D0425[1B040000]          lea rax, [idt64]
+   651 00000C60 66C70425[1B0C0000]-         mov word [idtr64 + 0], (idt64_end - idt64 - 1)  ; limit
+   651 00000C68 FF07               
+   652 00000C6A 48890425[1D0C0000]          mov qword [idtr64 + 2], rax                     ; base
+   653 00000C72 0F011C25[1B0C0000]          lidt [idtr64]
+   654                                      ; --- END NEW ---
+   655                                  
+   656                                  
+   657                                      ; Assert initial SSE feature accessibility profiles: mask EM (bit 2), set MP (bit 1)
+   658 00000C7A 0F20C0                      mov rax, cr0
+   659 00000C7D 6683E0FB                    and ax, 0xFFFB
+   660 00000C81 6683C802                    or  ax, 0x0002
+   661 00000C85 0F22C0                      mov cr0, rax
+   662                                  
+   663                                      ; Set OSFXSR (bit 9) and OSXMMEXCPT (bit 10) to register robust modern SIMD processing
+   664 00000C88 0F20E0                      mov rax, cr4
+   665 00000C8B 660D0006                    or  ax, 0x0600
+   666 00000C8F 0F22E0                      mov cr4, rax
+   667                                  
+   668                                      %if GRAPHICS_MODE_SEL == 0
+   669                                          ; Verify long-mode execution pipeline capability ('6', '4')
+   670 00000C92 BF00800B00                      mov rdi, VGA_TEXT
+   671 00000C97 66C74712360F                    mov word [rdi + 0x12], 0x0F36
+   672 00000C9D 66C74714340F                    mov word [rdi + 0x14], 0x0F34
+   673                                      %endif
+   674                                  
+   675                                      ; Pass boot_info structure tracking address to our target kernel environment via RDI register
+   676 00000CA3 BF00700000                  mov rdi, BOOT_INFO_ADDR
+   677                                  
+   678                                      ; Final jump into high-half kernel entry point definition
+   679 00000CA8 48B8D023258080FFFF-         mov rax, KERNEL_PHYS_ENTRY
+   679 00000CB1 FF                 
+   680                                  
+   681                                          ;mov word [0xB8008], 0x0F45   ; 'E'
+   682                                  ;.efreeze: cli
+   683                                      ;hlt
+   684                                      ;jmp .efreeze
+   685                                  
+   686 00000CB2 FFE0                        jmp rax

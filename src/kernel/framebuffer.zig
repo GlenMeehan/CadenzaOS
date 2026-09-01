@@ -10,9 +10,9 @@ const serial = @import("drivers/serial.zig");
 
 // Framebuffer state — set once at boot from BootInfo
 var fb_ptr:    [*]volatile u8 = undefined;
-var fb_stride: u32 = 0;  // bytes per scanline
-var fb_width:  u32 = 0;  // pixels per row
-var fb_height: u32 = 0;  // pixels per column
+pub var fb_stride: u32 = 0;  // bytes per scanline
+pub var fb_width:  u32 = 0;  // pixels per row
+pub var fb_height: u32 = 0;  // pixels per column
 var fb_bpp:    u32 = 0;  // bytes per pixel (3 for 24bpp, 4 for 32bpp)
 
 // Text cursor position in character cells

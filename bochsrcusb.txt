@@ -1,0 +1,19 @@
+# bochsrc.txt
+
+# Specify memory size (e.g., 512 MB)
+megs: 512
+
+# Configure the BIOS and VGA BIOS images (adjust paths if needed for your system)
+romimage: file=/usr/share/bochs/BIOS-bochs-latest
+vgaromimage: file=/usr/share/bochs/VGABIOS-lgpl-latest.bin
+
+# Define the primary master disk as your physical USB device
+# 'flat' mode treats the raw device file as a disk image
+ata0-master: type=disk, path="/dev/sdb", mode=flat
+
+# Tell Bochs to boot from the primary hard disk (disk)
+boot: disk
+
+# Log outputs (helpful for debugging)
+log: bochs.log
+mouse: enabled=0

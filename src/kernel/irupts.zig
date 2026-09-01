@@ -18,6 +18,7 @@ const task = @import("task.zig");
 const config = @import("config.zig");
 const scheduler = @import("scheduler.zig");
 const apic = @import("apic.zig");
+const mouse = @import("drivers/mouse.zig");
 
 pub var ticks: u64 = 0;
 
@@ -134,47 +135,45 @@ pub fn init_pit(frequency: u32) void {
 
 
 pub export fn irq12_handler() callconv(.c) void {
-    // Debug counter
-    count += 1;
-    var buf0: [18]u8 = undefined;
-    vga.writeStringAt(6, 53, conv.toHex(u8, count, &buf0), 15, 0);
-
-    // Read next byte of PS/2 mouse packet
     const byte = io.inb(0x60);
+
+    // Byte 0 must have Bit 3 set (0x08). If not, discard and wait for alignment.
+    if (mouse_index == 0 and (byte & 0x08) == 0) {
+        sendEoi();
+        return;
+    }
+
     mouse_packet[mouse_index] = byte;
     mouse_index += 1;
 
-    // Full 3‑byte packet received?
-    if (mouse_index == 3) {
+    if (mouse_index >= 3) {
         mouse_index = 0;
 
-        const raw_dx = mouse_packet[1];
-        const raw_dy = mouse_packet[2];
+        const flags = mouse_packet[0];
+        var raw_x = @as(i32, mouse_packet[1]);
+        var raw_y = @as(i32, mouse_packet[2]);
 
-        // Convert to signed deltas
-        const dx = @as(i8, @bitCast(raw_dx));
-        const dy = @as(i8, @bitCast(raw_dy));
+        // Sign extend using flags bit 4 (X) and bit 5 (Y)
+        if ((flags & 0x10) != 0) raw_x -= 256;
+        if ((flags & 0x20) != 0) raw_y -= 256;
 
-        const dx_u8: u8 = @bitCast(dx);
-        const dy_u8: u8 = @bitCast(dy);
+        const dx = @as(i8, @intCast(@max(-128, @min(127, raw_x))));
+        const dy = @as(i8, @intCast(@max(-128, @min(127, raw_y))));
 
-        var buf1: [18]u8 = undefined;
-        var buf2: [18]u8 = undefined;
-
-        // Debug output
-        vga.writeStringAt(4, 53, "Mouse dx", 15, 0);
-        vga.writeStringAt(4, 63, conv.toHex(u8, dx_u8, &buf1), 15, 0);
-
-        vga.writeStringAt(5, 53, "Mouse dy", 15, 0);
-        vga.writeStringAt(5, 63, conv.toHex(u8, dy_u8, &buf2), 15, 0);
+        mouse.eraseCursor();
+        mouse.updatePosition(dx, dy);
+        mouse.drawCursor(mouse.mouse_x, mouse.mouse_y);
     }
 
-    // EOI: Match active interrupt controller
+    sendEoi();
+}
+
+fn sendEoi() void {
     if (config.timer.use_apic) {
         apic.sendEoi();
     } else {
-        io.outb(0xA0, 0x20); // slave PIC EOI
-        io.outb(0x20, 0x20); // master PIC EOI
+        io.outb(0xA0, 0x20);
+        io.outb(0x20, 0x20);
     }
 }
 

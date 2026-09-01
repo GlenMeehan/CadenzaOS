@@ -81,9 +81,17 @@ KERNEL_SECTORS=$(( (KERNEL_SIZE + 511) / 512 ))
 echo "KERNEL_SECTORS equ $KERNEL_SECTORS" > "$BUILD/kernel_info.inc"
 echo "KERNEL_ENTRY equ $ENTRY_POINT" >> "$BUILD/kernel_info.inc"
 
+echo "----------------------------------------"
+echo "📏 Kernel Size Report"
+echo "Bytes:          $KERNEL_SIZE"
+echo "512-byte Sectors: $KERNEL_SECTORS"
+echo "ELF Entry:      $ENTRY_POINT"
+echo "Kernel written to disk at LBA 3"
+echo "----------------------------------------"
+
 echo "[5/6] Stage2..."
 nasm -f bin "$SRC/stage2/stage2.asm" -o "$BUILD/stage2.bin"
-truncate -s 1024 "$BUILD/stage2.bin"
+#truncate -s 4096 "$BUILD/stage2.bin"
 
 # --- 6. Install Phase ---
 if [ "$PRESERVE_FS" = false ]; then
@@ -98,7 +106,7 @@ echo "💾 Writing OS sectors..."
 # (0..2047) are overwritten — the CodaFS partition (2048+) is untouched.
 dd if="$BUILD/boot.bin" of="$IMG" bs=512 count=1 conv=notrunc status=none
 dd if="$BUILD/stage2.bin" of="$IMG" bs=512 seek=1 conv=notrunc status=none
-dd if="$BUILD/kernel.bin" of="$IMG" bs=512 seek=3 conv=notrunc status=none
+dd if="$BUILD/kernel.bin" of="$IMG" bs=512 seek=16 conv=notrunc status=none
 
 # -------------------------------------------------------------------------
 #  APPLICATION BINARY STORE STAGING
@@ -121,13 +129,7 @@ qemu-system-x86_64 \
       -d int,cpu_reset -D qemu.log \
       -serial file:serial.log
 
+#sudo qemu-system-x86_64 \
+    #-device usb-ehci,id=ehci \
+    #-drive format=raw,file=/dev/sdb
 
-#qemu-system-x86_64 \
-      #-drive format=raw,file=$IMG,cache=directsync,snapshot=off \
-      #-m 1024 -monitor stdio -no-reboot -no-shutdown -vga std \
-      #-d int,cpu_reset -D qemu.log \
-      #-serial stdio
-
-#qemu-system-x86_64 \
-  #-drive format=raw,file=$IMG \
-  #-m 1024 -monitor stdio -no-reboot -no-shutdown -vga std

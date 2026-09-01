@@ -183,6 +183,7 @@ pub const std_options: std.Options = .{
 /// Bootloader entry point.
 /// Transfers control to kmain and never returns.
 export fn kernel_entry() void {
+    vga.clearScreen(0, 0);
     kmain();
     unreachable;
 }
@@ -191,7 +192,6 @@ export fn kernel_entry() void {
 
 /// Main kernel entry point.
 pub export fn kmain() noreturn {
-
     // Initialise serial FIRST so all subsequent output is captured
     serial.init();
     const boot_info = boot_info_mod.get();
@@ -199,7 +199,7 @@ pub export fn kmain() noreturn {
     if (boot_info.graphics_mode == 1) {
         fb.init(
             0x3E000000,
-                @intCast(boot_info.fb_stride),
+            @intCast(boot_info.fb_stride),
                 @intCast(boot_info.fb_width),
                 @intCast(boot_info.fb_height),
                 @intCast(boot_info.fb_bpp),
@@ -218,13 +218,12 @@ pub export fn kmain() noreturn {
         : [stack] "r" (new_sp),
     );
 
-
     // -------------------------------------------------------------------------
     //  BSS / EARLY CLEAR
     // -------------------------------------------------------------------------
     @memset(&heap_buffer, 0);
     @memset(fs_ramdisk_buf, 0);
-
+            //vga.clearScreen(0, 0);
     // IDT must be initialized early
     idt.init();
 
