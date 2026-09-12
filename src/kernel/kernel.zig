@@ -45,6 +45,7 @@ const boot_info_mod = @import("boot_info.zig");
 const serial = @import("drivers/serial.zig");
 const fb = @import("framebuffer.zig");
 const apic = @import("apic.zig");
+const splash = @import("splash.zig");
 
 pub const STACK_SIZE = 0x40000;         // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
@@ -76,6 +77,7 @@ pub const fs_ramdisk_buf: *[RAMDISK_SIZE]u8 = @ptrFromInt(RAMDISK_VIRT_ADDR);
 // Global filesystem instance (RAM-backed CodaFS)
 pub var fs_global: CodaFs align(4096) linksection(".bss") = undefined;
 
+
 // -----------------------------------------------------------------------------
 // THE PERMANENT KERNEL STACK
 // -----------------------------------------------------------------------------
@@ -88,6 +90,12 @@ var kmain_stack: [16384]u8 align(16) linksection(".bss") = undefined;
 var shell_stack_buf: [16384]u8 align(16) = undefined;
 extern const _kernel_end: u8;
 extern fn isr80_stub() callconv(.c) void;
+
+pub fn pause() void {
+    while (true) {
+        asm volatile ("hlt");
+    }
+}
 
 
 // -----------------------------------------------------------------------------
@@ -176,6 +184,7 @@ pub const std_options: std.Options = .{
     .page_size_max = 4096,
 };
 
+
 // -----------------------------------------------------------------------------
 //  ENTRY POINTS
 // -----------------------------------------------------------------------------
@@ -198,15 +207,51 @@ pub export fn kmain() noreturn {
 
     if (boot_info.graphics_mode == 1) {
         fb.init(
-            0x3E000000,
+            boot_info.framebuffer_addr,
             @intCast(boot_info.fb_stride),
                 @intCast(boot_info.fb_width),
                 @intCast(boot_info.fb_height),
                 @intCast(boot_info.fb_bpp),
+                boot_info.red_position,
+                boot_info.green_position,
+                boot_info.blue_position,
         );
         vga.graphics_mode = true;
-    }
 
+
+        // Scratch buffer for conv.toHex conversions
+        var hex_buf: [18]u8 = undefined;
+
+        // Default text colors: White text (15), Black background (0)
+        const fg: u8 = 15;
+        const bg: u8 = 0;
+
+        // --- Print Colour Mask Parameters ---
+        vga.writeStringAt(10, 0, "Red Size: ", fg, bg);
+        vga.writeStringAt(10, 10, conv.toHex(u64, boot_info.red_mask_size, &hex_buf), fg, bg);
+
+        vga.writeStringAt(11, 0, "Red Pos: ", fg, bg);
+        vga.writeStringAt(11, 10, conv.toHex(u64, boot_info.red_position, &hex_buf), fg, bg);
+
+        vga.writeStringAt(12, 0, "Green Size: ", fg, bg);
+        vga.writeStringAt(12, 12, conv.toHex(u64, boot_info.green_mask_size, &hex_buf), fg, bg);
+
+        vga.writeStringAt(13, 0, "Green Pos: ", fg, bg);
+        vga.writeStringAt(13, 12, conv.toHex(u64, boot_info.green_position, &hex_buf), fg, bg);
+
+        vga.writeStringAt(14, 0, "Blue Size: ", fg, bg);
+        vga.writeStringAt(14, 11, conv.toHex(u64, boot_info.blue_mask_size, &hex_buf), fg, bg);
+
+        vga.writeStringAt(15, 0, "Blue Pos: ", fg, bg);
+        vga.writeStringAt(15, 11, conv.toHex(u64, boot_info.blue_position, &hex_buf), fg, bg);
+
+        vga.writeStringAt(16, 0, "Rsvd Size: ", fg, bg);
+        vga.writeStringAt(16, 11, conv.toHex(u64, boot_info.rsvd_mask_size, &hex_buf), fg, bg);
+
+        vga.writeStringAt(17, 0, "Rsvd Pos: ", fg, bg);
+        vga.writeStringAt(17, 11, conv.toHex(u64, boot_info.rsvd_position, &hex_buf), fg, bg);
+        //pause();
+    }
 
     // 1. Calculate the top of our new stack array
     const new_sp = @intFromPtr(&kmain_stack) + kmain_stack.len;
@@ -652,6 +697,7 @@ pub export fn kmain() noreturn {
     for (test_buf[0..4]) |_| {
         // We can leave this empty now, Zig is happy with the underscore
     }
+
 
     // =========================================================================
     //  SHELL STARTUP WITH DEDICATED STACK SWAP

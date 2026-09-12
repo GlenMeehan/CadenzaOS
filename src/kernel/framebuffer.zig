@@ -45,16 +45,56 @@ const palette: [16]u32 = .{
 
 /// Initialise the framebuffer renderer.
 /// Must be called before any putChar/writeString calls.
-pub fn init(addr: usize, stride: u32, width: u32, height: u32, bpp: u32) void {
-    fb_ptr    = @as([*]volatile u8, @ptrFromInt(addr));
-    fb_stride = stride;
-    fb_width  = width;
-    fb_height = height;
-    fb_bpp    = bpp / 8;  // convert bits to bytes
-    cols      = width  / font.GLYPH_WIDTH;
-    rows      = height / font.GLYPH_HEIGHT;
+
+var red_pos: u5 = 16;
+var green_pos: u5 = 8;
+var blue_pos: u5 = 0;
+
+pub fn init(
+    addr: usize,
+    stride: u32,
+    width: u32,
+    height: u32,
+    bpp: u32,
+    r_pos: u64,
+    g_pos: u64,
+    b_pos: u64
+) void {
+    fb_ptr     = @as([*]volatile u8, @ptrFromInt(addr));
+    fb_stride  = stride;
+    fb_width   = width;
+    fb_height  = height;
+    fb_bpp     = bpp / 8;
+    cols       = width / font.GLYPH_WIDTH;
+    rows       = height / font.GLYPH_HEIGHT;
+
+    red_pos   = @intCast(r_pos);
+    green_pos = @intCast(g_pos);
+    blue_pos  = @intCast(b_pos);
+
     cursor_col = 0;
     cursor_row = 0;
+}
+
+/// Internal helper to draw a single 32-bit color pixel at (x, y)
+inline fn plotPixel(x: u32, y: u32, color: u32) void {
+    const offset = y * fb_stride + x * fb_bpp;
+    if (fb_bpp == 4) {
+        const ptr: *volatile u32 = @ptrCast(@alignCast(&fb_ptr[offset]));
+        ptr.* = color;
+    } else if (fb_bpp == 3) {
+        fb_ptr[offset + 0] = @truncate(color & 0xFF);
+        fb_ptr[offset + 1] = @truncate((color >> 8) & 0xFF);
+        fb_ptr[offset + 2] = @truncate((color >> 16) & 0xFF);
+    }
+}
+
+/// Dynamic color packing based on VESA hardware info
+fn packColor(r: u8, g: u8, b: u8) u32 {
+    const red   = @as(u32, r) << red_pos;
+    const green = @as(u32, g) << green_pos;
+    const blue  = @as(u32, b) << blue_pos;
+    return red | green | blue;
 }
 
 /// Draw a single glyph at character cell (col, row) with given colours.
@@ -146,19 +186,27 @@ pub fn writeStringAt(row: u16, col: u16, s: []const u8, fg: u8, bg: u8) void {
 }
 
 /// Clear the screen to background colour.
+/// Clear the screen to background colour.
 pub fn clearScreen(fg: u8, bg: u8) void {
     _ = fg;
-    const bg_colour = palette[bg & 0x0F];
-    var y: u32 = 0;
-    while (y < fb_height) : (y += 1) {
-        var x: u32 = 0;
-        while (x < fb_width) : (x += 1) {
-            const offset = y * fb_stride + x * fb_bpp;
-            fb_ptr[offset + 0] = @truncate(bg_colour & 0xFF);
-            fb_ptr[offset + 1] = @truncate((bg_colour >> 8) & 0xFF);
-            fb_ptr[offset + 2] = @truncate((bg_colour >> 16) & 0xFF);
+    const raw_fb = @as([*]u8, @ptrCast(@volatileCast(fb_ptr)));
+
+    // Fast path: clearing to black (0x00)
+    if (bg == 0) {
+        const total_bytes = fb_height * fb_stride;
+        @memset(raw_fb[0..total_bytes], 0);
+    } else {
+        // Fill non-black background line by line
+        const color = palette[bg & 0x0F];
+        var y: u32 = 0;
+        while (y < fb_height) : (y += 1) {
+            var x: u32 = 0;
+            while (x < fb_width) : (x += 1) {
+                plotPixel(x, y, color);
+            }
         }
     }
+
     cursor_col = 0;
     cursor_row = 0;
 }
@@ -197,5 +245,91 @@ pub fn setCursorVisible(visible: bool) void {
                 fb_ptr[pixel_offset + 2] = @truncate((color >> 16) & 0xFF); // Red
             }
         }
+    }
+}
+
+
+// -----------------------------------------------------------------------------
+//  GRAPHICS PRIMITIVES & DRAWING HELPERS
+// -----------------------------------------------------------------------------
+
+/// Fills a rectangular region with a 32-bit packed color.
+pub fn fillRect(x: u32, y: u32, width: u32, height: u32, color: u32) void {
+    if (x >= fb_width or y >= fb_height) return;
+
+    const max_x = @min(x + width, fb_width);
+    const max_y = @min(y + height, fb_height);
+
+    var py = y;
+    while (py < max_y) : (py += 1) {
+        var px = x;
+        while (px < max_x) : (px += 1) {
+            plotPixel(px, py, color);
+        }
+    }
+}
+
+/// Draws a 1-pixel-thick rectangle outline with a 32-bit packed color.
+pub fn drawRectOutline(x: u32, y: u32, width: u32, height: u32, color: u32) void {
+    if (width == 0 or height == 0) return;
+
+    // Top and bottom horizontal borders
+    var px = x;
+    while (px < x + width and px < fb_width) : (px += 1) {
+        if (y < fb_height) plotPixel(px, y, color);
+        if (y + height - 1 < fb_height) plotPixel(px, y + height - 1, color);
+    }
+
+    // Left and right vertical borders
+    var py = y;
+    while (py < y + height and py < fb_height) : (py += 1) {
+        if (x < fb_width) plotPixel(x, py, color);
+        if (x + width - 1 < fb_width) plotPixel(x + width - 1, py, color);
+    }
+}
+
+/// Renders raw 24-bit RGB pixel data onto the screen at (x, y).
+pub fn drawImage(x: u32, y: u32, img_width: u32, img_height: u32, data: []const u8) void {
+    var py: u32 = 0;
+    while (py < img_height) : (py += 1) {
+        if (y + py >= fb_height) break;
+
+        var px: u32 = 0;
+        while (px < img_width) : (px += 1) {
+            if (x + px >= fb_width) break;
+
+            const img_index = (py * img_width + px) * 3;
+            if (img_index + 2 >= data.len) return;
+
+            const r = data[img_index + 0];
+            const g = data[img_index + 1];
+            const b = data[img_index + 2];
+
+            const color = packColor(r, g, b);
+            plotPixel(x + px, y + py, color);
+        }
+    }
+}
+
+/// Renders text at exact pixel coordinates (x, y) rather than cell coordinates.
+pub fn drawStringAtPixel(x: u32, y: u32, text: []const u8, fg_color: u32, bg_color: u32) void {
+    var curr_x = x;
+    for (text) |char| {
+        if (curr_x + font.GLYPH_WIDTH > fb_width) break;
+
+        var gy: u32 = 0;
+        while (gy < font.GLYPH_HEIGHT) : (gy += 1) {
+            if (y + gy >= fb_height) break;
+
+            const glyph_row = font.glyphs[@as(u32, char) * font.GLYPH_HEIGHT + gy];
+            var gx: u32 = 0;
+            while (gx < font.GLYPH_WIDTH) : (gx += 1) {
+                const bit = @as(u8, 1) << @truncate(7 - gx);
+                const color = if ((glyph_row & bit) != 0) fg_color else bg_color;
+
+                plotPixel(curr_x + gx, y + gy, color);
+            }
+        }
+        curr_x += font.GLYPH_WIDTH;
     }
 }

@@ -1,0 +1,94 @@
+// src/kernel/splash.zig
+
+const fb = @import("framebuffer.zig");
+const vga = @import("vga.zig");
+const logo = @import("logo.zig");
+
+pub var enabled: bool = true;
+var splash_active: bool = false;
+
+const COLOR_BG: u32     = 0x1A100F; // Dark Charcoal
+const COLOR_TEXT: u32   = 0xCCCCCC; // Off-white
+const COLOR_BORDER: u32 = 0x555555; // Grey Border
+const COLOR_FILL: u32   = 0x00AA00; // Green Fill
+
+pub fn pause() void {
+    while (true) {
+        asm volatile ("hlt");
+    }
+}
+
+pub fn init() void {
+    if (!vga.graphics_mode or !enabled) return
+
+    // Sanity check: Ensure framebuffer dimensions are valid
+    if (fb.fb_width == 0 or fb.fb_height == 0) return;
+
+    splash_active = true;
+
+    // Fill screen background
+    fb.fillRect(0, 0, fb.fb_width, fb.fb_height, COLOR_BG);
+
+    const center_x = fb.fb_width / 2;
+    const center_y = fb.fb_height / 2;
+
+    const half_logo_w = logo.LOGO_WIDTH / 2;
+    const half_logo_h = logo.LOGO_HEIGHT;
+
+    // Underflow-safe positioning
+    const logo_x = if (center_x >= half_logo_w) center_x - half_logo_w else 0;
+    const logo_y = if (center_y >= half_logo_h + 10) center_y - half_logo_h - 10 else 0;
+
+
+    fb.drawImage(logo_x, logo_y, logo.LOGO_WIDTH, logo.LOGO_HEIGHT, logo.logo_data);
+
+    // Render progress bar frame
+    const bar_w: u32 = 300;
+    const bar_h: u32 = 18;
+    const bar_x = if (center_x >= bar_w / 2) center_x - (bar_w / 2) else 0;
+    const bar_y = center_y + 20;
+
+    fb.drawRectOutline(bar_x, bar_y, bar_w, bar_h, COLOR_BORDER);
+}
+
+pub fn updateProgress(percent: u8, status_msg: []const u8) void {
+    if (!vga.graphics_mode or !enabled or !splash_active) return;
+    if (fb.fb_width == 0 or fb.fb_height == 0) return;
+
+    const center_x = fb.fb_width / 2;
+    const center_y = fb.fb_height / 2;
+
+    const bar_w: u32 = 300;
+    const bar_h: u32 = 18;
+    const bar_x = if (center_x >= bar_w / 2) center_x - (bar_w / 2) else 0;
+    const bar_y = center_y + 20;
+
+    // Inner progress fill (clamp percentage to 100)
+    const valid_percent: u32 = @min(@as(u32, percent), 100);
+    const fill_w = (valid_percent * (bar_w - 4)) / 100;
+    if (fill_w > 0) {
+        fb.fillRect(bar_x + 2, bar_y + 2, fill_w, bar_h - 4, COLOR_FILL);
+    }
+
+    // Erase and update status line
+    const msg_y = bar_y + 28;
+    const clear_x = if (center_x >= 200) center_x - 200 else 0;
+    fb.fillRect(clear_x, msg_y, 400, 16, COLOR_BG);
+
+    const msg_len: u32 = @intCast(@min(status_msg.len, 50));
+    const text_half_w = (msg_len * 8) / 2;
+    const msg_px = if (center_x >= text_half_w) center_x - text_half_w else 0;
+
+    fb.drawStringAtPixel(msg_px, msg_y, status_msg, COLOR_TEXT, COLOR_BG);
+}
+
+pub fn dismiss() void {
+    if (!vga.graphics_mode or !splash_active) return;
+
+    splash_active = false;
+
+    // Clear canvas to black and align cursor for shell
+    fb.clearScreen(15, 0);
+    fb.cursor_col = 0;
+    fb.cursor_row = 0;
+}

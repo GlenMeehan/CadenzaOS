@@ -280,23 +280,60 @@ int 0x10
 
 %if GRAPHICS_MODE_SEL == 1
         ; --- ATTEMPT VESA GRAPHICS INIT ---
-        mov ax, 0x4F01
-        mov cx, 0x0115           ; Query: 1024x768x32bpp (no LFB bit for query)
+
+        ; -------------------------------------------------------------
+        ; STEP 1: Query VBE Controller Info (0x4F00)
+        ; -------------------------------------------------------------
+        xor ax, ax
+        mov es, ax
         mov di, VBE_MODE_INFO
+
+        ; Clear 512 bytes at ES:DI (VBE_MODE_INFO)
+        mov cx, 128
+        xor eax, eax
+        rep stosd
+
+        ; Reset DI and signal VBE 2.0+ support
+        mov di, VBE_MODE_INFO
+        mov dword [es:di], 'VBE2'
+
+        mov ax, 0x4F00
         int 0x10
-        cmp al, 0x4F             ; Check if VBE is supported natively
+        cmp ax, 0x004F             ; Check status (AX must be 0x004F)
         jne .vesa_fail
 
-        mov ax, 0x4F02
-        mov bx, 0x4115           ; Set: 1024x768x32bpp + LFB bit
+        ; -------------------------------------------------------------
+        ; Prepare buffer for Step 2 (0x4F01)
+        ; Clear buffer so 0x4F00 controller info isn't mixed with mode info
+        ; -------------------------------------------------------------
+        mov di, VBE_MODE_INFO
+        mov cx, 64
+        xor eax, eax
+        rep stosd
+
+        ; -------------------------------------------------------------
+        ; STEP2: Query Mode Info (0x4F01)
+        ; -------------------------------------------------------------
+        mov ax, 0x4F01
+        mov cx, 0x0115             ; Query hardcoded mode
+        mov di, VBE_MODE_INFO
         int 0x10
-        cmp al, 0x4F             ; Verify mode successfully engaged
+        cmp ax, 0x004F             ; Check full AX return state
+        jne .vesa_fail
+
+        ; -------------------------------------------------------------
+        ; STEP 3: Set Mode (0x4F02)
+        ; -------------------------------------------------------------
+        mov ax, 0x4F02
+        mov bx, 0x4115             ; Set mode + LFB
+        int 0x10
+        cmp ax, 0x004F
         jne .vesa_fail
 
         jmp .graphics_done
 
     .vesa_fail:
-        jmp $                    ; Hard hang if VESA requested but configuration fails
+        jmp $                      ; Hard hang if VESA requested but configuration fails
     %else
         ; --- FALLBACK TO LEGACY VGA TEXT MODE ---
         mov ax, 0x03
@@ -307,9 +344,9 @@ int 0x10
     ; Signal Real-Mode Display Configuration Complete
     mov ah, 0x0E
     %if GRAPHICS_MODE_SEL == 1
-        mov al, 'V'              ; 'V' = VESA active
+        mov al, 'V'                ; 'V' = VESA active
     %else
-        mov al, 'G'              ; 'G' = Legacy VGA active
+        mov al, 'G'                ; 'G' = Legacy VGA active
     %endif
     int 0x10
 
@@ -494,6 +531,46 @@ pm_entry:
     movzx eax, byte [VBE_MODE_INFO + 0x19]
     mov dword [BOOT_INFO_ADDR + 0x58], eax
     mov dword [BOOT_INFO_ADDR + 0x5C], 0
+
+; ==================================================================================================
+    ; COLOR MASK AND POSITION METADATA
+    ; ==================================================================================================
+
+    ; red_mask_size & red_position (offset 0x60)
+    movzx eax, byte [VBE_MODE_INFO + 0x1F]   ; RedMaskSize
+    mov dword [BOOT_INFO_ADDR + 0x60], eax
+    mov dword [BOOT_INFO_ADDR + 0x64], 0
+
+    movzx eax, byte [VBE_MODE_INFO + 0x20]   ; RedFieldPosition
+    mov dword [BOOT_INFO_ADDR + 0x68], eax
+    mov dword [BOOT_INFO_ADDR + 0x6C], 0
+
+    ; green_mask_size & green_position (offset 0x70)
+    movzx eax, byte [VBE_MODE_INFO + 0x21]   ; GreenMaskSize
+    mov dword [BOOT_INFO_ADDR + 0x70], eax
+    mov dword [BOOT_INFO_ADDR + 0x74], 0
+
+    movzx eax, byte [VBE_MODE_INFO + 0x22]   ; GreenFieldPosition
+    mov dword [BOOT_INFO_ADDR + 0x78], eax
+    mov dword [BOOT_INFO_ADDR + 0x7C], 0
+
+    ; blue_mask_size & blue_position (offset 0x80)
+    movzx eax, byte [VBE_MODE_INFO + 0x23]   ; BlueMaskSize
+    mov dword [BOOT_INFO_ADDR + 0x80], eax
+    mov dword [BOOT_INFO_ADDR + 0x84], 0
+
+    movzx eax, byte [VBE_MODE_INFO + 0x24]   ; BlueFieldPosition
+    mov dword [BOOT_INFO_ADDR + 0x88], eax
+    mov dword [BOOT_INFO_ADDR + 0x8C], 0
+
+    ; rsvd_mask_size & rsvd_position (offset 0x90)
+    movzx eax, byte [VBE_MODE_INFO + 0x25]   ; RsvdMaskSize
+    mov dword [BOOT_INFO_ADDR + 0x90], eax
+    mov dword [BOOT_INFO_ADDR + 0x94], 0
+
+    movzx eax, byte [VBE_MODE_INFO + 0x26]   ; RsvdFieldPosition
+    mov dword [BOOT_INFO_ADDR + 0x98], eax
+    mov dword [BOOT_INFO_ADDR + 0x9C], 0
 
 ;==================================================================================================
 ; BUILD PAGE TABLES FOR LONG MODE
