@@ -68,7 +68,7 @@ var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
 pub var allocator: std.mem.Allocator = undefined;
 
 // RAM Disk virtual mapping
-pub const RAMDISK_VIRT_ADDR: usize = 0xFFFFFF8001000000;
+pub const RAMDISK_VIRT_ADDR: usize = 0xFFFFFF8002000000;  // KERNEL_OFFSET + 0x02000000
 pub const RAMDISK_SIZE: usize = 4 * 1024 * 1024;
 
 // Anchor the buffer as a pointer to the array at that fixed virtual address
@@ -217,40 +217,61 @@ pub export fn kmain() noreturn {
                 boot_info.blue_position,
         );
         vga.graphics_mode = true;
+        //Initialise and display splash screen
+        splash.init();
 
 
+//=================DEBUGGING FOR GRAPHICS OUTPUT=================================================
         // Scratch buffer for conv.toHex conversions
-        var hex_buf: [18]u8 = undefined;
+        //var hex_buf: [18]u8 = undefined;
 
         // Default text colors: White text (15), Black background (0)
-        const fg: u8 = 15;
-        const bg: u8 = 0;
+        //const fg: u8 = 15;
+        //const bg: u8 = 0;
 
         // --- Print Colour Mask Parameters ---
-        vga.writeStringAt(10, 0, "Red Size: ", fg, bg);
-        vga.writeStringAt(10, 10, conv.toHex(u64, boot_info.red_mask_size, &hex_buf), fg, bg);
+        //vga.writeStringAt(1, 0, "Red Size: ", fg, bg);
+        //vga.writeStringAt(1, 10, conv.toHex(u64, boot_info.red_mask_size, &hex_buf), fg, bg);
 
-        vga.writeStringAt(11, 0, "Red Pos: ", fg, bg);
-        vga.writeStringAt(11, 10, conv.toHex(u64, boot_info.red_position, &hex_buf), fg, bg);
+        //vga.writeStringAt(2, 0, "Red Pos: ", fg, bg);
+        //vga.writeStringAt(2, 10, conv.toHex(u64, boot_info.red_position, &hex_buf), fg, bg);
 
-        vga.writeStringAt(12, 0, "Green Size: ", fg, bg);
-        vga.writeStringAt(12, 12, conv.toHex(u64, boot_info.green_mask_size, &hex_buf), fg, bg);
+        //vga.writeStringAt(3, 0, "Green Size: ", fg, bg);
+        //vga.writeStringAt(3, 12, conv.toHex(u64, boot_info.green_mask_size, &hex_buf), fg, bg);
 
-        vga.writeStringAt(13, 0, "Green Pos: ", fg, bg);
-        vga.writeStringAt(13, 12, conv.toHex(u64, boot_info.green_position, &hex_buf), fg, bg);
+        //vga.writeStringAt(4, 0, "Green Pos: ", fg, bg);
+        //vga.writeStringAt(4, 12, conv.toHex(u64, boot_info.green_position, &hex_buf), fg, bg);
 
-        vga.writeStringAt(14, 0, "Blue Size: ", fg, bg);
-        vga.writeStringAt(14, 11, conv.toHex(u64, boot_info.blue_mask_size, &hex_buf), fg, bg);
+        //vga.writeStringAt(5, 0, "Blue Size: ", fg, bg);
+        //vga.writeStringAt(5, 11, conv.toHex(u64, boot_info.blue_mask_size, &hex_buf), fg, bg);
 
-        vga.writeStringAt(15, 0, "Blue Pos: ", fg, bg);
-        vga.writeStringAt(15, 11, conv.toHex(u64, boot_info.blue_position, &hex_buf), fg, bg);
+        //vga.writeStringAt(6, 0, "Blue Pos: ", fg, bg);
+        //vga.writeStringAt(6, 11, conv.toHex(u64, boot_info.blue_position, &hex_buf), fg, bg);
 
-        vga.writeStringAt(16, 0, "Rsvd Size: ", fg, bg);
-        vga.writeStringAt(16, 11, conv.toHex(u64, boot_info.rsvd_mask_size, &hex_buf), fg, bg);
+        //vga.writeStringAt(7, 0, "Rsvd Size: ", fg, bg);
+        //vga.writeStringAt(7, 11, conv.toHex(u64, boot_info.rsvd_mask_size, &hex_buf), fg, bg);
 
-        vga.writeStringAt(17, 0, "Rsvd Pos: ", fg, bg);
-        vga.writeStringAt(17, 11, conv.toHex(u64, boot_info.rsvd_position, &hex_buf), fg, bg);
+        //vga.writeStringAt(8, 0, "Rsvd Pos: ", fg, bg);
+        //vga.writeStringAt(8, 11, conv.toHex(u64, boot_info.rsvd_position, &hex_buf), fg, bg);
+
+        //vga.writeStringAt(9, 0, "FB Addr: ", fg, bg);
+        //vga.writeStringAt(9, 12, conv.toHex(u64, boot_info.framebuffer_addr, &hex_buf), fg, bg);
+
+        //vga.writeStringAt(10, 0, "Stride: ", fg, bg);
+        //vga.writeStringAt(10, 12, conv.toHex(u64, boot_info.fb_stride, &hex_buf), fg, bg);
+
+        //vga.writeStringAt(11, 0, "Width: ", fg, bg);
+        //vga.writeStringAt(11, 12, conv.toHex(u64, boot_info.fb_width, &hex_buf), fg, bg);
+
+        //vga.writeStringAt(12, 0, "Height: ", fg, bg);
+        //vga.writeStringAt(12, 12, conv.toHex(u64, boot_info.fb_height, &hex_buf), fg, bg);
+
+        //vga.writeStringAt(13, 0, "BPP: ", fg, bg);
+        //vga.writeStringAt(13, 12, conv.toHex(u64, boot_info.fb_bpp, &hex_buf), fg, bg);
+
         //pause();
+//=================DEBUGGING FOR GRAPHICS OUTPUT=================================================
+
     }
 
     // 1. Calculate the top of our new stack array
@@ -272,9 +293,10 @@ pub export fn kmain() noreturn {
     // IDT must be initialized early
     idt.init();
 
-    vga.writeString("Probing Disk...\n", 15, 0);
+    //vga.writeString("Probing Disk...\n", 15, 0);
 
-
+    splash.updateProgress(20, "Disk / File System Restore or Init...");
+    splash.delay_crude(30_000_000);
     // -------------------------------------------------------------------------
     //  DISK / FILESYSTEM RESTORE OR INIT
     // -------------------------------------------------------------------------
@@ -283,9 +305,9 @@ pub export fn kmain() noreturn {
 
     if (ata.AtaDevice.checkFileSystem(partition_start)) {
         fs_exists = true;
-        vga.writeString("STATUS: System Partition Found!\n", 10, 0);
+        //vga.writeString("STATUS: System Partition Found!\n", 10, 0);
 
-        vga.writeString("RESTORE: Populating RAM from Disk...\n", 11, 0);
+        //vga.writeString("RESTORE: Populating RAM from Disk...\n", 11, 0);
 
         // =========================================================================
         //  RAMDISK HYDRATION
@@ -317,40 +339,40 @@ pub export fn kmain() noreturn {
         sb.flags |= coda_fs.FLAG_DIRTY;
 
         ata.AtaDevice.writeBlocks(null, partition_start, fs_ramdisk_buf[0..conf.BLOCK_SIZE]) catch {
-            vga.writeString("ERROR: Could not mark disk as DIRTY!\n", 12, 0);
+            //vga.writeString("ERROR: Could not mark disk as DIRTY!\n", 12, 0);
         };
 
-        vga.writeString("STATUS: Filesystem Ready.\n", 10, 0);
+        //vga.writeString("STATUS: Filesystem Ready.\n", 10, 0);
     } else {
         fs_exists = false;
-        vga.writeString("STATUS: Disk is Blank.\n", 14, 0);
+        //vga.writeString("STATUS: Disk is Blank.\n", 14, 0);
 
-        vga.writeString("Initializing MBR...\n", 15, 0);
+        //vga.writeString("Initializing MBR...\n", 15, 0);
         ata.initializePartitionTable(partition_start, 16384);
 
-        vga.writeString("Formatting Partition...\n", 15, 0);
+        //vga.writeString("Formatting Partition...\n", 15, 0);
         ata.formatMyFileSystem(partition_start);
 
         ata.AtaDevice.readBlocks(null, partition_start, fs_ramdisk_buf[0..conf.BLOCK_SIZE]) catch {};
 
-        vga.writeString("Done. Please close QEMU and run ./build.sh run\n", 11, 0);
+        //vga.writeString("Done. Please close QEMU and run ./build.sh run\n", 11, 0);
     }
 
-    vga.step(0);
+    //vga.step(0);
 
     // -------------------------------------------------------------------------
     //  E820 / FRAME ALLOCATOR / REGIONS
     // -------------------------------------------------------------------------
-    const welc_mess = "CadenzaOS 64 Bit";
-    vga.writeString(welc_mess, 15, 0);
+    //const welc_mess = "CadenzaOS 64 Bit";
+    //vga.writeString(welc_mess, 15, 0);
 
     // 1) Copy E820 entries into kernel-owned memory.
     E820Store.init();
-    vga.step(1);
+    //vga.step(1);
 
     // 2) Tell E820.zig to use the safe copy.
     e820.setTable(E820Store.getTableAddr(), E820Store.getTableCount());
-    vga.step(2);
+    //vga.step(2);
 
     // 3) Use the global FixedBufferAllocator as the kernel heap
     allocator = fba.allocator();
@@ -359,51 +381,51 @@ pub export fn kmain() noreturn {
     fa.FrameAllocator.init();
     fa.FrameAllocator.parseUsableMemory();
     const regions = fa.getUsableRegions();
-    vga.step(3);
+    //vga.step(3);
 
     // -------------------------------------------------------------------------
     //  DEBUG: HEX / BOOT INFO / MEMORY DUMP
     // -------------------------------------------------------------------------
-    const x: u64 = 0x1234ABCDEF112233;
-    var buf: [16]u8 = undefined;
-    const slice = conv.toHex(u64, x, buf[0..]);
+    //const x: u64 = 0x1234ABCDEF112233;
+    //var buf: [16]u8 = undefined;
+    //const slice = conv.toHex(u64, x, buf[0..]);
 
-    var len_buf: [8]u8 = undefined;
-    vga.writeString(conv.toHex(u32, @intCast(slice.len), &len_buf), 15, 0);
-    vga.writeString(slice, 15, 0);
+    //var len_buf: [8]u8 = undefined;
+    //vga.writeString(conv.toHex(u32, @intCast(slice.len), &len_buf), 15, 0);
+    //vga.writeString(slice, 15, 0);
 
-    const y: u32 = 0xBADFACE;
-    var buf2: [8]u8 = undefined;
-    vga.writeStringAt(3, 0, conv.toHex(u32, y, buf2[0..]), 15, 0);
+    //const y: u32 = 0xBADFACE;
+    //var buf2: [8]u8 = undefined;
+    //vga.writeStringAt(3, 0, conv.toHex(u32, y, buf2[0..]), 15, 0);
 
     const info = bi.get();
 
-    var buf_start: [16]u8 = undefined;
-    vga.writeStringAt(11, 0, "Kernel start: ", 15, 0);
-    vga.writeStringAt(11, 15, conv.toHex(u64, info.kernel_start, &buf_start), 15, 0);
+    //var buf_start: [16]u8 = undefined;
+    //vga.writeStringAt(11, 0, "Kernel start: ", 15, 0);
+    //vga.writeStringAt(11, 15, conv.toHex(u64, info.kernel_start, &buf_start), 15, 0);
 
-    var buf_end: [16]u8 = undefined;
-    vga.writeStringAt(12, 0, "Kernel end:   ", 15, 0);
-    vga.writeStringAt(12, 15, conv.toHex(u64, info.kernel_end, &buf_end), 15, 0);
+    //var buf_end: [16]u8 = undefined;
+    //vga.writeStringAt(12, 0, "Kernel end:   ", 15, 0);
+    //vga.writeStringAt(12, 15, conv.toHex(u64, info.kernel_end, &buf_end), 15, 0);
 
-    var buf_stack: [16]u8 = undefined;
-    vga.writeStringAt(13, 0, "Stack top:    ", 15, 0);
-    vga.writeStringAt(13, 15, conv.toHex(u64, info.stack_top, &buf_stack), 15, 0);
+    //var buf_stack: [16]u8 = undefined;
+    //vga.writeStringAt(13, 0, "Stack top:    ", 15, 0);
+    //vga.writeStringAt(13, 15, conv.toHex(u64, info.stack_top, &buf_stack), 15, 0);
 
-    var row2: u16 = 14;
-    var offset: usize = 0;
-    while (offset < 0x38) : (offset += 8) {
-        var buf_offset: [8]u8 = undefined;
-        var buf_bytes: [16]u8 = undefined;
+    //var row2: u16 = 14;
+    //var offset: usize = 0;
+    //while (offset < 0x38) : (offset += 8) {
+        //var buf_offset: [8]u8 = undefined;
+        //var buf_bytes: [16]u8 = undefined;
 
-        vga.writeStringAt(row2, 0, conv.toHex(u32, @intCast(offset), &buf_offset), 15, 0);
-        vga.writeStringAt(row2, 9, ": ", 15, 0);
+        //vga.writeStringAt(row2, 0, conv.toHex(u32, @intCast(offset), &buf_offset), 15, 0);
+        //vga.writeStringAt(row2, 9, ": ", 15, 0);
 
-        const value = @as(*const u64, @ptrFromInt(0x7000 + offset)).*;
-        vga.writeStringAt(row2, 11, conv.toHex(u64, value, &buf_bytes), 15, 0);
+        //const value = @as(*const u64, @ptrFromInt(0x7000 + offset)).*;
+        //vga.writeStringAt(row2, 11, conv.toHex(u64, value, &buf_bytes), 15, 0);
 
-        row2 += 1;
-    }
+        //row2 += 1;
+    //}
 
     // -------------------------------------------------------------------------
     //  IDT / PIC / MOUSE / INTERRUPTS
@@ -425,43 +447,47 @@ pub export fn kmain() noreturn {
 
     asm volatile ("sti");
 
-    vga.step(4);
-    vga.writeStringAt(21, 0, "IDT + PIC remapped", 15, 0);
+    //vga.step(4);
+    //vga.writeStringAt(21, 0, "IDT + PIC remapped", 15, 0);
 
-    const idt_info = bi.get();
-    var buf_idt: [16]u8 = undefined;
+    //const idt_info = bi.get();
+    //var buf_idt: [16]u8 = undefined;
 
-    vga.writeStringAt(22, 0, "Kernel start: ", 15, 0);
-    vga.writeStringAt(22, 15, conv.toHex(u64, idt_info.kernel_start, &buf_idt), 15, 0);
+    //vga.writeStringAt(22, 0, "Kernel start: ", 15, 0);
+    //vga.writeStringAt(22, 15, conv.toHex(u64, idt_info.kernel_start, &buf_idt), 15, 0);
 
-    vga.writeStringAt(23, 0, "Kernel end:   ", 15, 0);
-    vga.writeStringAt(23, 15, conv.toHex(u64, idt_info.kernel_end, &buf_idt), 15, 0);
+    //vga.writeStringAt(23, 0, "Kernel end:   ", 15, 0);
+    //vga.writeStringAt(23, 15, conv.toHex(u64, idt_info.kernel_end, &buf_idt), 15, 0);
 
     // -------------------------------------------------------------------------
     //  FRAME ALLOCATOR REGIONS DEBUG
     // -------------------------------------------------------------------------
-    var idx: usize = 0;
-    for (regions) |r| {
-        var buf_base: [16]u8 = undefined;
-        var buf_len: [16]u8 = undefined;
+    //var idx: usize = 0;
+    //for (regions) |r| {
+        //var buf_base: [16]u8 = undefined;
+        //var buf_len: [16]u8 = undefined;
 
-        vga.writeString("Region ", 15, 0);
-        vga.writeString(conv.toHex(u64, idx, &buf_base), 15, 0);
+        //vga.writeString("Region ", 15, 0);
+        //vga.writeString(conv.toHex(u64, idx, &buf_base), 15, 0);
 
-        vga.writeString(": base=", 15, 0);
-        vga.writeString(conv.toHex(u64, r.base, &buf_base), 15, 0);
+        //vga.writeString(": base=", 15, 0);
+        //vga.writeString(conv.toHex(u64, r.base, &buf_base), 15, 0);
 
-        vga.writeString(" len=", 15, 0);
-        vga.writeString(conv.toHex(u64, r.length, &buf_len), 15, 0);
+        //vga.writeString(" len=", 15, 0);
+        //vga.writeString(conv.toHex(u64, r.length, &buf_len), 15, 0);
 
-        idx += 1;
-    }
+        //idx += 1;
+    //}
+
+    splash.updateProgress(40, "Initialising memory...");
+    splash.delay_crude(30_000_000);
+
 
     // -------------------------------------------------------------------------
     //  BITMAP INIT + RESERVED RANGES
     // -------------------------------------------------------------------------
     bm.init(regions);
-    vga.step(5);
+    //vga.step(5);
 
     const mem_mod = @import("memory.zig");
 
@@ -472,7 +498,7 @@ pub export fn kmain() noreturn {
 
     // Stack
     bm.markUsedRange(info.stack_top - STACK_SIZE, info.stack_top);
-    vga.step(6);
+    //vga.step(6);
 
     // Heap
     const heap_virt = @intFromPtr(&heap_buffer[0]);
@@ -498,12 +524,12 @@ pub export fn kmain() noreturn {
     bm.markUsedRange(ramdisk_phys, ramdisk_phys + fs_ramdisk_buf.len);
 
     // Debug: bitmap storage range
-    const bmRange = bm.getStorageRange();
-    var buf_bm_range: [16]u8 = undefined;
-    vga.writeString("Bitmap start: 0x", 15, 0);
-    vga.writeString(conv.toHex(u64, bmRange.start, &buf_bm_range), 15, 0);
-    vga.writeString("Bitmap end:   0x", 15, 0);
-    vga.writeString(conv.toHex(u64, bmRange.end, &buf_bm_range), 15, 0);
+    //const bmRange = bm.getStorageRange();
+    //var buf_bm_range: [16]u8 = undefined;
+    //vga.writeString("Bitmap start: 0x", 15, 0);
+    //vga.writeString(conv.toHex(u64, bmRange.start, &buf_bm_range), 15, 0);
+    //vga.writeString("Bitmap end:   0x", 15, 0);
+    //vga.writeString(conv.toHex(u64, bmRange.end, &buf_bm_range), 15, 0);
 
     // Shell's dedicated Task 0 stack (must be reserved — it's live for the
     // entire session once shell.run() starts, but isn't covered by the
@@ -521,6 +547,8 @@ pub export fn kmain() noreturn {
     @memset(scratch_ptr[0..4096], 0);
 
 
+    splash.updateProgress(60, "Configuring interrupts...");
+    splash.delay_crude(30_000_000);
     // -------------------------------------------------------------------------
     //  APIC VIRTUAL MEMORY INITIALIZATION
     // -------------------------------------------------------------------------
@@ -573,22 +601,22 @@ pub export fn kmain() noreturn {
     // -------------------------------------------------------------------------
     // APIC HARDWARE REALITY CHECK
     // -------------------------------------------------------------------------
-    vga.clearScreen(0, 0);
-    vga.writeString("A\r\n", 15, 0);
+    //vga.clearScreen(0, 0);
+    //vga.writeString("A\r\n", 15, 0);
 
-    const raw_lapic = apic.debugRawLapic();
-    vga.writeString("B\r\n", 15, 0);
+    //const raw_lapic = apic.debugRawLapic();
+    //vga.writeString("B\r\n", 15, 0);
 
-    const raw_ioapic = apic.debugRawIoApic();
-    vga.writeString("C\r\n", 15, 0);
+    //const raw_ioapic = apic.debugRawIoApic();
+    //vga.writeString("C\r\n", 15, 0);
 
-    var buf_l: [16]u8 = undefined;
-    var buf_i: [16]u8 = undefined;
-    vga.writeString("RAW LAPIC: ", 15, 0);
-    vga.writeString(conv.toHex(u64, raw_lapic, &buf_l), 15, 0);
-    vga.writeString(" RAW IOAPIC: ", 15, 0);
-    vga.writeString(conv.toHex(u64, raw_ioapic, &buf_i), 15, 0);
-    vga.writeString("D\r\n", 15, 0);
+    //var buf_l: [16]u8 = undefined;
+    //var buf_i: [16]u8 = undefined;
+    //vga.writeString("RAW LAPIC: ", 15, 0);
+    //vga.writeString(conv.toHex(u64, raw_lapic, &buf_l), 15, 0);
+    //vga.writeString(" RAW IOAPIC: ", 15, 0);
+    //vga.writeString(conv.toHex(u64, raw_ioapic, &buf_i), 15, 0);
+    //vga.writeString("D\r\n", 15, 0);
     // Freeze to read the values clearly
     //while (true) { asm volatile ("hlt"); }
 
@@ -632,6 +660,9 @@ pub export fn kmain() noreturn {
     asm volatile ("sti");
     vga.clearScreen(15, 0);
 
+    splash.updateProgress(80, "Task manager initialising...");
+    splash.delay_crude(30_000_000);
+
     // =========================================================================
     // TASK MANAGER INITIALIZATION
     // =========================================================================
@@ -642,6 +673,8 @@ pub export fn kmain() noreturn {
         scheduler.manager.current_task_idx = 0;
     }
 
+    splash.updateProgress(100, "Final setup...");
+    splash.delay_crude(30_000_000);
     // =========================================================================
     // PERMANENT STORAGE & FILE SYSTEM BRING UP
     // =========================================================================
@@ -698,6 +731,11 @@ pub export fn kmain() noreturn {
         // We can leave this empty now, Zig is happy with the underscore
     }
 
+    //Turn off splash screen
+    splash.dismiss();
+
+
+
 
     // =========================================================================
     //  SHELL STARTUP WITH DEDICATED STACK SWAP
@@ -741,7 +779,7 @@ pub export fn kmain() noreturn {
     const ENABLE_TESTS = false;
     if (ENABLE_TESTS) {
         tests.runAllocatorTests(allocator);
-        vga.step(7);
+        //vga.step(7);
     }
 
     while (true) {

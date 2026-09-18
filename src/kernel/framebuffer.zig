@@ -46,9 +46,9 @@ const palette: [16]u32 = .{
 /// Initialise the framebuffer renderer.
 /// Must be called before any putChar/writeString calls.
 
-var red_pos: u5 = 16;
-var green_pos: u5 = 8;
-var blue_pos: u5 = 0;
+pub var red_pos: u5 = 16;
+pub var green_pos: u5 = 8;
+pub var blue_pos: u5 = 0;
 
 pub fn init(
     addr: usize,
@@ -90,7 +90,7 @@ inline fn plotPixel(x: u32, y: u32, color: u32) void {
 }
 
 /// Dynamic color packing based on VESA hardware info
-fn packColor(r: u8, g: u8, b: u8) u32 {
+pub fn packColor(r: u8, g: u8, b: u8) u32 {
     const red   = @as(u32, r) << red_pos;
     const green = @as(u32, g) << green_pos;
     const blue  = @as(u32, b) << blue_pos;
@@ -290,23 +290,55 @@ pub fn drawRectOutline(x: u32, y: u32, width: u32, height: u32, color: u32) void
 
 /// Renders raw 24-bit RGB pixel data onto the screen at (x, y).
 pub fn drawImage(x: u32, y: u32, img_width: u32, img_height: u32, data: []const u8) void {
+    const expected_len: usize = @as(usize, img_width) * @as(usize, img_height) * 3;
+    if (data.len < expected_len) return;
+
     var py: u32 = 0;
     while (py < img_height) : (py += 1) {
-        if (y + py >= fb_height) break;
-
         var px: u32 = 0;
         while (px < img_width) : (px += 1) {
-            if (x + px >= fb_width) break;
+            const idx: usize =
+            @as(usize, py) * @as(usize, img_width) * 3 +
+            @as(usize, px) * 3;
 
-            const img_index = (py * img_width + px) * 3;
-            if (img_index + 2 >= data.len) return;
+            const r: u8 = data[idx + 0];
+            const g: u8 = data[idx + 1];
+            const b: u8 = data[idx + 2];
 
-            const r = data[img_index + 0];
-            const g = data[img_index + 1];
-            const b = data[img_index + 2];
+            plotPixel(x + px, y + py, packColor(r, g, b));
+        }
+    }
+}
 
-            const color = packColor(r, g, b);
-            plotPixel(x + px, y + py, color);
+/// Renders raw 24-bit RGB pixel data onto the screen, scaled to (dest_width, dest_height)
+/// using nearest-neighbor sampling.
+pub fn drawImageScaled(
+    x: u32, y: u32,
+    src_width: u32, src_height: u32,
+    dest_width: u32, dest_height: u32,
+    data: []const u8,
+) void {
+    const expected_len: usize = @as(usize, src_width) * @as(usize, src_height) * 3;
+    if (data.len < expected_len) return;
+    if (dest_width == 0 or dest_height == 0) return;
+
+    var dy: u32 = 0;
+    while (dy < dest_height) : (dy += 1) {
+        const sy = (dy * src_height) / dest_height;
+
+        var dx: u32 = 0;
+        while (dx < dest_width) : (dx += 1) {
+            const sx = (dx * src_width) / dest_width;
+
+            const idx: usize =
+            @as(usize, sy) * @as(usize, src_width) * 3 +
+            @as(usize, sx) * 3;
+
+            const r: u8 = data[idx + 0];
+            const g: u8 = data[idx + 1];
+            const b: u8 = data[idx + 2];
+
+            plotPixel(x + dx, y + dy, packColor(r, g, b));
         }
     }
 }
@@ -331,5 +363,24 @@ pub fn drawStringAtPixel(x: u32, y: u32, text: []const u8, fg_color: u32, bg_col
             }
         }
         curr_x += font.GLYPH_WIDTH;
+    }
+}
+
+fn printHex(label: []const u8, value: usize) void {
+    const hex_chars = "0123456789ABCDEF";
+    serial.writeString(label);
+    serial.writeString(": 0x");
+    var i: usize = 16;
+    while (i > 0) {
+        i -= 1;
+        const nibble: u8 = @truncate((value >> @intCast(i * 4)) & 0xF);
+        serial.putChar(hex_chars[nibble]);
+    }
+    serial.writeString("\n");
+}
+
+pub fn pause() void {
+    while (true) {
+        asm volatile ("hlt");
     }
 }

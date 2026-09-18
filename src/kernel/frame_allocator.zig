@@ -20,6 +20,9 @@ const bm = @import("bitmap.zig");
 //  REGION STRUCTURE + STORAGE
 // -----------------------------------------------------------------------------
 
+// Set to false to silence debug VGA output (e.g. during splash screen)
+pub var verbose: bool = false;
+
 pub const Region = struct {
     base: usize,
     length: usize,
@@ -28,20 +31,14 @@ pub const Region = struct {
 var usable_regions: [16]Region = undefined;
 var usable_region_count: usize = 0;
 
-/// Return a slice of all usable memory regions discovered.
 pub fn getUsableRegions() []const Region {
     return usable_regions[0..usable_region_count];
 }
 
-// -----------------------------------------------------------------------------
-//  FRAME ALLOCATOR (E820 PARSING ONLY)
-// -----------------------------------------------------------------------------
-
 pub const FrameAllocator = struct {
-
-    /// Debug-print all E820 entries (base, length, type).
-    /// This does not filter or store anything — purely diagnostic.
     pub fn init() void {
+        if (!verbose) return;
+
         var row: u16 = 4;
 
         for (0..e820.getCount()) |i| {
@@ -61,29 +58,21 @@ pub const FrameAllocator = struct {
             vga.writeStringAt(row, 51, conv.toHex(u32, entry.entry_type, &buf_type), 15, 0);
 
             row += 1;
-            if (row >= 24) break; // avoid scrolling during early boot
+            if (row >= 24) break;
         }
     }
 
-    /// Parse the E820 table and extract usable memory regions.
-    /// Rules:
-    ///   • Only type 1 (usable RAM)
-    ///   • Only memory above 1 MiB (avoid BIOS/low-memory holes)
     pub fn parseUsableMemory() void {
         const ONE_MB = 1024 * 1024;
 
         for (0..e820.getCount()) |i| {
             const entry = e820.getEntry(i).?;
 
-            // Only type 1 = usable RAM
             if (entry.entry_type != 1) continue;
 
             const region_end = entry.base + entry.length;
-
-            // Skip regions entirely below 1 MiB
             if (region_end <= ONE_MB) continue;
 
-            // Clamp start to >= 1 MiB
             const usable_base = @max(entry.base, ONE_MB);
             const usable_length = region_end - usable_base;
 
@@ -93,7 +82,8 @@ pub const FrameAllocator = struct {
             };
             usable_region_count += 1;
 
-            // Debug output
+            if (!verbose) continue;
+
             var buf_ub: [16]u8 = undefined;
             var buf_ul: [16]u8 = undefined;
 

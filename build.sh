@@ -81,6 +81,17 @@ KERNEL_SECTORS=$(( (KERNEL_SIZE + 511) / 512 ))
 echo "KERNEL_SECTORS equ $KERNEL_SECTORS" > "$BUILD/kernel_info.inc"
 echo "KERNEL_ENTRY equ $ENTRY_POINT" >> "$BUILD/kernel_info.inc"
 
+# --- Derive BSS physical address + size from the real, current ELF layout ---
+# (readelf -W keeps each LOAD entry on one line, avoiding the wrapped output
+#  of plain `readelf -l`)
+BSS_LINE=$(readelf -W -l "$BUILD/kernel.elf" | awk '/^ *LOAD/{print}' | sed -n '2p')
+BSS_PHYS=$(echo "$BSS_LINE" | awk '{print $4}')
+BSS_MEMSIZE=$(echo "$BSS_LINE" | awk '{print $6}')
+BSS_SIZE_DWORDS=$(( (BSS_MEMSIZE + 3) / 4 ))
+
+echo "BSS_PHYS equ $BSS_PHYS" >> "$BUILD/kernel_info.inc"
+echo "BSS_SIZE_DWORDS equ $BSS_SIZE_DWORDS" >> "$BUILD/kernel_info.inc"
+
 echo "----------------------------------------"
 echo "📏 Kernel Size Report"
 echo "Bytes:          $KERNEL_SIZE"

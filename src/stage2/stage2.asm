@@ -58,16 +58,29 @@ GRAPHICS_MODE_SEL equ 1
 ;==================================================================================================
 ; BOOT INFO STRUCTURE
 ; Passed from Stage 2 to the kernel via RDI.
-; Layout (all fields are 64-bit / 8-byte aligned):
-;   0x00  kernel_phys_start
-;   0x08  kernel_phys_end
-;   0x10  kernel_size_bytes
-;   0x18  kernel_stack_top
-;   0x20  e820_entry_count   (32-bit, zero-extended)
-;   0x24  graphics_mode      (0 = VGA, 1 = VESA)
-;   0x28  e820_buffer_addr
-;   0x30  pml4_addr
-;   0x38  framebuffer_addr   (64-bit physical pointer to VESA LFB)
+; Layout (8-byte aligned slots):
+; 0x00 kernel_phys_start       (64-bit)
+; 0x08 kernel_phys_end         (64-bit)
+; 0x10 kernel_size_bytes       (64-bit)
+; 0x18 kernel_stack_top        (64-bit)
+; 0x20 e820_entry_count        (32-bit)
+; 0x24 graphics_mode           (32-bit, 0 = VGA, 1 = VESA)
+; 0x28 e820_buffer_addr        (64-bit)
+; 0x30 pml4_addr               (64-bit)
+; 0x38 framebuffer_addr        (64-bit, physical address of VESA LFB)
+; 0x40 fb_stride               (32-bit, bytes per scanline)
+; 0x48 fb_width                (32-bit, pixels per row)
+; 0x50 fb_height               (32-bit, pixels per column)
+; 0x58 fb_bpp                  (32-bit, bits per pixel)
+; 0x60 fb_red_mask_size        (32-bit)
+; 0x68 fb_red_shift            (32-bit)
+; 0x70 fb_green_mask_size      (32-bit)
+; 0x78 fb_green_shift          (32-bit)
+; 0x80 fb_blue_mask_size       (32-bit)
+; 0x88 fb_blue_shift           (32-bit)
+; 0x90 fb_rsvd_mask_size       (32-bit)
+; 0x98 fb_rsvd_shift           (32-bit)
+; Total: 0xA0 (160 bytes)
 ;==================================================================================================
 
 BOOT_INFO_ADDR   equ 0x7000
@@ -215,8 +228,8 @@ int 0x10
     jmp .error_loop
 
 ; BSS: PhysAddr = 0x001b4000, MemSiz = 0x0d5e188
-    BSS_PHYS        equ 0x001b4000
-    BSS_SIZE_DWORDS equ 0x0357862        ; 0x0d5e188 / 4
+    ;BSS_PHYS        equ 0x001b4000
+    ;BSS_SIZE_DWORDS equ 0x0357862        ; 0x0d5e188 / 4
 
 
 .disk_read_ok:
@@ -534,7 +547,7 @@ pm_entry:
 
 ; ==================================================================================================
     ; COLOR MASK AND POSITION METADATA
-    ; ==================================================================================================
+    ; ================================================================================================
 
     ; red_mask_size & red_position (offset 0x60)
     movzx eax, byte [VBE_MODE_INFO + 0x1F]   ; RedMaskSize
@@ -618,7 +631,7 @@ pm_entry:
     ; 4. Map 16 MiB (8 x 2 MiB Huge Pages) into PD
     mov edi, PD_ADDR
     mov eax, 0x00000000                 ; Start physical address 0x0
-    mov ebx, 0x02000000                 ; 32 MiB ceiling
+    mov ebx, 0x04000000                 ; 64 MiB ceiling — covers ramdisk (32-36MB) plus growth room
     xor ecx, ecx
 
 map_kernel_pages:
