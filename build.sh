@@ -58,9 +58,30 @@ mkdir -p "$BUILD"
 # --- 2. Build Phase ---
 echo "[1/6] Assembling bootloader..."
 nasm -f bin "$SRC/boot/boot.asm" -o "$BUILD/boot.bin"
+# --- Git / build metadata ---
+GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "nogit")
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+    GIT_DIRTY="dirty"
+else
+    GIT_DIRTY="clean"
+fi
+BUILD_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-echo "[2/6] Compiling 64-bit Zig kernel..."
-# Periodically replace -O Debug \ with -Doptimize=ReleaseSafe \ to check for any issue with production
+# Convert dirty/clean into a Zig boolean
+if [ "$GIT_DIRTY" = "dirty" ]; then
+    GIT_DIRTY_BOOL=true
+else
+    GIT_DIRTY_BOOL=false
+fi
+
+# --- Generate version.zig ---
+cat > "$SRC/kernel/version.zig" <<EOF
+pub const git_hash: []const u8 = "$GIT_HASH";
+pub const git_dirty: bool = $GIT_DIRTY_BOOL;
+pub const build_ts: []const u8 = "$BUILD_TS";
+EOF
+
+
 $ZIG build-obj "$SRC/kernel/kernel.zig" \
     -target x86_64-freestanding -mcpu=x86_64 -mcmodel=kernel -fPIC -O Debug \
     -fno-stack-protector -freference-trace=12 -femit-bin="$BUILD/kernel.o"
@@ -80,6 +101,11 @@ KERNEL_SIZE=$(stat -c %s "$BUILD/kernel.bin")
 KERNEL_SECTORS=$(( (KERNEL_SIZE + 511) / 512 ))
 echo "KERNEL_SECTORS equ $KERNEL_SECTORS" > "$BUILD/kernel_info.inc"
 echo "KERNEL_ENTRY equ $ENTRY_POINT" >> "$BUILD/kernel_info.inc"
+
+if [ "$KERNEL_SECTORS" -ge 4096 ]; then
+    echo "❌ ERROR: Kernel ($KERNEL_SECTORS sectors) has grown into the filesystem partition (starts at sector 4096)!"
+    exit 1
+fi
 
 # --- Derive BSS physical address + size from the real, current ELF layout ---
 # (readelf -W keeps each LOAD entry on one line, avoiding the wrapped output

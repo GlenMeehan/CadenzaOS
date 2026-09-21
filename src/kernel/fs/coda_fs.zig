@@ -853,10 +853,13 @@ pub const CodaFs = struct {
 /// Called only during mkfs.
 /// Writes a clean, empty directory block sequence.
 fn initEmptyRootDir(device: *BlockDevice, extent: Extent) !void {
-    const total_size = extent.block_count * device.block_size;
-    var buf: [conf.SB_LBA]u8 = undefined;
+    var buf: [conf.BASE_IO_BUF_SIZE]u8 = undefined;
     @memset(buf[0..], 0);
-    try device.writeBlocks(device.ctx, extent.start_block, buf[0..total_size]);
+
+    var i: u64 = 0;
+    while (i < extent.block_count) : (i += 1) {
+        try device.writeBlocks(device.ctx, extent.start_block + i, buf[0..device.block_size]);
+    }
 }
 
 /// Serialise a Superblock into a single disk block and write it.

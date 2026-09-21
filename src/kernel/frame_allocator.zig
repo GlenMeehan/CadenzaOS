@@ -28,7 +28,7 @@ pub const Region = struct {
     length: usize,
 };
 
-var usable_regions: [16]Region = undefined;
+var usable_regions: [64]Region = undefined;
 var usable_region_count: usize = 0;
 
 pub fn getUsableRegions() []const Region {
@@ -75,6 +75,8 @@ pub const FrameAllocator = struct {
 
             const usable_base = @max(entry.base, ONE_MB);
             const usable_length = region_end - usable_base;
+
+            if (usable_region_count >= usable_regions.len) continue; // drop excess regions rather than overflow
 
             usable_regions[usable_region_count] = .{
                 .base   = usable_base,

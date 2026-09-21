@@ -22,7 +22,7 @@ const mem         = @import("../memory.zig");
 const ata         = @import("../drivers/ata.zig");
 const conf = @import("../config.zig");
 
-const partition_start = conf.SB_LBA;  // Physical LBA offset of the CODA partition on disk
+const partition_start = conf.PARTITION_START_LBA;  // was: conf.SB_LBA
 
 // --------------------------------
 // RamDisk

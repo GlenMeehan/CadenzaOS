@@ -13,9 +13,9 @@ const vga = @import("vga.zig");
 const conv = @import("convert.zig");
 
 pub fn panic(
-    message: []const u8,
-    _: ?*std.builtin.StackTrace, // stack traces not supported yet
-    ret_addr: ?usize,
+    msg: []const u8,
+    trace: ?*anyopaque,
+    return_address: ?usize,
 ) noreturn {
     // VGA text buffer at physical address 0xB8000
     const vga_ptr = @as([*]volatile u16, @ptrFromInt(0xB8000));

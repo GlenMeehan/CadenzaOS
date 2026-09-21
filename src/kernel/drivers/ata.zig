@@ -20,6 +20,8 @@ const port      = @import("../port_io.zig");
 const vga       = @import("../vga.zig");
 const BlockDevice = @import("../fs/block_device.zig").BlockDevice;
 const conf = @import("../config.zig");
+const coda_fs = @import("../fs/coda_fs.zig");
+const conv = @import("../convert.zig");
 
 
 // --------------------------------
@@ -78,17 +80,15 @@ pub const AtaDevice = struct {
 
     /// Probe whether a CODA filesystem exists at `lba`.
     ///
-    /// WARNING: This function checks for the legacy magic value 0xDEAFBEEF,
-    /// not the current CODA_MAGIC (0x434F44415F465331).
+    /// CODA_MAGIC (0x434F44415F465331).
     /// It predates the current superblock format and should be updated or
     /// removed before use in production.
     pub fn checkFileSystem(lba: u32) bool {
         var buffer: [conf.BLOCK_SIZE]u8 align(8) = undefined;
         readBlocks(null, lba, &buffer) catch return false;
         const header = @as(*[conf.BLOCK_SIZE]u8, @ptrCast(@alignCast(&buffer)));
-        // TODO: replace 0xDEAFBEEF with CODA_MAGIC and use the real Superblock type
         const magic = std.mem.readInt(u64, header[0..8], .little);
-        return magic == 0xDEAFBEEF;
+        return magic == coda_fs.CODA_MAGIC;
     }
 
     // ----------------------------------------------------------------
@@ -123,8 +123,8 @@ pub const AtaDevice = struct {
 
             var i: usize = 0;
             while (i < sectors_to_read) : (i += 1) {
-                wait_bsy();
-                wait_drq();
+                try wait_bsy();
+                try wait_drq();
 
                 // Read 256 words (512 bytes) per sector
                 var j: usize = 0;
@@ -155,7 +155,7 @@ pub const AtaDevice = struct {
 
         var current_sector: u32 = 0;
         while (current_sector < total_sectors) : (current_sector += 1) {
-            wait_bsy();
+            try wait_bsy();
 
             const current_lba = lba + current_sector;
 
@@ -199,7 +199,7 @@ pub const AtaDevice = struct {
 
             // 7. Flush the drive's write cache to guarantee persistence
             port.outb(ATA_COMMAND, CMD_FLUSH);
-            wait_bsy();
+            try wait_bsy();
         }
     }
 };
@@ -260,14 +260,22 @@ pub fn formatMyFileSystem(lba: u32) void {
 // Private helpers
 // ----------------------------------------------------------------
 
-/// Busy-poll until the drive clears the BSY bit.
-fn wait_bsy() void {
-    while ((port.inb(ATA_STATUS) & STATUS_BSY) != 0) {}
+/// Busy-poll until the drive clears the BSY bit, with a bounded timeout.
+fn wait_bsy() DeviceError!void {
+    var timeout: u32 = 10_000_000;
+    while ((port.inb(ATA_STATUS) & STATUS_BSY) != 0) {
+        timeout -= 1;
+        if (timeout == 0) return DeviceError.IoError;
+    }
 }
 
-/// Busy-poll until the drive sets the DRQ bit (ready for data transfer).
-fn wait_drq() void {
-    while ((port.inb(ATA_STATUS) & STATUS_DRQ) == 0) {}
+/// Busy-poll until the drive sets the DRQ bit, with a bounded timeout.
+fn wait_drq() DeviceError!void {
+    var timeout: u32 = 10_000_000;
+    while ((port.inb(ATA_STATUS) & STATUS_DRQ) == 0) {
+        timeout -= 1;
+        if (timeout == 0) return DeviceError.IoError;
+    }
 }
 
 /// Issue four dummy status reads to give the drive ~100 ns to update its state.

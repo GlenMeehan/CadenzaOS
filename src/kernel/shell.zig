@@ -452,10 +452,32 @@ fn cmd_vitals(tokens: [][]const u8) void {
 
 fn cmd_version(args: [][]const u8) void {
     _ = args;
-    vga.writeString("Cadenza OS - Version 0.1.0 (Dev Build)\n", 11, 0);
-    vga.writeString("Kernel: Zig 0.16-dev\n", 7, 0);
+
+    //const std = @import("std");
+    //const config = @import("config");
+
+    const dirty_suffix = if (conf.build.git_dirty) "-dirty" else "";
+
+    var buf: [128]u8 = undefined;
+    const version_str = std.fmt.bufPrint(
+        &buf,
+        "Cadenza OS {d}.{d}.{d}+{s}{s}\nBuilt: {s}\n",
+        .{
+            conf.Version.major,
+            conf.Version.minor,
+            conf.Version.patch,
+            conf.build.git_hash,
+            dirty_suffix,
+            conf.build.timestamp,
+        },
+    ) catch return;
+
+    vga.writeString(version_str, 11, 0);
+    vga.writeString("Kernel: Zig 0.16.0\n", 7, 0);
     vga.writeString("Predictive Shell: Phase 1 Context-Aware\n", 10, 0);
 }
+
+
 
 fn cmd_uptime(tokens: [][]const u8) void {
     _ = tokens;

@@ -129,29 +129,22 @@ pub export fn memmove(dest: ?[*]u8, src: ?[*]const u8, n: usize) ?[*]u8 {
 /// Kernel panic handler.
 /// Clears the screen, prints a panic banner, message, and optional return address,
 /// then halts the CPU forever.
-pub fn panic(
-    msg: []const u8,
-    trace: ?*anyopaque,
-    return_address: ?usize,
-) noreturn {
-    _ = trace;
+pub const panic = std.debug.FullPanic(myPanic);
 
-    vga.clearScreen(0x4, 0x0); // bg red, fg black
-
+fn myPanic(msg: []const u8, return_address: ?usize) noreturn {
+    // same body as before, just renamed and with `trace` removed
+    vga.clearScreen(0x4, 0x0);
     vga.writeStringAt(0, 0, "KERNEL PANIC", 15, 4);
-
     vga.writeStringAt(2, 0, "Message: ", 14, 4);
     vga.writeStringAt(2, 9, msg, 15, 4);
-
     vga.writeStringAt(4, 0, "Return address: ", 14, 4);
     if (return_address) |ra| {
-        var buf: [18]u8 = undefined; // "0x" + 16 hex digits
+        var buf: [18]u8 = undefined;
         const hex = conv.toHex(usize, ra, buf[0..]);
         vga.writeStringAt(4, 17, hex, 15, 4);
     } else {
         vga.writeStringAt(4, 17, "(none)", 8, 4);
     }
-
     while (true) {
         asm volatile ("cli; hlt");
     }
@@ -206,6 +199,7 @@ pub export fn kmain() noreturn {
     const boot_info = boot_info_mod.get();
 
     if (boot_info.graphics_mode == 1) {
+        serial.writeString("CP1: fb.init done\n");
         fb.init(
             boot_info.framebuffer_addr,
             @intCast(boot_info.fb_stride),
@@ -218,6 +212,7 @@ pub export fn kmain() noreturn {
         );
         vga.graphics_mode = true;
         //Initialise and display splash screen
+        serial.writeString("CP2: splash.init done\n");
         splash.init();
 
 
@@ -296,15 +291,15 @@ pub export fn kmain() noreturn {
     //vga.writeString("Probing Disk...\n", 15, 0);
 
     splash.updateProgress(20, "Disk / File System Restore or Init...");
-    splash.delay_crude(30_000_000);
+    splash.delay_crude(20_000_000);
     // -------------------------------------------------------------------------
     //  DISK / FILESYSTEM RESTORE OR INIT
     // -------------------------------------------------------------------------
     var fs_exists: bool = false;
     const partition_start = conf.PARTITION_START_LBA;
-
     if (ata.AtaDevice.checkFileSystem(partition_start)) {
         fs_exists = true;
+        vga.writeString("CP5a: checkFileSystem returned true\n", 10, 0);
         //vga.writeString("STATUS: System Partition Found!\n", 10, 0);
 
         //vga.writeString("RESTORE: Populating RAM from Disk...\n", 11, 0);
@@ -327,7 +322,7 @@ pub export fn kmain() noreturn {
             vga.writeString("ERROR: Restoration failed! Type: ", 12, 0);
             vga.writeString(@errorName(err), 12, 0);
         };
-
+       vga.writeString("CP5b: readBlocks done\n", 10, 0);
         const sb = @as(*coda_fs.Superblock, @ptrCast(@alignCast(&fs_ramdisk_buf[0])));
 
         if ((sb.flags & coda_fs.FLAG_DIRTY) != 0) {
@@ -357,14 +352,16 @@ pub export fn kmain() noreturn {
 
         //vga.writeString("Done. Please close QEMU and run ./build.sh run\n", 11, 0);
     }
-
-    //vga.step(0);
+    //pause();
+    serial.writeString("CP5: disk/filesystem check done\n");
+    vga.step(0);
 
     // -------------------------------------------------------------------------
     //  E820 / FRAME ALLOCATOR / REGIONS
     // -------------------------------------------------------------------------
     //const welc_mess = "CadenzaOS 64 Bit";
     //vga.writeString(welc_mess, 15, 0);
+    splash.updateProgress(35, "Setting up memory...");
 
     // 1) Copy E820 entries into kernel-owned memory.
     E820Store.init();
@@ -480,12 +477,14 @@ pub export fn kmain() noreturn {
     //}
 
     splash.updateProgress(40, "Initialising memory...");
-    splash.delay_crude(30_000_000);
+    splash.delay_crude(20_000_000);
 
 
     // -------------------------------------------------------------------------
     //  BITMAP INIT + RESERVED RANGES
     // -------------------------------------------------------------------------
+    serial.writeString("CP3: bitmap init done\n");
+    splash.updateProgress(50, "Mapping APIC hardware...");
     bm.init(regions);
     //vga.step(5);
 
@@ -548,7 +547,7 @@ pub export fn kmain() noreturn {
 
 
     splash.updateProgress(60, "Configuring interrupts...");
-    splash.delay_crude(30_000_000);
+    splash.delay_crude(20_000_000);
     // -------------------------------------------------------------------------
     //  APIC VIRTUAL MEMORY INITIALIZATION
     // -------------------------------------------------------------------------
@@ -565,12 +564,14 @@ pub export fn kmain() noreturn {
     mem_mod.mapPage(cr3, apic.IOAPIC_VIRT_BASE, apic.IOAPIC_PHYS_BASE, mem_mod.FLAGS_MMIO) catch {
         @panic("Failed to dynamically map I/O APIC");
     };
+    serial.writeString("CP4: APIC mapped\n");
     vga.writeString("APIC Hardware Mapped Safely!", 15, 0);
 
 
     // -------------------------------------------------------------------------
     //  APIC FEATURE-FLAGGED PROBE
     // -------------------------------------------------------------------------
+    splash.updateProgress(65, "APIC feature probe...");
     apic.enableApicSoftware();
     apic.initLapicTimer(0x20);
     apic.initIoApicKeyboard();
@@ -623,6 +624,7 @@ pub export fn kmain() noreturn {
     // -------------------------------------------------------------------------
     //  FRAME ALLOCATOR STRESS TEST
     // -------------------------------------------------------------------------
+    splash.updateProgress(75, "Frame allocator self-test...");
     var addrs: [128]usize = undefined;
 
     for (&addrs) |*slot| {
@@ -661,7 +663,7 @@ pub export fn kmain() noreturn {
     vga.clearScreen(15, 0);
 
     splash.updateProgress(80, "Task manager initialising...");
-    splash.delay_crude(30_000_000);
+    splash.delay_crude(20_000_000);
 
     // =========================================================================
     // TASK MANAGER INITIALIZATION
@@ -674,7 +676,7 @@ pub export fn kmain() noreturn {
     }
 
     splash.updateProgress(100, "Final setup...");
-    splash.delay_crude(30_000_000);
+    splash.delay_crude(20_000_000);
     // =========================================================================
     // PERMANENT STORAGE & FILE SYSTEM BRING UP
     // =========================================================================
@@ -730,7 +732,7 @@ pub export fn kmain() noreturn {
     for (test_buf[0..4]) |_| {
         // We can leave this empty now, Zig is happy with the underscore
     }
-
+    //pause();
     //Turn off splash screen
     splash.dismiss();
 
@@ -740,6 +742,7 @@ pub export fn kmain() noreturn {
     // =========================================================================
     //  SHELL STARTUP WITH DEDICATED STACK SWAP
     // =========================================================================
+    serial.writeString("CP6: about to call shell.run()\n");
     if (conf.USE_SCHEDULER_SHELL) {
         // 1. Calculate the absolute top of our private shell stack buffer
         const stack_top = @intFromPtr(&shell_stack_buf) + shell_stack_buf.len;

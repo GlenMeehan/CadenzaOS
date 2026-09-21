@@ -12,13 +12,15 @@
 //   - System policy presets
 //   - Scheduler/timer configuration
 //   -  Runtime Kernel Globals
+//   -  Vesrioning
 //
 // Keeping these values here makes tuning and experimentation
 // easier during kernel development.
 
 const std = @import("std");
 const CodaFs = @import("fs/coda_fs.zig").CodaFs;
-
+const builtin = @import("builtin");
+const ver = @import("version.zig");
 
 // ============================================================
 // Filesystem & Disk Layout
@@ -27,10 +29,10 @@ const CodaFs = @import("fs/coda_fs.zig").CodaFs;
 /// First usable partition sector.
 ///
 /// 2048 is commonly used for alignment on modern disks.
-pub const PARTITION_START_LBA: u64 = 2048;
+pub const PARTITION_START_LBA: u64 = 4096;
 
 /// Logical block address of the filesystem superblock.
-pub const SB_LBA: u64 = PARTITION_START_LBA;
+pub const SB_LBA: u64 = 0;
 
 /// Filesystem block size in bytes.
 ///
@@ -194,4 +196,18 @@ pub var fs_global: *CodaFs = undefined;
 /// Must be initialized before dynamic allocation.
 pub var kernel_allocator: std.mem.Allocator = undefined;
 
+// ============================================================
+// Versioning
+// ============================================================
 
+pub const Version = struct {
+    pub const major: u32 = 0;
+    pub const minor: u32 = 2;
+    pub const patch: u32 = 0;
+};
+
+pub const build = struct {
+    pub const git_hash: []const u8 = ver.git_hash;
+    pub const git_dirty: bool = ver.git_dirty;
+    pub const timestamp: []const u8 = ver.build_ts;
+};

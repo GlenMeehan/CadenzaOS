@@ -108,6 +108,47 @@ dap_lba_high:
 boot_drive:        db 0x80        ; Single definition for drive ID
 sectors_remaining: dw KERNEL_SECTORS
 
+serial_init16:
+    push ax
+    push dx
+    mov dx, 0x3F9
+    xor al, al
+    out dx, al
+    mov dx, 0x3FB
+    mov al, 0x80
+    out dx, al
+    mov dx, 0x3F8
+    mov al, 0x03
+    out dx, al
+    mov dx, 0x3F9
+    xor al, al
+    out dx, al
+    mov dx, 0x3FB
+    mov al, 0x03
+    out dx, al
+    mov dx, 0x3FC
+    mov al, 0x03
+    out dx, al
+    pop dx
+    pop ax
+    ret
+
+serial_putchar16:
+    push ax
+    push dx
+.wait_thre16:
+    mov dx, 0x3FD
+    in al, dx
+    test al, 0x20
+    jz .wait_thre16
+    pop dx
+    pop ax
+    push dx
+    mov dx, 0x3F8
+    out dx, al
+    pop dx
+    ret
+
 
 
 ;==================================================================================================
@@ -115,6 +156,16 @@ sectors_remaining: dw KERNEL_SECTORS
 ;==================================================================================================
 
 start2:
+    call serial_init16
+    mov al, 'S'
+    call serial_putchar16
+
+    mov ah, 0x0E
+    mov al, 'A'
+    int 0x10
+    mov al, 'A'
+    call serial_putchar16
+
     ; 1. Preserve DL (Boot drive ID passed by Stage 1 / BIOS)
     mov [boot_drive], dl
 
@@ -125,9 +176,9 @@ start2:
     mov ss, ax
     mov sp, 0x5000
 
-mov ah, 0x0E
-mov al, 'A'
-int 0x10
+    mov ah, 0x0E
+    mov al, 'A'
+    int 0x10
 
 ; --- ENTER UNREAL MODE ---
 ; Force dynamic patch of GDT descriptor base address
@@ -342,10 +393,16 @@ int 0x10
         int 0x10
         cmp ax, 0x004F
         jne .vesa_fail
+        mov al, '1'
+        call serial_putchar16
 
         jmp .graphics_done
 
     .vesa_fail:
+        mov al, 'F'
+        call serial_putchar16
+        mov al, '2'
+        call serial_putchar16
         jmp $                      ; Hard hang if VESA requested but configuration fails
     %else
         ; --- FALLBACK TO LEGACY VGA TEXT MODE ---
@@ -358,6 +415,8 @@ int 0x10
     mov ah, 0x0E
     %if GRAPHICS_MODE_SEL == 1
         mov al, 'V'                ; 'V' = VESA active
+        mov al, '3'
+        call serial_putchar16
     %else
         mov al, 'G'                ; 'G' = Legacy VGA active
     %endif
@@ -737,6 +796,21 @@ long_mode_ptr:
     dw 0x18               ; 64-bit code segment selector
 
 [BITS 64]
+serial_putchar64:
+    push rax
+    push rdx
+.wait_thre64:
+    mov dx, 0x3FD
+    in al, dx
+    test al, 0x20
+    jz .wait_thre64
+    pop rdx
+    pop rax
+    push rdx
+    mov dx, 0x3F8
+    out dx, al
+    pop rdx
+    ret
 
 long_mode_entry:
     mov word [0xB8010], 0x0F2A
@@ -786,5 +860,6 @@ long_mode_entry:
 ;.efreeze: cli
     ;hlt
     ;jmp .efreeze
-
+    mov al, 'K'
+    call serial_putchar64
     jmp rax
