@@ -149,6 +149,9 @@ dd if="$BUILD/kernel.bin" of="$IMG" bs=512 seek=16 conv=notrunc status=none
 #  APPLICATION BINARY STORE STAGING
 # -------------------------------------------------------------------------
 APPS_DIR="$BUILD/apps"
+mkdir -p "$APPS_DIR"
+cp src/apps/prog1.bin "$APPS_DIR/prog1.bin"
+
 if [ -f "$APPS_DIR/prog1.bin" ]; then
     echo "📦 Staging prog1.bin into disk image at LBA 1024..."
     dd if="$APPS_DIR/prog1.bin" of="$IMG" bs=512 seek=2000 conv=notrunc status=none

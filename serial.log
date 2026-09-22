@@ -4,4 +4,8 @@ CP5: disk/filesystem check done
 CP3: bitmap init done
 CP4: APIC mapped
 APIC Hardware Mapped Safely! -> Detected Bootstrap Core APIC ID: 0000000000000000Allocator reuse OKKBC status: 000000000000001CCP6: about to call shell.run()
+Cadenza />                                                                                                                                                                                 shutdown                                                                                        spawn                                                                                        spawn                                                                                        spawn                                                                                        spawn                                                                                        spawn                                                                                         spawn p                                                                                        spawn pr                                                                                        spawn pro                                                                                        spawn prog                                                                                        spawn prog1
+Spawned dynamic disk task: prog1
+Hello from prog1!
+0
 Cadenza />                                                                                         

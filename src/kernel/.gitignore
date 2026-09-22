@@ -1,0 +1,27 @@
+# Build artifacts and outputs
+build/
+*.o
+*.elf
+*.bin
+disk.img
+
+# Zig build cache
+.zig-cache/
+
+# Emulator logs and configs
+bochs.log
+bochsrc.txt
+bochsrcusb.txt
+qemu.log
+serial.log
+
+# Editor/OS cruft (optional but common)
+.vscode/
+*.swp
+.DS_Store
+
+# Debug/disassembly artifacts
+*.dis
+*.disasm
+*.lst
+ram_dump.bin
