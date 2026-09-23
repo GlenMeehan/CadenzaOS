@@ -4,8 +4,14 @@ archive/
 *.bin
 *.o
 *.elf
-qemu.log
 *.iso
 .zig-cache/
-.zig-cache/
-.zig-cache/
+
+# Logs
+*.log
+qemu.log
+
+# Disassembly / debug artifacts
+*.dis
+*.disasm
+*.lst
