@@ -5,6 +5,8 @@ const config = @import("config.zig");
 const scheduler = @import("scheduler.zig");
 // 1. Import your VGA module so we can check mode and call writeString
 const vga_mod = @import("vga.zig");
+const fb = @import("framebuffer.zig");
+const font = @import("font.zig");
 
 pub fn taskA_main() callconv(.c) void {
     asm volatile ("sti");
@@ -57,37 +59,23 @@ fn draw_counter(vga: [*]volatile u16, vga_pos: usize, val: u32, row: usize, col:
     }
 
     if (vga_mod.graphics_mode) {
-        // In VESA mode, temporarily move the cursor to draw the counter at the correct screen position
-        const saved_row = vga_mod.getCursorRow();
-        const saved_col = vga_mod.getCursorCol();
-
-        vga_mod.setCursor(row, col);
-        vga_mod.writeString(&buf, 0x0E, 0);
-
-        // Restore cursor so it doesn't disrupt user input typing
-        vga_mod.setCursor(saved_row, saved_col);
+        // Draw straight to pixel coordinates: no shared cursor state touched.
+        const x: u32 = @intCast(col * font.GLYPH_WIDTH);
+        const y: u32 = @intCast(row * font.GLYPH_HEIGHT);
+        fb.drawStringAtPixel(x, y, &buf, fb.paletteColor(0x0E), fb.paletteColor(0));
     } else {
-        // Fall back to super-fast direct text-mode memory writes
         for (buf, 0..) |char, b_idx| {
             vga[vga_pos + b_idx] = (@as(u16, 0x0E) << 8) | char;
         }
     }
 }
 
-/// Unified character renderer that automatically routes to VESA or direct VGA
 fn draw_char(vga: [*]volatile u16, vga_pos: usize, row: usize, col: usize, char: u8, color: u8) void {
-    const buf = [1]u8{char};
-    const fg = color & 0x0F;
-    const bg = (color >> 4) & 0x0F;
-
     if (vga_mod.graphics_mode) {
-        const saved_row = vga_mod.getCursorRow();
-        const saved_col = vga_mod.getCursorCol();
-
-        vga_mod.setCursor(row, col);
-        vga_mod.writeString(&buf, fg, bg);
-
-        vga_mod.setCursor(saved_row, saved_col);
+        const buf = [1]u8{char};
+        const x: u32 = @intCast(col * font.GLYPH_WIDTH);
+        const y: u32 = @intCast(row * font.GLYPH_HEIGHT);
+        fb.drawStringAtPixel(x, y, &buf, fb.paletteColor(color & 0x0F), fb.paletteColor((color >> 4) & 0x0F));
     } else {
         vga[vga_pos] = (@as(u16, color) << 8) | char;
     }

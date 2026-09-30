@@ -30,7 +30,7 @@ const scheduler = @import("scheduler.zig");
 const task = @import("task.zig");
 const bitmap = @import("bitmap.zig");
 const memory = @import("memory.zig");
-
+const serial = @import("drivers/serial.zig");
 
 // --------------------------------
 // Task registry
@@ -1112,6 +1112,7 @@ fn cmd_policy(args: [][]const u8) void {
 }
 
 fn cmd_spawn(args: [][]const u8) void {
+        serial.writeString("SPAWN-0: cmd_spawn entered\n");
     if (args.len < 2) {
         vga.writeString("Usage: spawn <taskname>\n", 15, 0);
         return;
@@ -1156,39 +1157,46 @@ fn cmd_spawn(args: [][]const u8) void {
 
     // Clear interrupts so the scheduler cannot context switch mid-allocation/mid-read
     asm volatile ("cli");
-
+    serial.writeString("SPAWN-B: findFile ok\n");
     // Check if the file exists on disk by looking for its directory record
-    if (fs.findFile(allocator, fs.superblock.root_dir_extent_start, task_name)) |meta_lba| {
-        _ = meta_lba;
+    if (fs.findFile(allocator, fs.superblock.root_dir_extent_start, task_name)) |entry| {
+        serial.writeString("SPAWN-B: findFile ok\n");
+        const real_meta = fs.readFileMeta(allocator, entry.meta_extent.start_block) catch |meta_err| {
+            vga.writeString("readFileMeta failed: ", 12, 0);
+            vga.writeString(@errorName(meta_err), 12, 0);
+            vga.putChar('\n', 12, 0);
+            asm volatile ("sti");
+            return;
+        };
+        serial.writeString("SPAWN-C: readFileMeta ok\n");
+        const file_size = real_meta.size_bytes;
 
-        // Exact physical size of our staging binary prog1.bin (4236 bytes)
-        const file_size = 4236;
-
-        // 3. Physical Frame Allocation (Bypasses PageAllocator's single-page limit)
-        // Since prog1.bin is 4236 bytes, it requires exactly 2 contiguous 4KiB frames (8192 bytes total).
-        // Grabbing these straight from bitmap.zig ensures the shell's cmd_fba.reset() won't track or wipe them.
-        const frame1 = bitmap.allocContiguous(2) orelse {
+        // 3. Physical Frame Allocation — round up to whole 4 KiB pages
+        const frames_needed = (file_size + bitmap.PAGE_SIZE - 1) / bitmap.PAGE_SIZE;
+        const frame1 = bitmap.allocContiguous(frames_needed) orelse {
             vga.writeString("Error: Out of contiguous physical memory for task frames\n", 12, 0);
             asm volatile ("sti");
             return;
         };
+        serial.writeString("SPAWN-D: allocContiguous ok\n");
         // 4. Construct a secure slice across our dedicated physical memory blocks
         const prog_ptr_phys: [*]u8 = @ptrFromInt(frame1);
         const prog_buf = prog_ptr_phys[0..file_size];
         const code_virt = memory.physToVirt(frame1);
-        const code_mem_slice = (@as([*]u8, @ptrFromInt(code_virt)))[0 .. 2 * bitmap.PAGE_SIZE];
+        const code_mem_slice = (@as([*]u8, @ptrFromInt(code_virt)))[0 .. frames_needed * bitmap.PAGE_SIZE];
 
         // 5. Stream the machine code from disk extents straight into our persistent RAM buffer
         _ = fs.readFile(allocator, path, prog_buf) catch {
             vga.writeString("Error: Failed to read binary from disk\n", 12, 0);
-            bitmap.freeContiguous(frame1, 2);
+            bitmap.freeContiguous(frame1, frames_needed);
             asm volatile ("sti");
             return;
         };
-
+        serial.writeString("SPAWN-E: readFile ok\n");
         // 6. Reinterpret the memory buffer start pointer into an executable C-convention function pointer
         const entry_fn = @as(*const fn () callconv(.c) void, @ptrCast(prog_buf.ptr));
         // 7. Hand the execution address over to your preemptive scheduler engine
+            serial.writeString("SPAWN-F: calling registerDynamicTask\n");
         _ = scheduler.manager.registerDynamicTask(entry_fn, code_mem_slice, frame1) catch {
             vga.writeString("Error: Scheduler rejected dynamic binary\n", 12, 0);
             bitmap.freeContiguous(frame1, 2);

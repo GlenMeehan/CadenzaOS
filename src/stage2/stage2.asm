@@ -48,6 +48,9 @@ PD_ADDR          equ 0x3000          ; Page Directory (2 MiB pages)
 PDPT_KERNEL_ADDR  equ 0x4000      ; kernel PDPT
 PT_KERNEL_ADDR    equ 0x5000      ; kernel PT (4 KiB pages)
 
+TSS_PHYS_ADDR    equ 0x20000   ; 104-byte TSS structure
+IST1_STACK_TOP   equ 0x25000   ; top of a 16 KiB dedicated interrupt stack (0x21000-0x25000)
+
 VBE_MODE_INFO    equ 0xA000         ; Safe buffer to hold VBE mode details temporarily
 
 ; GRAPHICS CONFIGURATION
@@ -503,8 +506,16 @@ gdt_start:
     dq 0x0000000000000000   ; Null descriptor         (selector 0x00)
     dq 0x00CF9A000000FFFF   ; 32-bit code segment     (selector 0x08)
     dq 0x00CF92000000FFFF   ; 32-bit data segment     (selector 0x10)
-    dq 0x00209A0000000000   ; 0x18: 64-bit code segment (L=1, D/B=0)
-    dq 0x0000920000000000   ; 64-bit data segment     (selector 0x20) <-- ADD THIS
+    dq 0x00209A0000000000   ; 64-bit code segment     (selector 0x18)
+    dq 0x0000920000000000   ; 64-bit data segment     (selector 0x20)
+    ; TSS descriptor (16 bytes) — selector 0x28
+    db 0x67, 0x00           ; limit[15:0]  = 0x0067 (103 = sizeof(TSS)-1)
+    db 0x00, 0x00           ; base[15:0]   = 0x0000
+    db 0x02                 ; base[23:16]  = 0x02  (base = 0x00020000)
+    db 0x89                 ; access: present, DPL0, type=9 (64-bit TSS, available)
+    db 0x00                 ; limit[19:16] | flags — all zero (byte granularity)
+    db 0x00                 ; base[31:24]  = 0x00
+    dq 0x0000000000000000   ; base[63:32] + reserved
 gdt_end:
 
 gdt_descriptor:
@@ -817,18 +828,24 @@ long_mode_entry:
     mov word [0xB8020], 0x0F52
 
     ; Reload 64-bit data segment selectors
-    mov ax, 0x20       ; 64-bit data segment selector
+    mov ax, 0x20
     mov ds, ax
     mov es, ax
     mov ss, ax
     mov fs, ax
     mov gs, ax
 
+    ; Load the Task Register with our TSS selector — required before any
+    ; interrupt can use an IST-based stack switch
+    mov ax, 0x28
+    ltr ax
+    mov al, 'T'
+    call serial_putchar64
+
     ; Implement native 64-bit stack layout (System V ABI alignment)
-    ; Stack must be 16-byte aligned when calling/jumping into kernel functions.
     mov rax, 0xFFFFFF8000080000
-    and rax, -16            ; Enforce strict 16-byte alignment frame
-    mov rsp, rax            ; REMOVED 'sub rsp, 8' — keep stack 16-byte aligned for jmp!
+    and rax, -16
+    mov rsp, rax
 
     ; Assert initial SSE feature accessibility profiles: mask EM (bit 2), set MP (bit 1)
     mov rax, cr0

@@ -5,8 +5,10 @@ const bm = @import("bitmap.zig");
 const memory = @import("memory.zig");
 const vga = @import("vga.zig");
 const conv = @import("convert.zig");
+const serial = @import("drivers/serial.zig");
 
 const SCRATCH_PAGE_PHYS: usize = 0x7000;
+const TASK_STACK_PAGES: usize = 8; // 32 KiB, was 2 (8 KiB)
 
 pub const TaskState = enum {
     Ready,
@@ -104,9 +106,10 @@ pub const Scheduler = struct {
         const id = self.nextId();
 
         // 3. Allocate stack using frame allocator (avoids heap fragmentation)
-        const phys_addr = bm.allocContiguous(2) orelse return error.OutOfMemory;
+        const phys_addr = bm.allocContiguous(TASK_STACK_PAGES) orelse return error.OutOfMemory;
         const virt_addr = memory.physToVirt(phys_addr);
-        const stack_buf = @as([*]u8, @ptrFromInt(virt_addr))[0..bm.PAGE_SIZE * 2];
+        const stack_buf = @as([*]u8, @ptrFromInt(virt_addr))[0 .. bm.PAGE_SIZE * TASK_STACK_PAGES];
+        @memset(stack_buf, 0);  // wipe any stale/poisoned data before this frame is reused as a stack
 
         // 4. Set up the initial context using InterruptContext natively
         const stack_top = @intFromPtr(stack_buf.ptr) + stack_buf.len;
@@ -138,7 +141,6 @@ pub const Scheduler = struct {
             .code_mem = code_mem,
             .code_phys = code_phys,
         };
-
         return slot.?;
     }
 
@@ -217,7 +219,7 @@ pub const Scheduler = struct {
                 if (t.state == .Dead) {
                     if (t.stack_mem) |mem_slice| {
                         const phys = memory.virtToPhys(@intFromPtr(mem_slice.ptr));
-                        bm.freeContiguous(phys, 2);
+                        bm.freeContiguous(phys, mem_slice.len / bm.PAGE_SIZE);
                     }
                     if (t.code_mem) |code_slice| {
                         const phys = memory.virtToPhys(@intFromPtr(code_slice.ptr));
@@ -256,6 +258,7 @@ pub const Scheduler = struct {
         // Switch to new task
         manager.current_task_idx = next_idx;
         manager.tasks[next_idx].?.state = .Running;
+
 
         return manager.tasks[next_idx].?.stack_ptr;
     }
@@ -349,6 +352,17 @@ pub const Scheduler = struct {
                 const newline = [1]u8{'\n'};
                 vga.writeString(&newline, fg, bg);
 
+                return stack_ptr;
+            },
+            5 => { // INCREMENT_SCRATCH_BYTE — rdi=offset, rsi=amount; returns new value in rax (atomic)
+                const offset = ctx.rdi;
+                if (offset < 4096) {
+                    const scratch_virt = memory.physToVirt(SCRATCH_PAGE_PHYS + offset);
+                    const ptr = @as(*volatile u8, @ptrFromInt(scratch_virt));
+                    const new_val = ptr.* +% @as(u8, @truncate(ctx.rsi));
+                    ptr.* = new_val;
+                    ctx.rax = new_val;
+                }
                 return stack_ptr;
             },
             else => {

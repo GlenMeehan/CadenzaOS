@@ -46,6 +46,7 @@ const serial = @import("drivers/serial.zig");
 const fb = @import("framebuffer.zig");
 const apic = @import("apic.zig");
 const splash = @import("splash.zig");
+const tss = @import("tss.zig");
 
 pub const STACK_SIZE = 0x40000;         // 16 KiB stack
 pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
@@ -540,10 +541,16 @@ pub export fn kmain() noreturn {
     // Scratch page for external binaries (physical 0x7000 - 0x7FFF)
     bm.markUsedRange(0x7000, 0x8000);
 
+    // Reserve the TSS structure and its dedicated IST1 stack
+    bm.markUsedRange(0x20000, 0x25000);
+
     //Zero scratch page at boot so the counter starts clean:
     const scratch_virt = memory.physToVirt(0x7000);
     const scratch_ptr: [*]u8 = @ptrFromInt(scratch_virt);
     @memset(scratch_ptr[0..4096], 0);
+
+    //Initialise Test State Struct
+    tss.init();
 
 
     splash.updateProgress(60, "Configuring interrupts...");

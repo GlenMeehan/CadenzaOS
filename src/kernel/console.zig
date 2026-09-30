@@ -6,6 +6,9 @@
 
 const vga = @import("vga.zig");
 const serial = @import("drivers/serial.zig");
+const irupts = @import("irupts.zig");
+
+pub var console_lock = irupts.IrqSpinLock{};
 
 pub fn writeString(s: []const u8, fg: u8, bg: u8) void {
     vga.writeString(s, fg, bg);

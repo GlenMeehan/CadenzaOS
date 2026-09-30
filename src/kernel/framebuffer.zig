@@ -99,25 +99,31 @@ pub fn packColor(r: u8, g: u8, b: u8) u32 {
 
 /// Draw a single glyph at character cell (col, row) with given colours.
 fn drawGlyph(char: u8, col: u32, row: u32, fg: u8, bg: u8) void {
-    const fg_colour = palette[fg & 0x0F];
-    const bg_colour = palette[bg & 0x0F];
+    const fg_hex = palette[fg & 0x0F];
+    const fg_colour = packColor(
+        @truncate((fg_hex >> 16) & 0xFF),
+                                @truncate((fg_hex >> 8) & 0xFF),
+                                @truncate(fg_hex & 0xFF),
+    );
 
-    const px = col * font.GLYPH_WIDTH;   // pixel x start
-    const py = row * font.GLYPH_HEIGHT;  // pixel y start
+    const bg_hex = palette[bg & 0x0F];
+    const bg_colour = packColor(
+        @truncate((bg_hex >> 16) & 0xFF),
+                                @truncate((bg_hex >> 8) & 0xFF),
+                                @truncate(bg_hex & 0xFF),
+    );
+
+    const px = col * font.GLYPH_WIDTH;
+    const py = row * font.GLYPH_HEIGHT;
 
     var gy: u32 = 0;
     while (gy < font.GLYPH_HEIGHT) : (gy += 1) {
         const glyph_row = font.glyphs[@as(u32, char) * font.GLYPH_HEIGHT + gy];
         var gx: u32 = 0;
         while (gx < font.GLYPH_WIDTH) : (gx += 1) {
-            // MSB = leftmost pixel
             const bit = @as(u8, 1) << @truncate(7 - gx);
             const colour = if ((glyph_row & bit) != 0) fg_colour else bg_colour;
-
-            const offset = (py + gy) * fb_stride + (px + gx) * fb_bpp;
-            fb_ptr[offset + 0] = @truncate(colour & 0xFF);         // B
-            fb_ptr[offset + 1] = @truncate((colour >> 8)  & 0xFF); // G
-            fb_ptr[offset + 2] = @truncate((colour >> 16) & 0xFF); // R
+            plotPixel(px + gx, py + gy, colour);
         }
     }
 }
@@ -222,9 +228,13 @@ pub fn setCursorVisible(visible: bool) void {
     const start_x = cursor_col * font.GLYPH_WIDTH;
     const start_y = cursor_row * font.GLYPH_HEIGHT;
 
-    // Choose the color index: 15 (White) to draw, 0 (Black) to erase
     const colour_idx: u8 = if (visible) 15 else 0;
-    const color = palette[colour_idx & 0x0F];
+    const hex = palette[colour_idx & 0x0F];
+    const color = packColor(
+        @truncate((hex >> 16) & 0xFF),
+                            @truncate((hex >> 8) & 0xFF),
+                            @truncate(hex & 0xFF),
+    );
 
     var y = start_y + 14;
     while (y < start_y + 16) : (y += 1) {
@@ -233,17 +243,7 @@ pub fn setCursorVisible(visible: bool) void {
         var x = start_x;
         while (x < start_x + font.GLYPH_WIDTH) : (x += 1) {
             if (x >= fb_width) break;
-
-            const pixel_offset = (y * fb_stride) + (x * fb_bpp);
-
-            if (fb_bpp == 4) {
-                const ptr: *volatile u32 = @ptrCast(@alignCast(&fb_ptr[pixel_offset]));
-                ptr.* = color;
-            } else if (fb_bpp == 3) {
-                fb_ptr[pixel_offset + 0] = @truncate(color & 0xFF);         // Blue
-                fb_ptr[pixel_offset + 1] = @truncate((color >> 8) & 0xFF);  // Green
-                fb_ptr[pixel_offset + 2] = @truncate((color >> 16) & 0xFF); // Red
-            }
+            plotPixel(x, y, color);
         }
     }
 }
@@ -383,4 +383,13 @@ pub fn pause() void {
     while (true) {
         asm volatile ("hlt");
     }
+}
+/// Convert a 4-bit VGA palette index into a hardware-packed pixel colour.
+pub fn paletteColor(idx: u8) u32 {
+    const hex = palette[idx & 0x0F];
+    return packColor(
+        @truncate((hex >> 16) & 0xFF),
+                     @truncate((hex >> 8) & 0xFF),
+                     @truncate(hex & 0xFF),
+    );
 }

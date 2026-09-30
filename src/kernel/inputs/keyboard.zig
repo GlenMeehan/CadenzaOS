@@ -16,6 +16,7 @@
 //   Extended keys begin with 0xE0 and sometimes 0xF0 (Set 2 release).
 //   We track these prefixes explicitly.
 
+const std = @import("std");
 const config = @import("../config.zig");
 const root = @import("../kernel.zig");
 const term = root.term;
@@ -120,27 +121,37 @@ const BUFFER_SIZE = 64;
 
 pub const RingBuffer = struct {
     data: [BUFFER_SIZE]u8 = [_]u8{0} ** BUFFER_SIZE,
-    head: usize = 0,
-    tail: usize = 0,
+    head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
     pub fn push(self: *RingBuffer, ch: u8) bool {
-        const next_head = (self.head + 1) % BUFFER_SIZE;
-        // If the buffer is full, drop the character to prevent overwriting unread keys
-        if (next_head == self.tail) {
-            return false;
+        const current_head = self.head.load(.monotonic);
+        const current_tail = self.tail.load(.acquire);
+
+        const next_head = (current_head + 1) % BUFFER_SIZE;
+        if (next_head == current_tail) {
+            return false; // Buffer full
         }
-        self.data[self.head] = ch;
-        self.head = next_head;
+
+        self.data[current_head] = ch;
+        // Release store ensures the data write completes before head is updated
+        self.head.store(next_head, .release);
         return true;
     }
 
     pub fn pop(self: *RingBuffer) ?u8 {
-        // If head equals tail, there are no unread keys
-        if (self.head == self.tail) {
-            return null;
+        const current_tail = self.tail.load(.monotonic);
+        // Acquire load ensures we see the latest head updated by the ISR
+        const current_head = self.head.load(.acquire);
+
+        if (current_head == current_tail) {
+            return null; // Buffer empty
         }
-        const ch = self.data[self.tail];
-        self.tail = (self.tail + 1) % BUFFER_SIZE;
+
+        const ch = self.data[current_tail];
+        const next_tail = (current_tail + 1) % BUFFER_SIZE;
+        // Release store updates tail safely
+        self.tail.store(next_tail, .release);
         return ch;
     }
 };

@@ -204,7 +204,7 @@ pub fn nextLine() void {
 
 /// Set the cursor to an explicit (row, col) position.
 pub fn setCursor(row: usize, col: usize) void {
-    // Always update local VGA trackers for fallback visibility
+    asm volatile ("cli");
     cursor_row = row;
     cursor_col = col;
 
@@ -214,6 +214,7 @@ pub fn setCursor(row: usize, col: usize) void {
     } else {
         updateCursorHardware();
     }
+    asm volatile ("sti");
 }
 
 /// Move cursor left by one column (no wrapping).

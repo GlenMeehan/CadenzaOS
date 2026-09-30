@@ -177,10 +177,12 @@ pub fn takeLine() []const u8 {
 /// Drains all characters currently waiting in the keyboard's circular buffer
 /// and processes them through the terminal's line-editor and UI state machine.
 pub fn pollKeyboard() void {
+    //asm volatile ("cli");
     // Continuously pop from the ring buffer until it returns null (empty)
     while (keyboard.readChar()) |ch| {
         // Feed the raw character to your existing line processor
         processChar(ch);
+    //asm volatile ("sti");
     }
 }
 
@@ -523,9 +525,7 @@ fn deletePreviousWord() void {
 // -----------------------------------------------------------------------------
 
 fn loadHistoryLine() void {
-    // Only proceed if browsing
     if (history_index < 0) return;
-
     // Clear current input line visually
     var i: usize = 0;
     while (i < line_len) : (i += 1) {
@@ -533,21 +533,14 @@ fn loadHistoryLine() void {
         vga.putChar(' ', 15, 0);
     }
 
-    // Compute safe signed index
     const head: isize = @intCast(history_head);
     const max:  isize = @intCast(MAX_HISTORY);
     const hidx: isize = head + max - 1 - history_index;
-
-    // Wrap modulo safely
     const wrapped: isize = @mod(hidx, max);
-
-    // Final index for array
     const idx: usize = @intCast(wrapped);
 
-    // Grab the history entry
     const src = history[idx];
 
-    // Copy into line buffer
     var new_len: usize = 0;
     while (new_len < MAX_LINE and src[new_len] != 0) : (new_len += 1) {}
     line_len = new_len;
@@ -558,10 +551,8 @@ fn loadHistoryLine() void {
         line_buffer[i] = src[i];
     }
 
-    // Redraw line
     redrawLine();
 
-    // Set cursor at end
     vga.setCursor(cursor_row, prompt_start + cursor_pos);
 }
 
@@ -569,7 +560,6 @@ fn historyUp() void {
     if (history_len == 0) return;
 
     if (history_index == -1) {
-        // First time entering history browsing
         saved_line_len = line_len;
         _ = mem.memcpy(saved_line[0..line_len].ptr, line_buffer[0..line_len].ptr, line_len);
         history_index = 0;
