@@ -288,6 +288,8 @@ pub export fn kmain() noreturn {
             //vga.clearScreen(0, 0);
     // IDT must be initialized early
     idt.init();
+    //Initialise Test State Struct
+    tss.init();
 
     //vga.writeString("Probing Disk...\n", 15, 0);
 
@@ -428,10 +430,10 @@ pub export fn kmain() noreturn {
     // -------------------------------------------------------------------------
     //  IDT / PIC / MOUSE / INTERRUPTS
     // -------------------------------------------------------------------------
-    idt.setGate(32, @intFromPtr(&irq0_stub));
-    idt.setGate(33, @intFromPtr(&irq1_stub));
-    idt.setGate(44, @intFromPtr(&irq12_stub));
-    idt.setGate(0x80, @intFromPtr(&isr80_stub));
+    idt.setGateIst(32, @intFromPtr(&irq0_stub), 1);   // timer — needs the copy-out from step 2
+    idt.setGateIst(33, @intFromPtr(&irq1_stub), 1);   // keyboard — no copy needed, just a safe place to run
+    idt.setGateIst(44, @intFromPtr(&irq12_stub), 1);  // mouse — same
+    idt.setGate(0x80, @intFromPtr(&isr80_stub));      // unchanged — already safe via the interrupt gate
 
     pic.remap(32, 40);
     pic.unmaskIrq(@as(u8, 0));  // timer
@@ -542,16 +544,12 @@ pub export fn kmain() noreturn {
     bm.markUsedRange(0x7000, 0x8000);
 
     // Reserve the TSS structure and its dedicated IST1 stack
-    bm.markUsedRange(0x20000, 0x25000);
+    bm.markUsedRange(0x20000, 0x29000);
 
     //Zero scratch page at boot so the counter starts clean:
     const scratch_virt = memory.physToVirt(0x7000);
     const scratch_ptr: [*]u8 = @ptrFromInt(scratch_virt);
     @memset(scratch_ptr[0..4096], 0);
-
-    //Initialise Test State Struct
-    tss.init();
-
 
     splash.updateProgress(60, "Configuring interrupts...");
     splash.delay_crude(20_000_000);

@@ -31,6 +31,7 @@ const task = @import("task.zig");
 const bitmap = @import("bitmap.zig");
 const memory = @import("memory.zig");
 const serial = @import("drivers/serial.zig");
+const binfmt = @import("binfmt.zig");
 
 // --------------------------------
 // Task registry
@@ -210,17 +211,21 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
 
         // 1. This halts and yields to Task A back-and-forth continuously
         // until you press Enter!
+        serial.writeString("SH-1: calling takeLine\n");
         const line = term.takeLine();
+        serial.writeString("SH-2: takeLine returned\n");
 
         // 2. The microsecond Enter is pressed, execute and repeat cleanly
         //conductor.tick();
         term.commitHistory();
+        serial.writeString("SH-3: commitHistory done\n");
         execute(line);
         term.consumeLine();
     }
 }
 
 fn execute(line: []const u8) void {
+    serial.writeString("EX-0: execute entered\n");
     cmd_fba.reset();  // ← reset before every command
     const current_time = irupts.ticks; //used to monitor rapidity of keystrokes
     const tokens = parseArgs(line);
@@ -1170,7 +1175,11 @@ fn cmd_spawn(args: [][]const u8) void {
         };
         serial.writeString("SPAWN-C: readFileMeta ok\n");
         const file_size = real_meta.size_bytes;
-
+        if (file_size < @sizeOf(binfmt.BinHeader)) {
+            vga.writeString("Error: file too small to be a program\n", 12, 0);
+            asm volatile ("sti");
+            return;
+        }
         // 3. Physical Frame Allocation — round up to whole 4 KiB pages
         const frames_needed = (file_size + bitmap.PAGE_SIZE - 1) / bitmap.PAGE_SIZE;
         const frame1 = bitmap.allocContiguous(frames_needed) orelse {
@@ -1193,8 +1202,17 @@ fn cmd_spawn(args: [][]const u8) void {
             return;
         };
         serial.writeString("SPAWN-E: readFile ok\n");
-        // 6. Reinterpret the memory buffer start pointer into an executable C-convention function pointer
-        const entry_fn = @as(*const fn () callconv(.c) void, @ptrCast(prog_buf.ptr));
+        // 6. Validate the header, then jump to base + entry_offset
+        const hdr = binfmt.parse(prog_buf) catch |e| {
+            vga.writeString("Error: bad program header: ", 12, 0);
+            vga.writeString(@errorName(e), 12, 0);
+            vga.putChar('\n', 12, 0);
+            bitmap.freeContiguous(frame1, frames_needed);
+            asm volatile ("sti");
+            return;
+        };
+        const entry_fn: *const fn () callconv(.c) void =
+        @ptrFromInt(@intFromPtr(prog_buf.ptr) + hdr.entry_offset);
         // 7. Hand the execution address over to your preemptive scheduler engine
             serial.writeString("SPAWN-F: calling registerDynamicTask\n");
         _ = scheduler.manager.registerDynamicTask(entry_fn, code_mem_slice, frame1) catch {

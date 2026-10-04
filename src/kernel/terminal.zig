@@ -177,12 +177,12 @@ pub fn takeLine() []const u8 {
 /// Drains all characters currently waiting in the keyboard's circular buffer
 /// and processes them through the terminal's line-editor and UI state machine.
 pub fn pollKeyboard() void {
-    //asm volatile ("cli");
     // Continuously pop from the ring buffer until it returns null (empty)
     while (keyboard.readChar()) |ch| {
         // Feed the raw character to your existing line processor
+        asm volatile ("cli");
         processChar(ch);
-    //asm volatile ("sti");
+        asm volatile ("sti");
     }
 }
 
@@ -215,17 +215,16 @@ pub fn commitHistory() void {
 }
 
 pub fn handleKeyEvent(ev: KeyEvent) void {
-    asm volatile ("cli"); // Guard the state machine change
     switch (ev) {
         .char => |c| {
             switch (c) {
-                0x01 => moveCursorToStart(),   // Ctrl-A
-                0x05 => moveCursorToEnd(),     // Ctrl-E
-                0x15 => killToStart(),         // Ctrl-U
-                0x0B => killToEnd(),           // Ctrl-K
-                0x03 => abortLine(),           // Ctrl-C
-                0x0C => clearScreen(),         // Ctrl-L
-                0x17 => deletePreviousWord(),  // Ctrl-W
+                0x01 => moveCursorToStart(),
+                0x05 => moveCursorToEnd(),
+                0x15 => killToStart(),
+                0x0B => killToEnd(),
+                0x03 => abortLine(),
+                0x0C => clearScreen(),
+                0x17 => deletePreviousWord(),
                 else => processChar(c),
             }
         },
@@ -241,7 +240,6 @@ pub fn handleKeyEvent(ev: KeyEvent) void {
             .Delete => deleteUnderCursor(),
         },
     }
-    asm volatile ("sti"); // Restore preemption
 }
 
 pub fn startNewLine() void {

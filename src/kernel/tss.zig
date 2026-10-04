@@ -3,7 +3,7 @@
 const memory = @import("memory.zig");
 
 const TSS_PHYS_ADDR: usize = 0x20000;
-const IST1_STACK_TOP: usize = 0x25000;
+const IST1_STACK_TOP: usize = 0x29000; // was 0x25000 — now 32 KiB, was 16 KiB
 
 pub const TSS = packed struct {
     reserved0: u32 = 0,

@@ -77,10 +77,19 @@ pub const Scheduler = struct {
     /// Takes the currently executing execution thread and registers it into a task slot.
     /// This is perfect for turning kmain/shell into a managed task without messing with stacks.
     pub fn registerCurrentThreadAsTask(self: *Scheduler, slot: usize, id: usize) void {
+        const phys_addr = bm.allocContiguous(TASK_STACK_PAGES) orelse @panic("OutOfMemory allocating shell stack");
+        const virt_addr = memory.physToVirt(phys_addr);
+        const stack_buf = @as([*]u8, @ptrFromInt(virt_addr))[0 .. bm.PAGE_SIZE * TASK_STACK_PAGES];
+        @memset(stack_buf, 0);
+
         self.tasks[slot] = Task{
             .id = id,
-            .stack_ptr = 0, // Will be captured accurately on its very first yield() call
+            .stack_ptr = 0, // still captured on first preemption
             .state = .Running,
+            .wake_tick = 0,
+            .stack_mem = stack_buf,
+            .code_mem = null,
+            .code_phys = 0,
         };
     }
 
@@ -250,16 +259,37 @@ pub const Scheduler = struct {
 
         if (manager.tasks[current_old]) |*curr| {
             if (curr.state == .Running) curr.state = .Ready;
+
+            if (curr.stack_mem) |mem| {
+                const ctx_size = @sizeOf(InterruptContext);
+                const raw_dest = @intFromPtr(mem.ptr) + mem.len - ctx_size;
+                const dest_addr = raw_dest & ~@as(usize, 15);
+                const dest: [*]u8 = @ptrFromInt(dest_addr);
+                const src: [*]const u8 = @ptrFromInt(interrupted_stack_ptr);
+                @memcpy(dest[0..ctx_size], src[0..ctx_size]);
+                curr.stack_ptr = dest_addr;
+            } else {
+                curr.stack_ptr = interrupted_stack_ptr;
+            }
         }
 
         // Save old stack pointer raw
-        manager.tasks[current_old].?.stack_ptr = interrupted_stack_ptr;
+        //manager.tasks[current_old].?.stack_ptr = interrupted_stack_ptr;
 
         // Switch to new task
         manager.current_task_idx = next_idx;
         manager.tasks[next_idx].?.state = .Running;
 
-
+        var dbuf: [16]u8 = undefined;
+        var dbuf2: [16]u8 = undefined;
+        var dbuf3: [16]u8 = undefined;
+        var line: [80]u8 = undefined;
+        const msg = std.fmt.bufPrint(&line, "SW from={s} to={s} sp=0x{s}\n", .{
+            conv.toHex(u64, current_old, &dbuf),
+                                     conv.toHex(u64, next_idx, &dbuf2),
+                                     conv.toHex(u64, manager.tasks[next_idx].?.stack_ptr, &dbuf3),
+        }) catch "SW: fmt error\n";
+        serial.writeString(msg);
         return manager.tasks[next_idx].?.stack_ptr;
     }
 

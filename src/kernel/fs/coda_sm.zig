@@ -205,6 +205,8 @@ pub const SpaceManager = struct {
 
         // Pack all extents into a buffer and write to the following block
         var buf: [4096]u8 = undefined;  // TODO: derive from device.block_size
+        @memset(&buf, 0);
+        if (self.free_list.items.len * @sizeOf(Extent) > buf.len) return error.SpaceMapTooLarge;
         var offset: usize = 0;
 
         for (self.free_list.items) |ext| {

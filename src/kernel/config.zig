@@ -202,9 +202,8 @@ pub var kernel_allocator: std.mem.Allocator = undefined;
 
 pub const Version = struct {
     pub const major: u32 = 0;
-    pub const minor: u32 = 2;
-    pub const patch: u32 = 1; //Find file reads real meta data rather than hardcoded - tested prog1, next test and expanded prog1
-    //the atomic scratch-byte syscall, the EXIT slot/memory leak, the cursor race across task.zig/terminal.zig, the TSS/GDT groundwork, and now the confirmed stack-overflow diagnosis)
+    pub const minor: u32 = 4;
+    pub const patch: u32 = 0;
 };
 
 pub const build = struct {

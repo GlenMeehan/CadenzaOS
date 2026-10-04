@@ -80,11 +80,11 @@ const exception_names = [_][]const u8{
 //  IDT ENTRY BUILDER
 // -----------------------------------------------------------------------------
 
-fn setIDTEntry(index: u8, handler: u64, selector: u16, flags: u8) void {
+fn setIDTEntry(index: u8, handler: u64, selector: u16, flags: u8, ist: u8) void {
     idt[index] = IDTEntry{
         .offset_low  = @truncate(handler & 0xFFFF),
         .selector    = selector,
-        .ist         = 0,
+        .ist         = ist,
         .flags       = flags,
         .offset_mid  = @truncate((handler >> 16) & 0xFFFF),
         .offset_high = @truncate((handler >> 32) & 0xFFFFFFFF),
@@ -101,17 +101,17 @@ pub fn init() void {
     const flags: u8 = 0x8E;        // present, ring 0, interrupt gate
 
     // Install exception handlers
-    setIDTEntry(0,  @intFromPtr(&exception0_asm),  cs_selector, flags);
-    setIDTEntry(1,  @intFromPtr(&exception1_asm),  cs_selector, flags);
-    setIDTEntry(2,  @intFromPtr(&exception2_asm),  cs_selector, flags);
-    setIDTEntry(3,  @intFromPtr(&exception3_asm),  cs_selector, flags);
-    setIDTEntry(4,  @intFromPtr(&exception4_asm),  cs_selector, flags);
-    setIDTEntry(5,  @intFromPtr(&exception5_asm),  cs_selector, flags);
-    setIDTEntry(6,  @intFromPtr(&exception6_asm),  cs_selector, flags);
-    setIDTEntry(7,  @intFromPtr(&exception7_asm),  cs_selector, flags);
-    setIDTEntry(8,  @intFromPtr(&exception8_asm),  cs_selector, flags);
-    setIDTEntry(13, @intFromPtr(&exception13_asm), cs_selector, flags);
-    setIDTEntry(14, @intFromPtr(&exception14_asm), cs_selector, flags);
+    setIDTEntry(0,  @intFromPtr(&exception0_asm),  cs_selector, flags, 0);
+    setIDTEntry(1,  @intFromPtr(&exception1_asm),  cs_selector, flags, 0);
+    setIDTEntry(2,  @intFromPtr(&exception2_asm),  cs_selector, flags, 0);
+    setIDTEntry(3,  @intFromPtr(&exception3_asm),  cs_selector, flags, 0);
+    setIDTEntry(4,  @intFromPtr(&exception4_asm),  cs_selector, flags, 0);
+    setIDTEntry(5,  @intFromPtr(&exception5_asm),  cs_selector, flags, 0);
+    setIDTEntry(6,  @intFromPtr(&exception6_asm),  cs_selector, flags, 0);
+    setIDTEntry(7,  @intFromPtr(&exception7_asm),  cs_selector, flags, 0);
+    setIDTEntry(8,  @intFromPtr(&exception8_asm),  cs_selector, flags, 0);
+    setIDTEntry(13, @intFromPtr(&exception13_asm), cs_selector, flags, 0);
+    setIDTEntry(14, @intFromPtr(&exception14_asm), cs_selector, flags, 0);
 
     const idtr = IDTR{
         .limit = @sizeOf(@TypeOf(idt)) - 1,
@@ -176,9 +176,13 @@ pub export fn exceptionHandlerWrapper(stack_ptr: u64) noreturn {
 // -----------------------------------------------------------------------------
 
 pub fn setGate(vector: u8, handler_addr: u64) void {
-    const cs_selector: u16 = 0x18; // kernel code segment (GDT index 3)
-    const flags: u8 = 0x8E;        // present, ring 0, interrupt gate
-    setIDTEntry(vector, handler_addr, cs_selector, flags);
+    setGateIst(vector, handler_addr, 0);
+}
+
+pub fn setGateIst(vector: u8, handler_addr: u64, ist: u8) void {
+    const cs_selector: u16 = 0x18;
+    const flags: u8 = 0x8E;
+    setIDTEntry(vector, handler_addr, cs_selector, flags, ist);
 }
 
 pub fn setIrqHandler(irq: u8, handler: *const void) void {
