@@ -1,13 +1,22 @@
 ; src/kernel/interrupts/irq_stubs.asm
 ;
 ; IRQ and exception stubs for x86_64 long mode.
+;
+; Responsibilities:
+;   • Entry points for hardware IRQ handlers
+;   • Entry points for CPU exception handlers
+;   • Common register save/restore logic
+;   • Transfer of control from assembly to Zig handlers
+;
 ; Provides:
 ;   • irq0_stub, irq1_stub, irq12_stub
 ;   • exception0_asm ... exception14_asm
 ;   • exception_common (calls Zig wrapper)
 ;
 ; NOTE:
-;   load_idt is NOT defined here — it lives in arch_util.s.
+;   load_idt is not defined here. It is implemented separately in
+;   arch_util.s because it is used outside the interrupt stub layer.
+
 extern load_idt
 
 [BITS 64]
@@ -15,9 +24,8 @@ extern load_idt
 ; ---------------------------------------------------------------------------
 ;  EXTERNAL SYMBOLS
 ; ---------------------------------------------------------------------------
-
-
-
+;
+; Implemented in Zig and called once processor state has been saved.
 
 extern exceptionHandlerWrapper
 
@@ -47,6 +55,12 @@ global exception14_asm
 ; ---------------------------------------------------------------------------
 ;  REGISTER SAVE/RESTORE MACROS
 ; ---------------------------------------------------------------------------
+;
+; These macros preserve the general-purpose register state before
+; control is transferred to higher-level Zig handlers.
+;
+; Register order must remain symmetrical between PUSH_REGS and POP_REGS.
+; Any change to one macro must be mirrored in the other.
 
 %macro PUSH_REGS 0
     push r15
@@ -89,7 +103,10 @@ global exception14_asm
 ; ---------------------------------------------------------------------------
 
 irq0_stub:
-    ; 1. Push registers in the exact order Zig's TaskContext expects
+    ; 1. Save the current task context.
+    ;
+    ; Register order must exactly match the layout expected by the
+    ; Zig TaskContext structure and the scheduler restore path.
     push r15
     push r14
     push r13
@@ -106,17 +123,21 @@ irq0_stub:
     push rbx
     push rax
 
-    ; 2. Call your passive clock increment and uptime display function
+    ; 2. Run the timer IRQ handler.
+    ;    This typically updates kernel timekeeping and other
+    ;    tick-driven services.
     call irq0_handler
 
-    ; 3. Pass the current stack pointer to the preemption engine
+    ; 3. Pass the saved context pointer to the scheduler.
+    ;    rdi = pointer to current TaskContext on the stack.
     mov rdi, rsp
     call preempt_handler
 
-    ; 4. Switch stacks to the chosen task's stack pointer
+    ; 4. Switch to the stack belonging to the selected task.
+    ;    The scheduler returns the next task's saved stack pointer in rax.
     mov rsp, rax
 
-    ; 5. Pop all 15 registers off the target stack
+    ; 5. Restore the selected task's register state.
     pop rax
     pop rbx
     pop rcx
@@ -133,10 +154,13 @@ irq0_stub:
     pop r14
     pop r15
 
-    ; 6. True hardware interrupt return
+    ; 6. Return from the hardware interrupt.
+    ;    Execution resumes in the selected task.
     iretq
 
 isr80_stub:
+    ; Save caller context before entering the syscall handler.
+    ; Uses the same layout as TaskContext for consistency.
     push r15
     push r14
     push r13
@@ -153,11 +177,14 @@ isr80_stub:
     push rbx
     push rax
 
+    ; Pass a pointer to the saved register frame.
     mov rdi, rsp
     call syscall_handler
 
+    ; Switch to the context returned by the syscall layer.
     mov rsp, rax
 
+    ; Restore the selected context.
     pop rax
     pop rbx
     pop rcx
@@ -177,12 +204,14 @@ isr80_stub:
     iretq
 
 irq1_stub:
+    ; Keyboard IRQ.
     PUSH_REGS
     call irq1_handler
     POP_REGS
     iretq
 
 irq12_stub:
+    ; PS/2 mouse IRQ.
     PUSH_REGS
     call irq12_handler
     POP_REGS
@@ -191,13 +220,21 @@ irq12_stub:
 ; ---------------------------------------------------------------------------
 ;  EXCEPTION STUBS
 ; ---------------------------------------------------------------------------
-; For exceptions WITHOUT CPU-pushed error code:
-;     push 0          ; dummy error code
-;     push <num>      ; exception number
 ;
-; For exceptions WITH CPU-pushed error code (8, 13, 14):
-;     CPU pushes error code
-;     we push only the exception number
+; The common exception handler expects the stack layout:
+;
+;     exception_number
+;     error_code
+;
+; Exceptions without a CPU-supplied error code push a dummy zero.
+;
+; Exceptions with a CPU-supplied error code:
+;     8   = Double Fault
+;     13  = General Protection Fault
+;     14  = Page Fault
+;
+; already have an error code on the stack, so only the exception
+; number is added before entering exception_common.
 
 exception0_asm:
     push qword 0
@@ -240,17 +277,17 @@ exception7_asm:
     jmp exception_common
 
 exception8_asm:
-    ; CPU already pushed error code
+    ; CPU already pushed an error code.
     push qword 8
     jmp exception_common
 
 exception13_asm:
-    ; CPU already pushed error code
+    ; CPU already pushed an error code.
     push qword 13
     jmp exception_common
 
 exception14_asm:
-    ; CPU already pushed error code
+    ; CPU already pushed an error code.
     push qword 14
     jmp exception_common
 
@@ -259,7 +296,8 @@ exception14_asm:
 ; ---------------------------------------------------------------------------
 
 exception_common:
-    ; Save registers
+
+    ; Save caller-saved registers that may be modified by Zig code.
     push rax
     push rcx
     push rdx
@@ -270,19 +308,26 @@ exception_common:
     push r10
     push r11
 
-    ; --- ALIGNMENT FIX ---
+    ; Ensure the stack is 16-byte aligned before making a call
+    ; into Zig code, as required by the SysV x86_64 ABI.
     mov rbp, rsp
-    sub rsp, 8          ; ensure 16-byte alignment
+    sub rsp, 8
 
+    ; Pass a pointer to the exception frame:
+    ;
+    ;     exception_number
+    ;     error_code
+    ;
+    ; plus any CPU-supplied interrupt frame beneath it.
     mov rdi, rsp
-    add rdi, 8          ; point to (num, error_code)
+    add rdi, 8
 
     call exceptionHandlerWrapper
 
-    add rsp, 8          ; remove alignment padding
-    ; --- END ALIGNMENT FIX ---
+    ; Remove temporary alignment padding.
+    add rsp, 8
 
-    ; Restore registers
+    ; Restore preserved registers.
     pop r11
     pop r10
     pop r9
@@ -293,5 +338,11 @@ exception_common:
     pop rcx
     pop rax
 
-    add rsp, 16         ; pop (error_code, num)
+    ; Discard:
+    ;     exception_number
+    ;     error_code
+    ;
+    ; leaving the original CPU interrupt frame for iretq.
+    add rsp, 16
+
     iretq

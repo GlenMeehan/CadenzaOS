@@ -1,57 +1,81 @@
 // src/kernel/fs/block_device.zig
 //
 // Generic block device abstraction.
-// The filesystem never talks directly to ATA, RAM disks, NVMe, etc.
-// Instead, every storage backend implements this interface.
+//
+// The filesystem never communicates directly with ATA, RAM disks,
+// NVMe devices, or other storage implementations. Instead, every
+// backend exposes a common BlockDevice interface.
 //
 // A BlockDevice guarantees:
-//   • fixed-size blocks (e.g. 512 bytes)
-//   • block-aligned reads/writes
-//   • a stable, minimal error surface
+//   • fixed-size addressable blocks
+//   • block-aligned read/write operations
+//   • a small, stable error surface
 //
-// This keeps the filesystem simple and backend‑agnostic.
+// This keeps filesystem code simple, portable, and backend-agnostic.
 
 pub const BlockDeviceError = error{
-    OutOfRange,   // LBA outside device bounds
-    IoError,      // Backend read/write failure
+    OutOfRange,   // Requested LBA lies outside the device address space
+    IoError,      // Backend read/write operation failed
 };
 
 pub const BlockDevice = struct {
-    /// Size of a single block in bytes.
-    /// Filesystems assume this is constant for the lifetime of the device.
+
+    /// Size of a single logical block in bytes.
+    ///
+    /// Filesystems assume this value remains constant for the lifetime
+    /// of the device instance.
     block_size: usize,
 
     /// Total number of addressable blocks.
-    /// The filesystem must not read/write beyond this.
+    ///
+    /// Valid block indices are:
+    ///     0 ..< total_blocks
     total_blocks: u64,
 
-    /// Opaque pointer to the concrete implementation (ATA, RAM disk, etc.).
-    /// The backend decides what this points to.
+    /// Opaque pointer to backend-specific state.
+    ///
+    /// The concrete storage implementation owns and interprets this
+    /// pointer (ATA device, RAM disk, NVMe controller, etc.).
     ctx: *anyopaque,
 
-    /// Backend-provided read function.
-    /// Must read whole blocks: buf.len % block_size == 0.
-    readBlocks: *const fn (ctx: *anyopaque, lba: u64, buf: []u8)
-    BlockDeviceError!void,
+    /// Backend-provided block read implementation.
+    ///
+    /// The backend must honour block_size and read complete blocks.
+    /// Callers are expected to provide a buffer whose length is a
+    /// multiple of block_size.
+    readBlocks: *const fn (
+        ctx: *anyopaque,
+        lba: u64,
+        buf: []u8,
+    ) BlockDeviceError!void,
 
-    /// Backend-provided write function.
-    /// Must write whole blocks: buf.len % block_size == 0.
-    writeBlocks: *const fn (ctx: *anyopaque, lba: u64, buf: []const u8)
-    BlockDeviceError!void,
+    /// Backend-provided block write implementation.
+    ///
+    /// The backend must honour block_size and write complete blocks.
+    /// Callers are expected to provide a buffer whose length is a
+    /// multiple of block_size.
+    writeBlocks: *const fn (
+        ctx: *anyopaque,
+        lba: u64,
+        buf: []const u8,
+    ) BlockDeviceError!void,
 };
 
-/// Convenience: return total block count.
+/// Convenience helper returning the device capacity in blocks.
 pub fn blockCount(dev: *const BlockDevice) u64 {
     return dev.total_blocks;
 }
 
 /// High-level read wrapper.
-/// Performs invariant checks before calling backend.
+///
+/// Enforces interface invariants before delegating the request to the
+/// underlying storage backend.
 pub fn read(self: BlockDevice, lba: u64, buf: []u8) !void {
-    // Enforce block alignment at the interface boundary.
+
+    // Enforce block alignment at the abstraction boundary.
     if (buf.len % self.block_size != 0)
         return error.InvalidBufferSize;
 
-    // Delegate to backend.
+    // Delegate the actual I/O operation to the backend.
     return self.readBlocks(self.ctx, lba, buf);
 }

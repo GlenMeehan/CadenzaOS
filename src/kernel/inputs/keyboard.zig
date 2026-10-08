@@ -1,20 +1,29 @@
 // src/kernel/input/keyboard.zig
 //
 // PS/2 keyboard handler (Set 1 scancodes).
-// Converts raw scancodes → KeyEvent (ascii or special).
+//
+// Converts raw keyboard scancodes into higher-level input events
+// (ASCII characters or special keys).
+//
 // Handles:
 //   • Shift / Ctrl / Alt modifiers
-//   • Extended keys (E0-prefixed)
+//   • Extended (E0-prefixed) keys
 //   • Ctrl-letter combinations
-//   • Arrow keys, Home/End, Delete
+//   • Navigation keys (arrows, Home, End, Delete)
 //
 // NOTE:
-//   The keyboard hardware sends *make* (press) and *break* (release) codes.
-//   Make = scancode
-//   Break = scancode | 0x80
 //
-//   Extended keys begin with 0xE0 and sometimes 0xF0 (Set 2 release).
-//   We track these prefixes explicitly.
+//   The keyboard generates separate press and release events:
+//
+//       Make  = key pressed
+//       Break = key released
+//
+//   For Set 1 scancodes:
+//       Break = Make | 0x80
+//
+//   Extended keys begin with the 0xE0 prefix and may also involve
+//   additional release prefixes depending on the device. Prefix
+//   state is tracked explicitly during scancode decoding.
 
 const std = @import("std");
 const config = @import("../config.zig");
@@ -22,8 +31,16 @@ const root = @import("../kernel.zig");
 const term = root.term;
 
 // -----------------------------------------------------------------------------
-// ASCII keymaps (Set 1 scancodes → ASCII)
+// ASCII keymaps (Set 1 scancodes -> ASCII)
 // -----------------------------------------------------------------------------
+//
+// These tables provide direct translation from Set 1 keyboard scancodes
+// to printable ASCII characters.
+//
+// KEYMAP         -> unmodified keys
+// KEYMAP_SHIFTED -> keys while Shift is active
+//
+// Entries that do not produce printable characters are left as null.
 
 pub const KEYMAP: [128]?u8 = blk: {
     var map: [128]?u8 = .{null} ** 128;
@@ -39,13 +56,13 @@ pub const KEYMAP: [128]?u8 = blk: {
     map[0x2F] = 'v'; map[0x11] = 'w'; map[0x2D] = 'x';
     map[0x15] = 'y'; map[0x2C] = 'z';
 
-    // Numbers row
+    // Number row
     map[0x0B] = '0'; map[0x02] = '1'; map[0x03] = '2';
     map[0x04] = '3'; map[0x05] = '4'; map[0x06] = '5';
     map[0x07] = '6'; map[0x08] = '7'; map[0x09] = '8';
     map[0x0A] = '9';
 
-    // Whitespace + control
+    // Whitespace and control characters
     map[0x39] = ' ';     // Space
     map[0x1C] = '\n';    // Enter
     map[0x0E] = '\x08';  // Backspace
@@ -60,6 +77,10 @@ pub const KEYMAP: [128]?u8 = blk: {
     break :blk map;
 };
 
+/// Shift-modified version of KEYMAP.
+///
+/// Produces uppercase letters and the shifted variants of symbol keys
+/// according to the US QWERTY keyboard layout.
 pub const KEYMAP_SHIFTED: [128]?u8 = blk: {
     var map: [128]?u8 = .{null} ** 128;
 
@@ -80,7 +101,7 @@ pub const KEYMAP_SHIFTED: [128]?u8 = blk: {
     map[0x08] = '&'; map[0x09] = '*'; map[0x0A] = '(';
     map[0x0B] = ')';
 
-    // Whitespace + control
+    // Whitespace and control characters
     map[0x39] = ' ';
     map[0x1C] = '\n';
     map[0x0E] = '\x08';
@@ -98,15 +119,21 @@ pub const KEYMAP_SHIFTED: [128]?u8 = blk: {
 // -----------------------------------------------------------------------------
 // Keyboard state
 // -----------------------------------------------------------------------------
+//
+// Modifier state is tracked globally so incoming scancodes can be
+// interpreted in the context of currently held keys.
 
 var shift_down = false;
 var ctrl_down = false;
 var alt_down = false;
 
-// Extended key tracking:
-//   0xE0 = extended prefix
-//   0xF0 = release prefix (Set 2)
-// We track these so the next scancode is interpreted correctly.
+// Extended key tracking.
+//
+// 0xE0 indicates that the next scancode belongs to an extended key.
+// Some keyboards may also emit 0xF0 as part of release sequences.
+//
+// These flags allow multi-byte scancode sequences to be decoded
+// correctly across successive interrupts.
 var extended = false;
 var extended_release = false;
 
@@ -117,6 +144,13 @@ var extended_release = false;
 // -----------------------------------------------------------------------------
 // Circular Input Queue (Ring Buffer)
 // -----------------------------------------------------------------------------
+//
+// Bridges the interrupt handler and higher-level consumers.
+//
+// The keyboard ISR pushes characters into the queue while tasks pull
+// them out asynchronously. Atomic head/tail indices provide simple
+// single-producer/single-consumer synchronisation.
+
 const BUFFER_SIZE = 64;
 
 pub const RingBuffer = struct {
@@ -124,24 +158,36 @@ pub const RingBuffer = struct {
     head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
+    /// Attempt to append a character to the queue.
+    ///
+    /// Returns false if the buffer is full.
     pub fn push(self: *RingBuffer, ch: u8) bool {
         const current_head = self.head.load(.monotonic);
         const current_tail = self.tail.load(.acquire);
 
         const next_head = (current_head + 1) % BUFFER_SIZE;
+
         if (next_head == current_tail) {
             return false; // Buffer full
         }
 
         self.data[current_head] = ch;
-        // Release store ensures the data write completes before head is updated
+
+        // Release ordering guarantees the character write is visible
+        // before the updated head index becomes observable.
         self.head.store(next_head, .release);
+
         return true;
     }
 
+    /// Remove and return the next queued character.
+    ///
+    /// Returns null if the queue is empty.
     pub fn pop(self: *RingBuffer) ?u8 {
         const current_tail = self.tail.load(.monotonic);
-        // Acquire load ensures we see the latest head updated by the ISR
+
+        // Acquire ordering ensures visibility of writes performed
+        // before the producer advanced head.
         const current_head = self.head.load(.acquire);
 
         if (current_head == current_tail) {
@@ -150,37 +196,50 @@ pub const RingBuffer = struct {
 
         const ch = self.data[current_tail];
         const next_tail = (current_tail + 1) % BUFFER_SIZE;
-        // Release store updates tail safely
+
+        // Release ordering safely publishes the new tail position.
         self.tail.store(next_tail, .release);
+
         return ch;
     }
 };
 
-// Global instance to bridge interrupts and tasks
+// Global queue used to transfer keyboard input from interrupt context
+// to normal kernel code.
 pub var input_queue = RingBuffer{};
 
-/// Pulls the next available character from the circular input buffer.
-/// Returns the ASCII character if one is waiting, or null if the buffer is empty.
+/// Retrieve the next available character from the keyboard queue.
+///
+/// Returns null if no input is currently available.
 pub fn readChar() ?u8 {
     return input_queue.pop();
 }
 
+/// Most recently generated character.
+///
+/// Retained for compatibility with older code paths that still access
+/// keyboard state directly rather than using the input queue.
 pub var last_char: u8 = 0;
 
+/// Process a single keyboard scancode.
+///
+/// Converts raw PS/2 input into either queued ASCII characters or
+/// higher-level special-key events.
 pub fn handleScancode(scancode: u8) void {
-    // 0xE0 = extended key prefix
+
+    // Start of an extended-key sequence.
     if (scancode == 0xE0) {
         extended = true;
         return;
     }
 
-    // 0xF0 = release prefix (only appears after 0xE0 in Set 2)
+    // Release prefix observed in some extended-key sequences.
     if (extended and scancode == 0xF0) {
         extended_release = true;
         return;
     }
 
-    // If we are in an extended sequence, handle it separately
+    // Extended keys are decoded separately from the standard keymap.
     if (extended) {
         handleExtended(scancode);
         extended = false;
@@ -188,7 +247,7 @@ pub fn handleScancode(scancode: u8) void {
         return;
     }
 
-    // Non‑ASCII special keys (ESC, Tab)
+    // Non-ASCII special keys handled directly.
     switch (scancode) {
         0x01 => { term.handleKeyEvent(.{ .special = .Escape }); return; },
         0x0F => { term.handleKeyEvent(.{ .special = .Tab }); return; },
@@ -197,17 +256,22 @@ pub fn handleScancode(scancode: u8) void {
 
     updateModifiers(scancode);
 
-    // ASCII mapping
+    // Translate printable keys through the active keymap.
     if (scancodeToAscii(scancode)) |ch| {
-        const final_ch = if (ctrl_down) (ch & 0x1F) else ch;
+        const final_ch = if (ctrl_down)
+        (ch & 0x1F) // Convert Ctrl+A..Ctrl+Z into control characters
+        else
+            ch;
 
-        // 1. Keep tracking memory variable for now if other systems need it
+        // Preserve legacy access pattern.
         last_char = final_ch;
 
-        // 2. MODIFIED: Push straight into the ring buffer queue instead of calling UI directly
+        // Queue the character for later consumption outside
+        // interrupt context.
         _ = input_queue.push(final_ch);
 
-        // 3. UI update removed from interrupt context
+        // Character delivery via KeyEvent has intentionally been moved
+        // out of interrupt context to avoid UI work inside the ISR.
         // term.handleKeyEvent(.{ .char = final_ch });
 
         if (ctrl_down) return;
@@ -218,8 +282,14 @@ pub fn handleScancode(scancode: u8) void {
 // ASCII conversion
 // -----------------------------------------------------------------------------
 
+/// Convert a Set 1 make-code into an ASCII character.
+///
+/// Returns null for:
+///   • key releases
+///   • unmapped scancodes
+///   • non-printable keys
 fn scancodeToAscii(sc: u8) ?u8 {
-    if (sc & 0x80 != 0) return null; // ignore releases
+    if (sc & 0x80 != 0) return null; // Ignore break codes
     if (sc >= KEYMAP.len) return null;
 
     return if (shift_down)
@@ -232,26 +302,41 @@ fn scancodeToAscii(sc: u8) ?u8 {
 // Modifier keys (Shift, Ctrl, Alt)
 // -----------------------------------------------------------------------------
 
+/// Update modifier key state from a make or break scancode.
 fn updateModifiers(sc: u8) void {
     const is_release = (sc & 0x80) != 0;
     const code = sc & 0x7F;
 
-    if (code == 0x2A or code == 0x36) { shift_down = !is_release; return; }
-    if (code == 0x1D) { ctrl_down = !is_release; return; }
-    if (code == 0x38) { alt_down = !is_release; return; }
+    if (code == 0x2A or code == 0x36) {
+        shift_down = !is_release;
+        return;
+    }
+
+    if (code == 0x1D) {
+        ctrl_down = !is_release;
+        return;
+    }
+
+    if (code == 0x38) {
+        alt_down = !is_release;
+        return;
+    }
 }
 
 // -----------------------------------------------------------------------------
 // Extended keys (E0-prefixed)
 // -----------------------------------------------------------------------------
 
+/// Handle decoded E0-prefixed keys.
+///
+/// Supports both Set 1 and Set 2 variants for common navigation keys.
 fn handleExtended(sc: u8) void {
     const is_release = (sc & 0x80) != 0;
+
     if (is_release) return;
 
     const code = sc & 0x7F;
 
-    // Supports both Set 1 and Set 2 codes
     switch (code) {
         0x48, 0x75 => term.handleKeyEvent(.{ .special = .Up }),
         0x50, 0x72 => term.handleKeyEvent(.{ .special = .Down }),

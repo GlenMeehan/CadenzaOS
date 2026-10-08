@@ -10,6 +10,9 @@ const serial = @import("drivers/serial.zig");
 const SCRATCH_PAGE_PHYS: usize = 0x7000;
 const TASK_STACK_PAGES: usize = 8; // 32 KiB, was 2 (8 KiB)
 
+pub const MAX_ARGS: usize = 8;
+pub const MAX_ARG_BYTES: usize = 512; // total, including NUL terminators
+
 pub const TaskState = enum {
     Ready,
     Running,
@@ -95,63 +98,101 @@ pub const Scheduler = struct {
 
     /// Dynamically allocates a stack and registers a new task into the first free slot.
     /// Returns the slot index on success, or an error if no slots are available.
-    pub fn registerDynamicTask(
-        self: *Scheduler,
-        entry_point: *const fn() callconv(.c) void,
-        code_mem: ?[]u8,
-        code_phys: usize,
-    ) !usize {
-        // 1. Find a free slot
-        var slot: ?usize = null;
-        for (0..self.tasks.len) |i| {
-            if (self.tasks[i] == null) {
-                slot = i;
-                break;
-            }
+pub fn registerDynamicTask(
+    self: *Scheduler,
+    entry_point: *const fn () callconv(.c) void,
+    code_mem: ?[]u8,
+    code_phys: usize,
+    args: []const []const u8,
+) !usize {
+    // 0. Validate arguments before allocating anything
+    if (args.len > MAX_ARGS) return error.TooManyArgs;
+    var arg_bytes: usize = 0;
+    for (args) |a| arg_bytes += a.len + 1;
+    if (arg_bytes > MAX_ARG_BYTES) return error.ArgsTooLong;
+
+    // 1. Find a free slot
+    var slot: ?usize = null;
+    for (0..self.tasks.len) |i| {
+        if (self.tasks[i] == null) {
+            slot = i;
+            break;
         }
-        if (slot == null) return error.NoTaskSlotsAvailable;
-
-        // 2. Generate a unique ID automatically
-        const id = self.nextId();
-
-        // 3. Allocate stack using frame allocator (avoids heap fragmentation)
-        const phys_addr = bm.allocContiguous(TASK_STACK_PAGES) orelse return error.OutOfMemory;
-        const virt_addr = memory.physToVirt(phys_addr);
-        const stack_buf = @as([*]u8, @ptrFromInt(virt_addr))[0 .. bm.PAGE_SIZE * TASK_STACK_PAGES];
-        @memset(stack_buf, 0);  // wipe any stale/poisoned data before this frame is reused as a stack
-
-        // 4. Set up the initial context using InterruptContext natively
-        const stack_top = @intFromPtr(stack_buf.ptr) + stack_buf.len;
-        var initial_sp = stack_top - @sizeOf(InterruptContext);
-        initial_sp = (initial_sp & ~@as(usize, 15));
-
-
-        const context_ptr = @as(*InterruptContext, @ptrFromInt(initial_sp));
-        inline for (std.meta.fields(InterruptContext)) |field| {
-            @field(context_ptr, field.name) = 0;
-        }
-
-        // Populate the hardware frame fields exactly how iretq expects them
-        context_ptr.rip = @intFromPtr(entry_point);
-        context_ptr.cs = 0x18;         // Kernel Code Segment
-        context_ptr.rflags = 0x202;     // Interrupts Enabled Flag
-        // Point RSP directly to the context block itself so it has a perfectly
-        // aligned, safe, writable zone within the allocated 4KB buffer.
-        context_ptr.rsp = initial_sp;
-        context_ptr.ss = 0x10;         // Kernel Data Segment
-
-        // 5. Register the task
-        self.tasks[slot.?] = Task{
-            .id = id,
-            .stack_ptr = initial_sp,
-            .state = .Ready,
-            .wake_tick = 0,
-            .stack_mem = stack_buf,
-            .code_mem = code_mem,
-            .code_phys = code_phys,
-        };
-        return slot.?;
     }
+    if (slot == null) return error.NoTaskSlotsAvailable;
+
+    // 2. Generate a unique ID automatically
+    const id = self.nextId();
+
+    // 3. Allocate stack using frame allocator (avoids heap fragmentation)
+    const phys_addr = bm.allocContiguous(TASK_STACK_PAGES) orelse return error.OutOfMemory;
+    const virt_addr = memory.physToVirt(phys_addr);
+    const stack_buf = @as([*]u8, @ptrFromInt(virt_addr))[0 .. bm.PAGE_SIZE * TASK_STACK_PAGES];
+    @memset(stack_buf, 0); // wipe stale/poisoned data before this frame is reused as a stack
+
+    // 4. Layout, top of stack_mem downward:
+    //    [context save area, reserved for preempt_handler][arg strings][argv][fake ret slot] <- entry rsp
+    const stack_top = @intFromPtr(stack_buf.ptr) + stack_buf.len;
+
+    // MUST match preempt_handler's dest_addr: every preemption copies the
+    // interrupted context here, so nothing else may live in this region.
+    const save_area = (stack_top - @sizeOf(InterruptContext)) & ~@as(usize, 15);
+
+    var cursor: usize = save_area;
+    var str_addrs: [MAX_ARGS]usize = undefined;
+
+    var k: usize = args.len;
+    while (k > 0) {
+        k -= 1;
+        const a = args[k];
+        cursor -= a.len + 1;
+        const dst = @as([*]u8, @ptrFromInt(cursor));
+        @memcpy(dst[0..a.len], a);
+        dst[a.len] = 0;
+        str_addrs[k] = cursor;
+    }
+
+    cursor &= ~@as(usize, 15);
+    cursor -= (args.len + 1) * @sizeOf(usize);
+    cursor &= ~@as(usize, 15);
+    const argv_addr = cursor; // 16-byte aligned
+    const argv = @as([*]usize, @ptrFromInt(argv_addr));
+    for (0..args.len) |j| argv[j] = str_addrs[j];
+    argv[args.len] = 0;
+
+    // SysV ABI: rsp is 8 (mod 16) at function entry (as if a call had pushed
+    // a return address). The slot is zero because the stack was wiped.
+    const entry_rsp = argv_addr - 8;
+
+    // 5. The initial context lives AT the save area, as it did originally;
+    //    the task's own stack starts below the argument block.
+    const initial_sp = save_area;
+
+    const context_ptr = @as(*InterruptContext, @ptrFromInt(initial_sp));
+    inline for (std.meta.fields(InterruptContext)) |field| {
+        @field(context_ptr, field.name) = 0;
+    }
+
+    context_ptr.rip = @intFromPtr(entry_point);
+    context_ptr.cs = 0x18; // Kernel Code Segment
+    context_ptr.rflags = 0x202; // Interrupts enabled
+    context_ptr.rsp = entry_rsp;
+    context_ptr.ss = 0x10; // Kernel Data Segment
+    context_ptr.rdi = args.len; // argc
+    context_ptr.rsi = argv_addr; // argv
+
+    // 6. Register the task
+    self.tasks[slot.?] = Task{
+        .id = id,
+        .stack_ptr = initial_sp,
+        .state = .Ready,
+        .wake_tick = 0,
+        .stack_mem = stack_buf,
+        .code_mem = code_mem,
+        .code_phys = code_phys,
+    };
+    return slot.?;
+}
 
     /// Returns the next available unique task ID.
     /// Scans all slots for the highest current ID and returns one higher.

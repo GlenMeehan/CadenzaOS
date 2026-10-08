@@ -791,7 +791,7 @@ pub const CodaFs = struct {
         const start = getCycles();
         try self.device.readBlocks(self.device.ctx, lba, buf);
         const end = getCycles();
-        const duration = end - start;
+        const duration = end -% start;
 
         vitals.current_vitals.disk_cycles += duration;
         vitals.current_vitals.last_read_latency = duration;
@@ -817,7 +817,7 @@ pub const CodaFs = struct {
         const start = getCycles();
         try self.device.writeBlocks(self.device.ctx, lba, buf);
         const end = getCycles();
-        const duration = end - start;
+        const duration = end -% start;
 
         // TODO: Feed duration to Markov Brain when ready.
         // e.g., g_brain.addObservation(self.superblock.policy, duration);
@@ -833,7 +833,13 @@ pub const CodaFs = struct {
     /// Returns a raw cycle count; no normalisation is applied.
     /// Used for telemetry and I/O latency measurement.
     pub fn getCycles() u64 {
-        return asm volatile ("rdtsc" : [ret] "={ax}" (-> u64) : : .{ .edx = true });
+        var lo: u32 = undefined;
+        var hi: u32 = undefined;
+        asm volatile ("rdtsc"
+        : [lo] "={eax}" (lo),
+                      [hi] "={edx}" (hi),
+        );
+        return (@as(u64, hi) << 32) | lo;
     }
 
     // Sync the Superblock to the correct location

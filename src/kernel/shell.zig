@@ -1130,7 +1130,7 @@ fn cmd_spawn(args: [][]const u8) void {
         if (std.mem.eql(u8, entry.name, task_name)) {
             asm volatile ("cli");
             var success: u8 = 1;
-            _ = scheduler.manager.registerDynamicTask(entry.entry, null, 0) catch {
+            _ = scheduler.manager.registerDynamicTask(entry.entry, null, 0, &.{}) catch {
                 success = 0;
             };
             asm volatile ("sti");
@@ -1215,12 +1215,14 @@ fn cmd_spawn(args: [][]const u8) void {
         @ptrFromInt(@intFromPtr(prog_buf.ptr) + hdr.entry_offset);
         // 7. Hand the execution address over to your preemptive scheduler engine
             serial.writeString("SPAWN-F: calling registerDynamicTask\n");
-        _ = scheduler.manager.registerDynamicTask(entry_fn, code_mem_slice, frame1) catch {
-            vga.writeString("Error: Scheduler rejected dynamic binary\n", 12, 0);
-            bitmap.freeContiguous(frame1, 2);
-            asm volatile ("sti");
-            return;
-        };
+            _ = scheduler.manager.registerDynamicTask(entry_fn, code_mem_slice, frame1, args[1..]) catch |e| {
+                vga.writeString("Error: spawn rejected: ", 12, 0);
+                vga.writeString(@errorName(e), 12, 0);
+                vga.putChar('\n', 12, 0);
+                bitmap.freeContiguous(frame1, frames_needed);
+                asm volatile ("sti");
+                return;
+            };
 
         vga.writeString("Spawned dynamic disk task: ", 10, 0);
         vga.writeString(task_name, 10, 0);

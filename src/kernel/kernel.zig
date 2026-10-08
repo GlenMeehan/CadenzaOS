@@ -665,7 +665,7 @@ pub export fn kmain() noreturn {
     }
 
     asm volatile ("sti");
-    vga.clearScreen(15, 0);
+    //vga.clearScreen(15, 0);
 
     splash.updateProgress(80, "Task manager initialising...");
     splash.delay_crude(20_000_000);
@@ -707,7 +707,8 @@ pub export fn kmain() noreturn {
     // Run the embedded application installation staging pipeline
     bin_loader.installEmbeddedApps(allocator, &fs_global) catch |err| {
         vga.writeString("Application injection failure: ", 12, 5);
-        @panic(@errorName(err));
+        vga.writeString(@errorName(err), 12, 5);
+        vga.writeString("\n", 12, 5);
     };
 
     // ... Right after bin_loader.installEmbeddedApps(allocator, &fs_global) ...
