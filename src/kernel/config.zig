@@ -226,7 +226,7 @@ pub var kernel_allocator: std.mem.Allocator = undefined;
 pub const Version = struct {
     pub const major: u32 = 0;
     pub const minor: u32 = 4;
-    pub const patch: u32 = 5;  //1. Continued clean up of comments bitmap.zig - kernel.zig completed 2. Kernel setup VGAessageing setup so splash screen is tidy.
+    pub const patch: u32 = 3;  //1. Continued clean up of comments bitmap.zig - kernel.zig completed 2. Kernel setup VGAessageing setup so splash screen is tidy.
 };
 
 /// Build metadata generated at build time.
