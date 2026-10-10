@@ -1,4 +1,8 @@
 #!/bin/bash
+
+#Build assumes a GNU/Linux toolchain. For example stat -c %s is GNU syntax (BSD uses stat -f),
+#and the script relies on readelf, objcopy and as.
+#A POSIX sed version works everywhere:
 set -e
 
 # --- Configuration ---
@@ -8,6 +12,19 @@ ROOT=$(dirname "$0")
 SRC="$ROOT/src"
 BUILD="$ROOT/build"
 IMG="$BUILD/disk.img"
+
+# --- Disk layout (sectors) ---
+KERNEL_LBA=16        # kernel written here
+#APP_LBA_START is stored in config.zig and used by binary_loader.zig.
+#Use of grep -oP, where -P (Perl-style regex, needed for \K) is a GNU extension.
+#BSD or macOS grep doesn't support it, and neither does BusyBox grep on Alpine.
+APP_LBA=$(grep -oP 'APP_LBA_START: u64 = \K[0-9]+' "$SRC/kernel/config.zig")
+#Check APP_LBA_START loaded correctly. Abort build if not
+if [ -z "$APP_LBA" ]; then
+    echo "❌ ERROR: could not read APP_LBA_START from config.zig"
+    exit 1
+fi
+PARTITION_LBA=4096   # CodaFS partition starts here
 
 # --- Argument Check ---
 if [ "$1" == "run" ]; then
@@ -102,8 +119,9 @@ KERNEL_SECTORS=$(( (KERNEL_SIZE + 511) / 512 ))
 echo "KERNEL_SECTORS equ $KERNEL_SECTORS" > "$BUILD/kernel_info.inc"
 echo "KERNEL_ENTRY equ $ENTRY_POINT" >> "$BUILD/kernel_info.inc"
 
-if [ "$KERNEL_SECTORS" -ge 4096 ]; then
-    echo "❌ ERROR: Kernel ($KERNEL_SECTORS sectors) has grown into the filesystem partition (starts at sector 4096)!"
+KERNEL_MAX_SECTORS=$(( APP_LBA - KERNEL_LBA ))
+if [ "$KERNEL_SECTORS" -gt "$KERNEL_MAX_SECTORS" ]; then
+    echo "❌ ERROR: Kernel ($KERNEL_SECTORS sectors) would overwrite the app staging area at sector $APP_LBA (max $KERNEL_MAX_SECTORS)!"
     exit 1
 fi
 
@@ -153,8 +171,8 @@ mkdir -p "$APPS_DIR"
 cp src/apps/prog1.bin "$APPS_DIR/prog1.bin"
 
 if [ -f "$APPS_DIR/prog1.bin" ]; then
-    echo "📦 Staging prog1.bin into disk image at LBA 1024..."
-    dd if="$APPS_DIR/prog1.bin" of="$IMG" bs=512 seek=2000 conv=notrunc status=none
+    echo "📦 Staging prog1.bin into disk image at LBA $APP_LBA..."
+    dd if="$APPS_DIR/prog1.bin" of="$IMG" bs=512 seek=$APP_LBA conv=notrunc status=none
 else
     echo "⚠️ Warning: prog1.bin not found in $APPS_DIR, skipping binary store injection."
 fi

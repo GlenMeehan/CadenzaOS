@@ -1,19 +1,27 @@
 // src/kernel/globals.zig
 //
+// Centralised kernel-wide runtime state.
+//
+// This module provides globally accessible references to core kernel
+// services that are initialised during boot and used throughout the
+// system lifetime.
+//
 const CodaFs = @import("fs/coda_fs.zig").CodaFs;
 const std = @import("std");
-// ============================================================
-// Runtime Kernel Globals
-// ============================================================
+
+// -----------------------------------------------------------------------------
+//  GLOBAL KERNEL SERVICES
+// -----------------------------------------------------------------------------
 
 /// Global filesystem instance.
 ///
-/// Initialized during early kernel boot.
+/// Set during kernel initialisation after the filesystem has been
+/// mounted and remains valid for the lifetime of the kernel.
 pub var fs_global: *CodaFs = undefined;
 
 /// Global kernel allocator.
 ///
-/// Must be initialized before dynamic allocation.
+/// Initialised during early boot and used by subsystems that require
+/// dynamic memory allocation. Must be assigned before any allocation
+/// attempts are made.
 pub var kernel_allocator: std.mem.Allocator = undefined;
-
-

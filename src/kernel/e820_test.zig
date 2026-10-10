@@ -1,14 +1,14 @@
 // src/kernel/e820_test.zig
 //
-// Diagnostic helpers for inspecting the E820 memory map.
-// These utilities are intended for early debugging only and
-// should not be used in production code.
+// Diagnostic utilities for inspecting and validating the E820 memory map.
+// These helpers are intended for early-kernel debugging and development
+// purposes only and should not be used by production code.
 //
 // Provides:
-//   • printEntry()          — pretty‑print a single E820 entry
-//   • test1/test2/test3     — simple iterator sanity checks
-//   • testIteratorState()   — inspect iterator internals
-
+//   • printEntry()        — Display a formatted E820 entry
+//   • test1/test2/test3   — Basic iterator validation tests
+//   • testIteratorState() — Inspect iterator state transitions
+//
 const e820 = @import("E820.zig");
 const vga  = @import("vga.zig");
 const conv = @import("convert.zig");
@@ -16,11 +16,11 @@ const conv = @import("convert.zig");
 const E820Entry = e820.E820Entry;
 
 // -----------------------------------------------------------------------------
-//  PRINTING HELPERS
+//  ENTRY PRINTING HELPERS
 // -----------------------------------------------------------------------------
 
-/// Print a single E820 entry with a prefix label.
-/// Useful for quick debugging.
+/// Display a single E820 memory map entry in a human-readable format.
+/// Useful when verifying BIOS-provided memory map contents.
 fn printEntry(prefix: []const u8, entry: E820Entry) void {
     var buf: [32]u8 = undefined;
 
@@ -39,24 +39,27 @@ fn printEntry(prefix: []const u8, entry: E820Entry) void {
 }
 
 // -----------------------------------------------------------------------------
-//  SIMPLE TESTS
+//  BASIC ITERATOR TESTS
 // -----------------------------------------------------------------------------
 
-/// Test 1 — print the first E820 entry
+/// Retrieve and display the first E820 entry.
+/// Confirms that the iterator can return an initial record.
 pub fn test1() void {
     var it = e820.iterate();
     const first = it.next() orelse unreachable;
     printEntry("test1:", first);
 }
 
-/// Test 2 — print the first E820 entry again
+/// Retrieve and display the first E820 entry using a fresh iterator.
+/// Intended to verify consistent iterator initialisation.
 pub fn test2() void {
     var it = e820.iterate();
     const first = it.next() orelse unreachable;
     printEntry("test2:", first);
 }
 
-/// Test 3 — print the first E820 entry again
+/// Retrieve and display the first E820 entry using a fresh iterator.
+/// Serves as an additional sanity check during debugging.
 pub fn test3() void {
     var it = e820.iterate();
     const first = it.next() orelse unreachable;
@@ -64,16 +67,16 @@ pub fn test3() void {
 }
 
 // -----------------------------------------------------------------------------
-//  ITERATOR INTERNAL STATE TEST
+//  ITERATOR STATE INSPECTION
 // -----------------------------------------------------------------------------
 
-/// Inspect iterator internal state before and after advancing.
-/// Useful for verifying iterator correctness.
+/// Display iterator state before and after advancing to the next entry.
+/// Useful when verifying iterator progression and internal bookkeeping.
 pub fn testIteratorState(label: []const u8) void {
     var it = e820.iterate();
     var buf: [32]u8 = undefined;
 
-    // Before first next()
+    // Iterator state before the first call to next().
     vga.writeString(label, 15, 4);
     vga.writeString(" BEFORE1 current=", 15, 4);
     vga.writeString(conv.toHex(u32, it.current, &buf), 15, 4);
@@ -83,7 +86,7 @@ pub fn testIteratorState(label: []const u8) void {
 
     const first = it.next() orelse unreachable;
 
-    // Before second next()
+    // Iterator state after the first call and before the second.
     vga.writeString(label, 15, 4);
     vga.writeString(" BEFORE2 current=", 15, 4);
     vga.writeString(conv.toHex(u32, it.current, &buf), 15, 4);
@@ -93,7 +96,7 @@ pub fn testIteratorState(label: []const u8) void {
 
     const second = it.next() orelse unreachable;
 
-    // Silence unused variable warnings
+    // Explicitly mark retrieved entries as intentionally unused.
     _ = first;
     _ = second;
 }

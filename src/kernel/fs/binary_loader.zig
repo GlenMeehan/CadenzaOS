@@ -14,7 +14,7 @@ const binfmt = @import("../binfmt.zig");
 /// The build process places application binaries in a raw disk region
 /// outside the filesystem. During initialisation they are copied into
 /// the filesystem as normal files.
-pub const APP_LBA_START: u64 = 2000;
+pub const APP_LBA_START: u64 = conf.APP_LBA_START;
 
 /// Largest application image accepted from the staging area.
 ///

@@ -1,16 +1,17 @@
 // src/kernel/kernel.zig
 //
-// Main kernel entry and early boot sequence for CadenzaOS.
+// Main kernel entry point and early-boot orchestration for CadenzaOS.
 //
 // Responsibilities:
-//   • Provide memmove for freestanding Zig
-//   • Set up early heap (FixedBufferAllocator)
-//   • Probe / restore / initialize disk + filesystem
-//   • Initialize E820 store, frame allocator, bitmap
-//   • Mark reserved ranges (kernel, stack, heap, page tables, RAM disk)
-//   • Set up IDT + PIC + mouse, enable interrupts
-//   • Mount CodaFS (RAM-backed) and launch shell
-
+//   • Provide freestanding runtime support required by Zig
+//   • Initialise the bootstrap heap allocator
+//   • Discover and initialise physical memory management
+//   • Probe, restore, and mount storage devices and filesystems
+//   • Configure interrupt handling and input devices
+//   • Set up task scheduling infrastructure
+//   • Initialise the RAM-backed CodaFS instance
+//   • Launch the initial user-facing shell environment
+//
 const std = @import("std");
 const vga = @import("vga.zig");
 const e820 = @import("E820.zig");
@@ -48,61 +49,91 @@ const apic = @import("apic.zig");
 const splash = @import("splash.zig");
 const tss = @import("tss.zig");
 
-pub const STACK_SIZE = 0x40000;         // 16 KiB stack
-pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB reserved for page tables
+/// Size of the permanent kernel stack.
+pub const STACK_SIZE = 0x40000; // 16 KiB
+
+/// Memory reserved for early page-table structures.
+pub const PAGE_TABLE_BYTES = 64 * 1024; // 64 KiB
 
 extern fn irq0_stub() void;
 extern fn irq1_stub() void;
 extern fn irq12_stub() void;
 
+/// Legacy local tick counter.
+///
+/// Global timer state is maintained by the interrupt subsystem.
 var ticks: u64 = 0;
 
 // -----------------------------------------------------------------------------
-//  EARLY HEAP / RAM DISK
+//  BOOTSTRAP HEAP AND RAM DISK
 // -----------------------------------------------------------------------------
 
-// Early static heap used with FixedBufferAllocator (bootstrap heap)
-var heap_buffer: [10  * 1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
+/// Early static heap used by the FixedBufferAllocator.
+///
+/// This allocator provides dynamic memory support before more advanced
+/// memory-management facilities are fully available.
+var heap_buffer: [10 * 1024 * 1024]u8 align(4096) linksection(".bss") = undefined;
 
-// Global FixedBufferAllocator — lifetime = whole kernel
+/// Bootstrap allocator with kernel-lifetime storage.
 var fba = std.heap.FixedBufferAllocator.init(&heap_buffer);
+
+/// Global allocator interface used during and after early boot.
 pub var allocator: std.mem.Allocator = undefined;
 
-// RAM Disk virtual mapping
-pub const RAMDISK_VIRT_ADDR: usize = 0xFFFFFF8002000000;  // KERNEL_OFFSET + 0x02000000
+// -----------------------------------------------------------------------------
+//  RAM DISK CONFIGURATION
+// -----------------------------------------------------------------------------
+
+/// Fixed virtual address reserved for the kernel RAM disk.
+pub const RAMDISK_VIRT_ADDR: usize = 0xFFFFFF8002000000;
+
+/// RAM disk size in bytes.
 pub const RAMDISK_SIZE: usize = 4 * 1024 * 1024;
 
-// Anchor the buffer as a pointer to the array at that fixed virtual address
+/// Typed pointer to the RAM disk's virtual memory region.
+///
+/// The mapping itself is established elsewhere during memory
+/// initialisation.
 pub const fs_ramdisk_buf: *[RAMDISK_SIZE]u8 = @ptrFromInt(RAMDISK_VIRT_ADDR);
 
-// Global filesystem instance (RAM-backed CodaFS)
+/// Global RAM-backed CodaFS filesystem instance.
 pub var fs_global: CodaFs align(4096) linksection(".bss") = undefined;
 
+// -----------------------------------------------------------------------------
+//  PERMANENT KERNEL STACKS
+// -----------------------------------------------------------------------------
 
-// -----------------------------------------------------------------------------
-// THE PERMANENT KERNEL STACK
-// -----------------------------------------------------------------------------
-// A dedicated 16KB stack array sitting safely in the permanent .bss section
+/// Dedicated kernel stack stored in permanent .bss memory.
+///
+/// Used after bootstrap execution has completed.
 var kmain_stack: [16384]u8 align(16) linksection(".bss") = undefined;
 
-// -----------------------------------------------------------------------------
-//  STATIC SHELL STACK - This buffer is statically allocated outside of kmain's stack frame
-// -----------------------------------------------------------------------------
+/// Dedicated shell task stack.
+///
+/// Stored outside the kmain() stack frame so it remains valid for the
+/// lifetime of the shell task.
 var shell_stack_buf: [16384]u8 align(16) = undefined;
+
 extern const _kernel_end: u8;
 extern fn isr80_stub() callconv(.c) void;
 
+/// Halt execution permanently.
+///
+/// Useful for unrecoverable failures and low-level debugging.
 pub fn pause() void {
     while (true) {
         asm volatile ("hlt");
     }
 }
 
-
 // -----------------------------------------------------------------------------
-//  FREESTANDING SUPPORT: memmove
+//  FREESTANDING RUNTIME SUPPORT
 // -----------------------------------------------------------------------------
 
+/// Freestanding implementation of memmove().
+///
+/// Required because the kernel does not link against a hosted C runtime.
+/// Correctly handles overlapping source and destination ranges.
 pub export fn memmove(dest: ?[*]u8, src: ?[*]const u8, n: usize) ?[*]u8 {
     const d = dest orelse return dest;
     const s = src orelse return dest;
@@ -119,26 +150,30 @@ pub export fn memmove(dest: ?[*]u8, src: ?[*]const u8, n: usize) ?[*]u8 {
             d[i] = s[i];
         }
     }
+
     return dest;
 }
 
-
 // -----------------------------------------------------------------------------
-//  PANIC HANDLER (KERNEL-LOCAL)
+//  KERNEL PANIC HANDLING
 // -----------------------------------------------------------------------------
 
-/// Kernel panic handler.
-/// Clears the screen, prints a panic banner, message, and optional return address,
-/// then halts the CPU forever.
+/// Kernel-specific panic implementation.
+///
+/// Displays diagnostic information on screen and halts the processor.
+/// This serves as the final error handler for unrecoverable failures.
 pub const panic = std.debug.FullPanic(myPanic);
 
 fn myPanic(msg: []const u8, return_address: ?usize) noreturn {
-    // same body as before, just renamed and with `trace` removed
     vga.clearScreen(0x4, 0x0);
+
     vga.writeStringAt(0, 0, "KERNEL PANIC", 15, 4);
+
     vga.writeStringAt(2, 0, "Message: ", 14, 4);
     vga.writeStringAt(2, 9, msg, 15, 4);
+
     vga.writeStringAt(4, 0, "Return address: ", 14, 4);
+
     if (return_address) |ra| {
         var buf: [18]u8 = undefined;
         const hex = conv.toHex(usize, ra, buf[0..]);
@@ -146,27 +181,34 @@ fn myPanic(msg: []const u8, return_address: ?usize) noreturn {
     } else {
         vga.writeStringAt(4, 17, "(none)", 8, 4);
     }
+
     while (true) {
         asm volatile ("cli; hlt");
     }
 }
 
-/// This function serves as the entry point for the managed Shell task.
-/// It wraps the true shell runner with the global kernel state variables.
+/// Entry point for the shell task.
+///
+/// This wrapper enables interrupts for the task context and then
+/// transfers control to the interactive shell loop.
+///
+/// If the shell unexpectedly returns, execution falls back to a
+/// halted state rather than continuing into undefined behaviour.
 fn shellTaskWrapper() callconv(.c) void {
-    // Force interrupts to be enabled inside the task context
+    // Enable interrupts within the task's execution context.
     asm volatile ("sti");
 
-    // Launch your interactive loop
+    // Run the interactive shell.
     shell.run(&fs_global, allocator);
 
-    // Safety fallback if shell exits
+    // Safety fallback if the shell ever exits unexpectedly.
     while (true) {
         asm volatile ("hlt");
     }
 }
 
-// Ensure IRQ handlers are retained
+// Ensure interrupt handlers are retained by the linker even when
+// referenced indirectly through assembly entry points.
 comptime {
     _ = interrupts.irq0_handler;
     _ = interrupts.irq1_handler;
@@ -178,29 +220,40 @@ pub const std_options: std.Options = .{
     .page_size_max = 4096,
 };
 
-
 // -----------------------------------------------------------------------------
-//  ENTRY POINTS
+//  KERNEL ENTRY POINTS
 // -----------------------------------------------------------------------------
 
-/// Bootloader entry point.
-/// Transfers control to kmain and never returns.
+/// Entry point invoked by the bootloader.
+///
+/// Performs minimal setup before transferring control to kmain().
+/// This function never returns.
 export fn kernel_entry() void {
     vga.clearScreen(0, 0);
     kmain();
     unreachable;
 }
 
-
-
-/// Main kernel entry point.
+/// Primary kernel entry point.
+///
+/// Coordinates early hardware initialisation, memory management,
+/// interrupt setup, storage discovery, filesystem mounting, and
+/// task-system startup.
 pub export fn kmain() noreturn {
-    // Initialise serial FIRST so all subsequent output is captured
+
+    // Initialise serial output first so all subsequent diagnostic
+    // messages are available regardless of video state.
     serial.init();
+
     const boot_info = boot_info_mod.get();
+
+    // -------------------------------------------------------------------------
+    //  FRAMEBUFFER / GRAPHICS INITIALISATION
+    // -------------------------------------------------------------------------
 
     if (boot_info.graphics_mode == 1) {
         serial.writeString("CP1: fb.init done\n");
+
         fb.init(
             boot_info.framebuffer_addr,
             @intCast(boot_info.fb_stride),
@@ -211,69 +264,81 @@ pub export fn kmain() noreturn {
                 boot_info.green_position,
                 boot_info.blue_position,
         );
+
         vga.graphics_mode = true;
-        //Initialise and display splash screen
+
+        // Display the graphical startup splash screen.
         serial.writeString("CP2: splash.init done\n");
         splash.init();
 
-
-//=================DEBUGGING FOR GRAPHICS OUTPUT=================================================
-        // Scratch buffer for conv.toHex conversions
-        //var hex_buf: [18]u8 = undefined;
-
-        // Default text colors: White text (15), Black background (0)
-        //const fg: u8 = 15;
-        //const bg: u8 = 0;
-
-        // --- Print Colour Mask Parameters ---
-        //vga.writeStringAt(1, 0, "Red Size: ", fg, bg);
-        //vga.writeStringAt(1, 10, conv.toHex(u64, boot_info.red_mask_size, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(2, 0, "Red Pos: ", fg, bg);
-        //vga.writeStringAt(2, 10, conv.toHex(u64, boot_info.red_position, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(3, 0, "Green Size: ", fg, bg);
-        //vga.writeStringAt(3, 12, conv.toHex(u64, boot_info.green_mask_size, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(4, 0, "Green Pos: ", fg, bg);
-        //vga.writeStringAt(4, 12, conv.toHex(u64, boot_info.green_position, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(5, 0, "Blue Size: ", fg, bg);
-        //vga.writeStringAt(5, 11, conv.toHex(u64, boot_info.blue_mask_size, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(6, 0, "Blue Pos: ", fg, bg);
-        //vga.writeStringAt(6, 11, conv.toHex(u64, boot_info.blue_position, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(7, 0, "Rsvd Size: ", fg, bg);
-        //vga.writeStringAt(7, 11, conv.toHex(u64, boot_info.rsvd_mask_size, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(8, 0, "Rsvd Pos: ", fg, bg);
-        //vga.writeStringAt(8, 11, conv.toHex(u64, boot_info.rsvd_position, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(9, 0, "FB Addr: ", fg, bg);
-        //vga.writeStringAt(9, 12, conv.toHex(u64, boot_info.framebuffer_addr, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(10, 0, "Stride: ", fg, bg);
-        //vga.writeStringAt(10, 12, conv.toHex(u64, boot_info.fb_stride, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(11, 0, "Width: ", fg, bg);
-        //vga.writeStringAt(11, 12, conv.toHex(u64, boot_info.fb_width, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(12, 0, "Height: ", fg, bg);
-        //vga.writeStringAt(12, 12, conv.toHex(u64, boot_info.fb_height, &hex_buf), fg, bg);
-
-        //vga.writeStringAt(13, 0, "BPP: ", fg, bg);
-        //vga.writeStringAt(13, 12, conv.toHex(u64, boot_info.fb_bpp, &hex_buf), fg, bg);
-
-        //pause();
-//=================DEBUGGING FOR GRAPHICS OUTPUT=================================================
-
+        // ---------------------------------------------------------------------
+        //  FRAMEBUFFER DIAGNOSTICS (RETAINED FOR HARDWARE DEBUGGING)
+        // ---------------------------------------------------------------------
+        //
+        // These checks were used when validating framebuffer formats,
+        // colour masks, channel positions, and bootloader-supplied
+        // graphics information. They are intentionally preserved for
+        // future graphics-driver and boot-compatibility debugging.
+        //
+        // Scratch buffer for conv.toHex conversions.
+        // var hex_buf: [18]u8 = undefined;
+        //
+        // Default text colours.
+        // const fg: u8 = 15;
+        // const bg: u8 = 0;
+        //
+        // Colour mask information.
+        // vga.writeStringAt(1, 0, "Red Size: ", fg, bg);
+        // vga.writeStringAt(1, 10, conv.toHex(u64, boot_info.red_mask_size, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(2, 0, "Red Pos: ", fg, bg);
+        // vga.writeStringAt(2, 10, conv.toHex(u64, boot_info.red_position, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(3, 0, "Green Size: ", fg, bg);
+        // vga.writeStringAt(3, 12, conv.toHex(u64, boot_info.green_mask_size, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(4, 0, "Green Pos: ", fg, bg);
+        // vga.writeStringAt(4, 12, conv.toHex(u64, boot_info.green_position, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(5, 0, "Blue Size: ", fg, bg);
+        // vga.writeStringAt(5, 11, conv.toHex(u64, boot_info.blue_mask_size, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(6, 0, "Blue Pos: ", fg, bg);
+        // vga.writeStringAt(6, 11, conv.toHex(u64, boot_info.blue_position, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(7, 0, "Rsvd Size: ", fg, bg);
+        // vga.writeStringAt(7, 11, conv.toHex(u64, boot_info.rsvd_mask_size, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(8, 0, "Rsvd Pos: ", fg, bg);
+        // vga.writeStringAt(8, 11, conv.toHex(u64, boot_info.rsvd_position, &hex_buf), fg, bg);
+        //
+        // Framebuffer geometry and layout information.
+        // vga.writeStringAt(9, 0, "FB Addr: ", fg, bg);
+        // vga.writeStringAt(9, 12, conv.toHex(u64, boot_info.framebuffer_addr, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(10, 0, "Stride: ", fg, bg);
+        // vga.writeStringAt(10, 12, conv.toHex(u64, boot_info.fb_stride, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(11, 0, "Width: ", fg, bg);
+        // vga.writeStringAt(11, 12, conv.toHex(u64, boot_info.fb_width, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(12, 0, "Height: ", fg, bg);
+        // vga.writeStringAt(12, 12, conv.toHex(u64, boot_info.fb_height, &hex_buf), fg, bg);
+        //
+        // vga.writeStringAt(13, 0, "BPP: ", fg, bg);
+        // vga.writeStringAt(13, 12, conv.toHex(u64, boot_info.fb_bpp, &hex_buf), fg, bg);
+        //
+        // pause();
     }
 
-    // 1. Calculate the top of our new stack array
+    // -------------------------------------------------------------------------
+    //  SWITCH TO PERMANENT KERNEL STACK
+    // -------------------------------------------------------------------------
+
+    // Calculate the top of the dedicated kernel stack.
     const new_sp = @intFromPtr(&kmain_stack) + kmain_stack.len;
 
-    // 2. Inline assembly compliant with modern Zig syntax
+    // Replace the bootstrap stack with the permanent kernel stack.
     asm volatile (
         \\ movq %[stack], %%rsp
         :
@@ -281,355 +346,418 @@ pub export fn kmain() noreturn {
     );
 
     // -------------------------------------------------------------------------
-    //  BSS / EARLY CLEAR
+    //  EARLY MEMORY INITIALISATION
     // -------------------------------------------------------------------------
+
     @memset(&heap_buffer, 0);
     @memset(fs_ramdisk_buf, 0);
-            //vga.clearScreen(0, 0);
-    // IDT must be initialized early
-    idt.init();
-    //Initialise Test State Struct
-    tss.init();
 
-    //vga.writeString("Probing Disk...\n", 15, 0);
+    // Initialise exception and interrupt infrastructure early.
+    idt.init();
+
+    // Initialise the Task State Segment.
+    tss.init();
 
     splash.updateProgress(20, "Disk / File System Restore or Init...");
     splash.delay_crude(20_000_000);
+
     // -------------------------------------------------------------------------
-    //  DISK / FILESYSTEM RESTORE OR INIT
+    //  DISK / FILESYSTEM DISCOVERY
     // -------------------------------------------------------------------------
+
     var fs_exists: bool = false;
     const partition_start = conf.PARTITION_START_LBA;
+
     if (ata.AtaDevice.checkFileSystem(partition_start)) {
         fs_exists = true;
-        vga.writeString("CP5a: checkFileSystem returned true\n", 10, 0);
-        //vga.writeString("STATUS: System Partition Found!\n", 10, 0);
 
-        //vga.writeString("RESTORE: Populating RAM from Disk...\n", 11, 0);
+        //vga.writeString("CP5a: checkFileSystem returned true\n", 10, 0);
+
+        // Diagnostic output retained for storage debugging.
+        // vga.writeString("STATUS: System Partition Found!\n", 10, 0);
+        // vga.writeString("RESTORE: Populating RAM from Disk...\n", 11, 0);
 
         // =========================================================================
-        //  RAMDISK HYDRATION
-        //  On every boot, the full disk image is loaded from ATA into the RAM
-        //  disk buffer (fs_ramdisk_buf) before the filesystem mounts on top of it.
-        //  This means:
-        //  - "Preserve filesystem" boots: existing CodaFS data is loaded from ATA
-        //    into RAM, then mounted — all reads/writes go to RAM during the session,
-        //    with writes flushed back to ATA disk via RamDisk.writeBlocksImpl.
-        //  - Fresh boots: fs_ramdisk_buf is zeroed first (@memset in kmain),
-        //    then mkfs() initialises a new CodaFS in RAM, written through to ATA.
-        //  The ramdisk is the live filesystem during a session — ATA is just
-        //  persistent backing storage. RAMDISK_SIZE must be >= disk image size
-        //  (currently both 10MB) or reads near the end of disk will OutOfRange.
+        //  RAM DISK RESTORATION AND FILESYSTEM RECOVERY
+        //
+        //  The RAM disk acts as the live filesystem storage layer during
+        //  normal operation. At boot, the filesystem image is loaded from
+        //  persistent ATA storage into RAM before CodaFS is mounted.
+        //
+        //  Boot flow:
+        //
+        //    Existing filesystem:
+        //      ATA disk -> RAM disk -> CodaFS mount
+        //
+        //    Fresh filesystem:
+        //      Zeroed RAM disk -> mkfs() -> ATA backing store
+        //
+        //  During runtime all filesystem activity operates against the RAM
+        //  disk image. Persistence is provided by synchronising updates
+        //  back to the ATA-backed partition.
+        //
+        //  RAMDISK_SIZE must always be large enough to contain the complete
+        //  filesystem image stored on disk.
         // =========================================================================
+
         ata.AtaDevice.readBlocks(null, partition_start, fs_ramdisk_buf[0..]) catch |err| {
             vga.writeString("ERROR: Restoration failed! Type: ", 12, 0);
             vga.writeString(@errorName(err), 12, 0);
         };
-       vga.writeString("CP5b: readBlocks done\n", 10, 0);
+
+        //vga.writeString("CP5b: readBlocks done\n", 10, 0);
+
         const sb = @as(*coda_fs.Superblock, @ptrCast(@alignCast(&fs_ramdisk_buf[0])));
 
+        // Check the filesystem dirty flag to determine whether the previous
+        // shutdown completed cleanly.
         if ((sb.flags & coda_fs.FLAG_DIRTY) != 0) {
-            vga.writeString("WARNING: Last shutdown was UNCLEAN!\n", 14, 0);
+            //vga.writeString("WARNING: Last shutdown was UNCLEAN!\n", 14, 0);
+            splash.updateProgress(33, "WARNING: Last shutdown was UNCLEAN!");
+            splash.delay_crude(50_000_000);
         } else {
             vga.writeString("STATUS: Filesystem is healthy.\n", 10, 0);
         }
 
+        // Mark the filesystem dirty immediately. The flag will be cleared
+        // during a clean shutdown sequence.
         sb.flags |= coda_fs.FLAG_DIRTY;
 
+        // Persist the updated superblock state.
         ata.AtaDevice.writeBlocks(null, partition_start, fs_ramdisk_buf[0..conf.BLOCK_SIZE]) catch {
-            //vga.writeString("ERROR: Could not mark disk as DIRTY!\n", 12, 0);
+            // Diagnostic output intentionally disabled to avoid boot noise.
+            // vga.writeString("ERROR: Could not mark disk as DIRTY!\n", 12, 0);
         };
 
-        //vga.writeString("STATUS: Filesystem Ready.\n", 10, 0);
+        // vga.writeString("STATUS: Filesystem Ready.\n", 10, 0);
+
     } else {
         fs_exists = false;
-        //vga.writeString("STATUS: Disk is Blank.\n", 14, 0);
 
-        //vga.writeString("Initializing MBR...\n", 15, 0);
+        // No valid filesystem was found. Create a fresh partition and
+        // initialise a new CodaFS instance.
+
+        // vga.writeString("STATUS: Disk is Blank.\n", 14, 0);
+
+        // vga.writeString("Initializing MBR...\n", 15, 0);
         ata.initializePartitionTable(partition_start, 16384);
 
-        //vga.writeString("Formatting Partition...\n", 15, 0);
+        // vga.writeString("Formatting Partition...\n", 15, 0);
         ata.formatMyFileSystem(partition_start);
 
         ata.AtaDevice.readBlocks(null, partition_start, fs_ramdisk_buf[0..conf.BLOCK_SIZE]) catch {};
 
-        //vga.writeString("Done. Please close QEMU and run ./build.sh run\n", 11, 0);
+        // Historical first-boot diagnostic.
+        // vga.writeString("Done. Please close QEMU and run ./build.sh run\n", 11, 0);
     }
-    //pause();
+
+    // pause();
+
     serial.writeString("CP5: disk/filesystem check done\n");
-    vga.step(0);
+    //vga.step(0);
 
     // -------------------------------------------------------------------------
-    //  E820 / FRAME ALLOCATOR / REGIONS
+    //  PHYSICAL MEMORY DISCOVERY
     // -------------------------------------------------------------------------
-    //const welc_mess = "CadenzaOS 64 Bit";
-    //vga.writeString(welc_mess, 15, 0);
+
     splash.updateProgress(35, "Setting up memory...");
 
-    // 1) Copy E820 entries into kernel-owned memory.
+    // Copy the bootloader-provided E820 memory map into kernel-owned
+    // storage before paging and allocator initialisation.
     E820Store.init();
-    //vga.step(1);
 
-    // 2) Tell E820.zig to use the safe copy.
+    // Configure the E820 access layer to use the kernel-owned copy.
     e820.setTable(E820Store.getTableAddr(), E820Store.getTableCount());
-    //vga.step(2);
 
-    // 3) Use the global FixedBufferAllocator as the kernel heap
+    // Expose the bootstrap allocator as the kernel allocator.
     allocator = fba.allocator();
 
-    // 4) Initialize frame allocator (backed by safe E820 data).
+    // Build the list of usable physical memory regions using the
+    // validated E820 data.
     fa.FrameAllocator.init();
     fa.FrameAllocator.parseUsableMemory();
+
     const regions = fa.getUsableRegions();
-    //vga.step(3);
 
     // -------------------------------------------------------------------------
-    //  DEBUG: HEX / BOOT INFO / MEMORY DUMP
+    //  BOOT-TIME MEMORY DIAGNOSTICS (RETAINED FOR DEBUGGING)
     // -------------------------------------------------------------------------
-    //const x: u64 = 0x1234ABCDEF112233;
-    //var buf: [16]u8 = undefined;
-    //const slice = conv.toHex(u64, x, buf[0..]);
+    //
+    // The commented code below was used to verify:
+    //   • Hex conversion helpers
+    //   • BootInfo contents
+    //   • Kernel memory layout
+    //   • Raw bootloader structures
+    //
+    // These diagnostics are intentionally retained as reference material
+    // for future low-level memory debugging.
+    //
 
-    //var len_buf: [8]u8 = undefined;
-    //vga.writeString(conv.toHex(u32, @intCast(slice.len), &len_buf), 15, 0);
-    //vga.writeString(slice, 15, 0);
+    // const x: u64 = 0x1234ABCDEF112233;
+    // var buf: [16]u8 = undefined;
+    // const slice = conv.toHex(u64, x, buf[0..]);
 
-    //const y: u32 = 0xBADFACE;
-    //var buf2: [8]u8 = undefined;
-    //vga.writeStringAt(3, 0, conv.toHex(u32, y, buf2[0..]), 15, 0);
+    // var len_buf: [8]u8 = undefined;
+    // vga.writeString(conv.toHex(u32, @intCast(slice.len), &len_buf), 15, 0);
+    // vga.writeString(slice, 15, 0);
+
+    // const y: u32 = 0xBADFACE;
+    // var buf2: [8]u8 = undefined;
+    // vga.writeStringAt(3, 0, conv.toHex(u32, y, buf2[0..]), 15, 0);
 
     const info = bi.get();
 
-    //var buf_start: [16]u8 = undefined;
-    //vga.writeStringAt(11, 0, "Kernel start: ", 15, 0);
-    //vga.writeStringAt(11, 15, conv.toHex(u64, info.kernel_start, &buf_start), 15, 0);
+    // var buf_start: [16]u8 = undefined;
+    // vga.writeStringAt(11, 0, "Kernel start: ", 15, 0);
+    // vga.writeStringAt(11, 15, conv.toHex(u64, info.kernel_start, &buf_start), 15, 0);
 
-    //var buf_end: [16]u8 = undefined;
-    //vga.writeStringAt(12, 0, "Kernel end:   ", 15, 0);
-    //vga.writeStringAt(12, 15, conv.toHex(u64, info.kernel_end, &buf_end), 15, 0);
+    // var buf_end: [16]u8 = undefined;
+    // vga.writeStringAt(12, 0, "Kernel end:   ", 15, 0);
+    // vga.writeStringAt(12, 15, conv.toHex(u64, info.kernel_end, &buf_end), 15, 0);
 
-    //var buf_stack: [16]u8 = undefined;
-    //vga.writeStringAt(13, 0, "Stack top:    ", 15, 0);
-    //vga.writeStringAt(13, 15, conv.toHex(u64, info.stack_top, &buf_stack), 15, 0);
+    // var buf_stack: [16]u8 = undefined;
+    // vga.writeStringAt(13, 0, "Stack top:    ", 15, 0);
+    // vga.writeStringAt(13, 15, conv.toHex(u64, info.stack_top, &buf_stack), 15, 0);
 
-    //var row2: u16 = 14;
-    //var offset: usize = 0;
-    //while (offset < 0x38) : (offset += 8) {
-        //var buf_offset: [8]u8 = undefined;
-        //var buf_bytes: [16]u8 = undefined;
-
-        //vga.writeStringAt(row2, 0, conv.toHex(u32, @intCast(offset), &buf_offset), 15, 0);
-        //vga.writeStringAt(row2, 9, ": ", 15, 0);
-
-        //const value = @as(*const u64, @ptrFromInt(0x7000 + offset)).*;
-        //vga.writeStringAt(row2, 11, conv.toHex(u64, value, &buf_bytes), 15, 0);
-
-        //row2 += 1;
-    //}
+    // ...
 
     // -------------------------------------------------------------------------
-    //  IDT / PIC / MOUSE / INTERRUPTS
+    //  INTERRUPT CONTROLLER AND DEVICE IRQ SETUP
     // -------------------------------------------------------------------------
-    idt.setGateIst(32, @intFromPtr(&irq0_stub), 1);   // timer — needs the copy-out from step 2
-    idt.setGateIst(33, @intFromPtr(&irq1_stub), 1);   // keyboard — no copy needed, just a safe place to run
-    idt.setGateIst(44, @intFromPtr(&irq12_stub), 1);  // mouse — same
-    idt.setGate(0x80, @intFromPtr(&isr80_stub));      // unchanged — already safe via the interrupt gate
 
+    // Install hardware interrupt gates.
+    //
+    // Timer, keyboard and mouse handlers are configured to use IST entry 1
+    // so they always execute on a known-good interrupt stack.
+    idt.setGateIst(32, @intFromPtr(&irq0_stub), 1);
+    idt.setGateIst(33, @intFromPtr(&irq1_stub), 1);
+    idt.setGateIst(44, @intFromPtr(&irq12_stub), 1);
+
+    // System-call entry point.
+    idt.setGate(0x80, @intFromPtr(&isr80_stub));
+
+    // Remap the legacy PIC away from CPU exception vectors.
     pic.remap(32, 40);
-    pic.unmaskIrq(@as(u8, 0));  // timer
-    pic.unmaskIrq(@as(u8, 1));  // keyboard
-    pic.unmaskIrq(@as(u8, 2));  // cascade to slave PIC
-    pic.unmaskIrq(@as(u8, 12)); // mouse
 
+    // Enable required hardware interrupt lines.
+    pic.unmaskIrq(@as(u8, 0));   // PIT timer
+    pic.unmaskIrq(@as(u8, 1));   // Keyboard
+    pic.unmaskIrq(@as(u8, 2));   // PIC cascade
+    pic.unmaskIrq(@as(u8, 12));  // Mouse
+
+    // Initialise PS/2 mouse support.
     mouse.initMouse();
 
-    interrupts.init_pit(100); // 100Hz = 100 ticks per second
+    // Configure the timer at 100 Hz.
+    interrupts.init_pit(100);
 
+    // Enable maskable interrupts globally.
     asm volatile ("sti");
 
-    //vga.step(4);
-    //vga.writeStringAt(21, 0, "IDT + PIC remapped", 15, 0);
-
-    //const idt_info = bi.get();
-    //var buf_idt: [16]u8 = undefined;
-
-    //vga.writeStringAt(22, 0, "Kernel start: ", 15, 0);
-    //vga.writeStringAt(22, 15, conv.toHex(u64, idt_info.kernel_start, &buf_idt), 15, 0);
-
-    //vga.writeStringAt(23, 0, "Kernel end:   ", 15, 0);
-    //vga.writeStringAt(23, 15, conv.toHex(u64, idt_info.kernel_end, &buf_idt), 15, 0);
-
     // -------------------------------------------------------------------------
-    //  FRAME ALLOCATOR REGIONS DEBUG
+    //  FRAME ALLOCATOR DIAGNOSTICS (RETAINED FOR DEBUGGING)
     // -------------------------------------------------------------------------
-    //var idx: usize = 0;
-    //for (regions) |r| {
-        //var buf_base: [16]u8 = undefined;
-        //var buf_len: [16]u8 = undefined;
+    //
+    // Useful when validating E820 parsing, memory-region filtering and
+    // frame allocator initialisation.
+    //
 
-        //vga.writeString("Region ", 15, 0);
-        //vga.writeString(conv.toHex(u64, idx, &buf_base), 15, 0);
-
-        //vga.writeString(": base=", 15, 0);
-        //vga.writeString(conv.toHex(u64, r.base, &buf_base), 15, 0);
-
-        //vga.writeString(" len=", 15, 0);
-        //vga.writeString(conv.toHex(u64, r.length, &buf_len), 15, 0);
-
-        //idx += 1;
-    //}
+    // var idx: usize = 0;
+    // for (regions) |r| {
+    //     ...
+    // }
 
     splash.updateProgress(40, "Initialising memory...");
     splash.delay_crude(20_000_000);
 
+    // -------------------------------------------------------------------------
+    //  PHYSICAL FRAME ALLOCATOR INITIALISATION
+    // -------------------------------------------------------------------------
 
-    // -------------------------------------------------------------------------
-    //  BITMAP INIT + RESERVED RANGES
-    // -------------------------------------------------------------------------
     serial.writeString("CP3: bitmap init done\n");
+
     splash.updateProgress(50, "Mapping APIC hardware...");
+
+    // Build the physical-frame bitmap using the usable memory regions
+    // discovered from the E820 memory map.
     bm.init(regions);
-    //vga.step(5);
 
     const mem_mod = @import("memory.zig");
 
-    // Kernel image
+    // -------------------------------------------------------------------------
+    //  RESERVE KERNEL-OWNED PHYSICAL MEMORY
+    // -------------------------------------------------------------------------
+    //
+    // Every memory range already in active use by the kernel must be
+    // marked as allocated before general frame allocation begins.
+    // Failure to reserve any of these regions would allow the frame
+    // allocator to hand out memory that is already in use.
+    //
+
+    // Kernel image (.text, .rodata, .data, .bss, etc.).
     const real_kernel_end_virt = @intFromPtr(&_kernel_end);
     const real_kernel_end_phys = mem_mod.virtToPhys(real_kernel_end_virt);
     bm.markUsedRange(info.kernel_start, real_kernel_end_phys);
 
-    // Stack
+    // Bootstrap kernel stack supplied by the boot process.
     bm.markUsedRange(info.stack_top - STACK_SIZE, info.stack_top);
-    //vga.step(6);
 
-    // Heap
+    // FixedBufferAllocator backing heap.
     const heap_virt = @intFromPtr(&heap_buffer[0]);
     const heap_phys = mem_mod.virtToPhys(heap_virt);
     bm.markUsedRange(heap_phys, heap_phys + heap_buffer.len);
 
-    // E820 table
+    // Kernel-owned E820 memory map copy.
     const e820_start = E820Store.getTableAddr();
-    const e820_end = e820_start +
+    const e820_end =
+    e820_start +
     @as(usize, E820Store.getTableCount()) * @sizeOf(E820Store.E820Entry);
+
     bm.markUsedRange(e820_start, e820_end);
 
-    // Bitmap storage
+    // Physical storage occupied by the frame-allocation bitmap itself.
     const range = bm.getStorageRange();
     bm.markUsedRange(range.start, range.end);
 
-    // Page tables
-    bm.markUsedRange(info.page_table_base, info.page_table_base + PAGE_TABLE_BYTES);
+    // Reserved page-table memory.
+    bm.markUsedRange(
+        info.page_table_base,
+        info.page_table_base + PAGE_TABLE_BYTES,
+    );
 
-    // RAM disk buffer
+    // RAM disk backing storage.
     const ramdisk_virt = @intFromPtr(&fs_ramdisk_buf[0]);
     const ramdisk_phys = mem_mod.virtToPhys(ramdisk_virt);
     bm.markUsedRange(ramdisk_phys, ramdisk_phys + fs_ramdisk_buf.len);
 
-    // Debug: bitmap storage range
-    //const bmRange = bm.getStorageRange();
-    //var buf_bm_range: [16]u8 = undefined;
-    //vga.writeString("Bitmap start: 0x", 15, 0);
-    //vga.writeString(conv.toHex(u64, bmRange.start, &buf_bm_range), 15, 0);
-    //vga.writeString("Bitmap end:   0x", 15, 0);
-    //vga.writeString(conv.toHex(u64, bmRange.end, &buf_bm_range), 15, 0);
+    // Bitmap-storage diagnostics retained for allocator debugging.
+    //
+    // const bmRange = bm.getStorageRange();
+    // var buf_bm_range: [16]u8 = undefined;
+    // vga.writeString("Bitmap start: 0x", 15, 0);
+    // vga.writeString(conv.toHex(u64, bmRange.start, &buf_bm_range), 15, 0);
+    // vga.writeString("Bitmap end:   0x", 15, 0);
+    // vga.writeString(conv.toHex(u64, bmRange.end, &buf_bm_range), 15, 0);
 
-    // Shell's dedicated Task 0 stack (must be reserved — it's live for the
-    // entire session once shell.run() starts, but isn't covered by the
-    // original boot "Stack" range since it's a separate static buffer)
+    // Dedicated shell-task stack.
+    //
+    // This stack remains active for the lifetime of the shell task and
+    // is separate from the bootstrap kernel stack reserved above.
     const shell_stack_virt = @intFromPtr(&shell_stack_buf[0]);
     const shell_stack_phys = mem_mod.virtToPhys(shell_stack_virt);
     bm.markUsedRange(shell_stack_phys, shell_stack_phys + shell_stack_buf.len);
 
-    // Scratch page for external binaries (physical 0x7000 - 0x7FFF)
+    // Scratch page used for loading and executing external binaries.
     bm.markUsedRange(0x7000, 0x8000);
 
-    // Reserve the TSS structure and its dedicated IST1 stack
+    // Task State Segment and dedicated IST1 interrupt stack.
     bm.markUsedRange(0x20000, 0x29000);
 
-    //Zero scratch page at boot so the counter starts clean:
+    // Clear the binary-loader scratch page so execution metadata
+    // always begins in a known state.
     const scratch_virt = memory.physToVirt(0x7000);
     const scratch_ptr: [*]u8 = @ptrFromInt(scratch_virt);
     @memset(scratch_ptr[0..4096], 0);
 
     splash.updateProgress(60, "Configuring interrupts...");
     splash.delay_crude(20_000_000);
+
     // -------------------------------------------------------------------------
-    //  APIC VIRTUAL MEMORY INITIALIZATION
+    //  APIC VIRTUAL MEMORY MAPPING
     // -------------------------------------------------------------------------
-    // Read the actual current page table base from CR3 (Perfect!)
+
+    // Read the currently active page-table root from CR3 so that APIC
+    // mappings can be added to the running address space.
     var cr3: usize = 0;
     asm volatile ("mov %%cr3, %[cr3]" : [cr3] "=r" (cr3));
 
-    // 1. Map Local APIC using the exact constant apic.zig reads from
-    mem_mod.mapPage(cr3, apic.LAPIC_VIRT_BASE, apic.LAPIC_PHYS_BASE, mem_mod.FLAGS_MMIO) catch {
+    // Map the Local APIC MMIO region.
+    mem_mod.mapPage(
+        cr3,
+        apic.LAPIC_VIRT_BASE,
+        apic.LAPIC_PHYS_BASE,
+        mem_mod.FLAGS_MMIO,
+    ) catch {
         @panic("Failed to dynamically map Local APIC");
     };
 
-    // 2. Map I/O APIC using the exact constant apic.zig reads from
-    mem_mod.mapPage(cr3, apic.IOAPIC_VIRT_BASE, apic.IOAPIC_PHYS_BASE, mem_mod.FLAGS_MMIO) catch {
+    // Map the I/O APIC MMIO region.
+    mem_mod.mapPage(
+        cr3,
+        apic.IOAPIC_VIRT_BASE,
+        apic.IOAPIC_PHYS_BASE,
+        mem_mod.FLAGS_MMIO,
+    ) catch {
         @panic("Failed to dynamically map I/O APIC");
     };
+
     serial.writeString("CP4: APIC mapped\n");
-    vga.writeString("APIC Hardware Mapped Safely!", 15, 0);
-
+    //vga.writeString("APIC Hardware Mapped Safely!", 15, 0);
 
     // -------------------------------------------------------------------------
-    //  APIC FEATURE-FLAGGED PROBE
+    //  APIC INITIALISATION AND ACTIVATION
     // -------------------------------------------------------------------------
+
     splash.updateProgress(65, "APIC feature probe...");
+
     apic.enableApicSoftware();
     apic.initLapicTimer(0x20);
     apic.initIoApicKeyboard();
     apic.initIoApicMouse();
 
-    // NOW IT IS SAFE TO FLIP THE HANDOFF SWITCH!
+    // Route interrupt acknowledgements through the APIC subsystem
+    // once initialisation has completed successfully.
     conf.timer.use_apic = true;
 
-    // Print a quick confirmation that we can read back from the LAPIC
-    const lapic_id = apic.probeApicId();
-    vga.writeStringAt(1, 0, "LAPIC Active Core ID: ", 0x0A, 0);
-    var id_buf: [16]u8 = undefined;
-    const id_str = conv.u32ToStr(&id_buf, lapic_id);
-    vga.writeStringAt(1, 22, id_str, 0x0E, 0);
+    // Verify communication with the Local APIC.
+    //const lapic_id = apic.probeApicId();
 
-    // Import your newly updated apic module
-    // Probe the hardware ID safely while PIC handles current system traffic
-    const core_id = apic.probeApicId();
+    //vga.writeStringAt(1, 0, "LAPIC Active Core ID: ", 0x0A, 0);
 
-    //while (true) { asm volatile ("hlt"); }
+    //var id_buf: [16]u8 = undefined;
+    //const id_str = conv.u32ToStr(&id_buf, lapic_id);
+    //vga.writeStringAt(1, 22, id_str, 0x0E, 0);
 
-    var buf_id: [16]u8 = undefined;
-    vga.writeString(" -> Detected Bootstrap Core APIC ID: ", 15, 0);
-    vga.writeString(conv.toHex(u64, core_id, &buf_id), 15, 0);
+    // Read and display the bootstrap processor's APIC identifier.
+    //const core_id = apic.probeApicId();
 
-
+    //var buf_id: [16]u8 = undefined;
+    //vga.writeString(" -> Detected Bootstrap Core APIC ID: ", 15, 0);
+    //vga.writeString(conv.toHex(u64, core_id, &buf_id), 15, 0);
 
     // -------------------------------------------------------------------------
-    // APIC HARDWARE REALITY CHECK
+    //  APIC HARDWARE DIAGNOSTICS (RETAINED FOR DEBUGGING)
     // -------------------------------------------------------------------------
-    //vga.clearScreen(0, 0);
-    //vga.writeString("A\r\n", 15, 0);
-
-    //const raw_lapic = apic.debugRawLapic();
-    //vga.writeString("B\r\n", 15, 0);
-
-    //const raw_ioapic = apic.debugRawIoApic();
-    //vga.writeString("C\r\n", 15, 0);
-
-    //var buf_l: [16]u8 = undefined;
-    //var buf_i: [16]u8 = undefined;
-    //vga.writeString("RAW LAPIC: ", 15, 0);
-    //vga.writeString(conv.toHex(u64, raw_lapic, &buf_l), 15, 0);
-    //vga.writeString(" RAW IOAPIC: ", 15, 0);
-    //vga.writeString(conv.toHex(u64, raw_ioapic, &buf_i), 15, 0);
-    //vga.writeString("D\r\n", 15, 0);
-    // Freeze to read the values clearly
-    //while (true) { asm volatile ("hlt"); }
+    //
+    // These checks were used during APIC bring-up to verify MMIO
+    // mappings, LAPIC register access, and I/O APIC visibility.
+    //
+    // vga.clearScreen(0, 0);
+    // vga.writeString("A\r\n", 15, 0);
+    //
+    // const raw_lapic = apic.debugRawLapic();
+    // vga.writeString("B\r\n", 15, 0);
+    //
+    // const raw_ioapic = apic.debugRawIoApic();
+    // vga.writeString("C\r\n", 15, 0);
+    //
+    // var buf_l: [16]u8 = undefined;
+    // var buf_i: [16]u8 = undefined;
+    // vga.writeString("RAW LAPIC: ", 15, 0);
+    // vga.writeString(conv.toHex(u64, raw_lapic, &buf_l), 15, 0);
+    // vga.writeString(" RAW IOAPIC: ", 15, 0);
+    // vga.writeString(conv.toHex(u64, raw_ioapic, &buf_i), 15, 0);
+    // vga.writeString("D\r\n", 15, 0);
 
     // -------------------------------------------------------------------------
-    //  FRAME ALLOCATOR STRESS TEST
+    //  FRAME ALLOCATOR SELF-TEST
     // -------------------------------------------------------------------------
+
     splash.updateProgress(75, "Frame allocator self-test...");
+
+    // Validate allocation, deallocation, and reuse behaviour before
+    // the allocator is relied upon by higher-level subsystems.
+
     var addrs: [128]usize = undefined;
 
     for (&addrs) |*slot| {
@@ -646,35 +774,44 @@ pub export fn kmain() noreturn {
     }
 
     const reused = bm.allocFrame() orelse 0;
+
     if (reused == addrs[0]) {
-        vga.writeString("Allocator reuse OK", 15, 2);
+        //vga.writeString("Allocator reuse OK", 15, 2);
+        vga.writeString("ARO", 0, 0);
     } else {
-        vga.writeString("Allocator not reusing frames!", 15, 4);
+        //vga.writeString("Allocator not reusing frames!", 15, 4);
+        vga.writeString("ANRF", 0, 0);
     }
 
     bm.freeFrame(reused);
 
-    var buf_status: [16]u8 = undefined;
-    const status = io.inb(0x64); // keyboard controller status port
-    vga.writeString("KBC status: ", 15, 0);
-    vga.writeString(conv.toHex(u64, status, &buf_status), 15, 0);
+    // Display current keyboard-controller state for debugging.
+    //var buf_status: [16]u8 = undefined;
+    //const status = io.inb(0x64);
 
+    //vga.writeString("KBC status: ", 15, 0);
+    //vga.writeString(conv.toHex(u64, status, &buf_status), 15, 0);
+
+    // Optional panic-path validation.
     const FORCE_PANIC = false;
     if (FORCE_PANIC) {
         @panic("TEST");
     }
 
     asm volatile ("sti");
-    //vga.clearScreen(15, 0);
 
     splash.updateProgress(80, "Task manager initialising...");
     splash.delay_crude(20_000_000);
 
     // =========================================================================
-    // TASK MANAGER INITIALIZATION
+    //  TASK SCHEDULER INITIALISATION
     // =========================================================================
+
+    // Create the global scheduler using the kernel allocator.
     scheduler.manager = scheduler.Scheduler.init(allocator);
 
+    // Optionally register the currently executing kernel thread as
+    // the initial scheduler-managed task.
     if (conf.USE_SCHEDULER_SHELL) {
         scheduler.manager.registerCurrentThreadAsTask(0, 0);
         scheduler.manager.current_task_idx = 0;
@@ -682,12 +819,17 @@ pub export fn kmain() noreturn {
 
     splash.updateProgress(100, "Final setup...");
     splash.delay_crude(20_000_000);
+
     // =========================================================================
-    // PERMANENT STORAGE & FILE SYSTEM BRING UP
+    //  FILESYSTEM MOUNT AND APPLICATION STAGING
     // =========================================================================
+
+    // Expose the RAM disk image as a block device and mount the
+    // filesystem on top of it.
     var ram_disk = @import("fs/ramdisk.zig").RamDisk.init(fs_ramdisk_buf[0..], 512);
     var dev = ram_disk.asBlockDevice();
 
+    // Create a fresh filesystem if no valid installation was found.
     if (!fs_exists) {
         CodaFs.mkfs(allocator, &dev) catch |err| {
             @panic(@errorName(err));
@@ -699,98 +841,125 @@ pub export fn kmain() noreturn {
         @panic(@errorName(err));
     };
 
+    // Populate the global filesystem instance from the mounted volume.
     fs_global.device = fs.device;
     fs_global.superblock = fs.superblock;
     fs_global.space_manager = fs.space_manager;
     fs_global.root_dir = fs.root_dir;
 
-    // Run the embedded application installation staging pipeline
+    // Install applications embedded within the kernel image into the
+    // filesystem if they are not already present.
     bin_loader.installEmbeddedApps(allocator, &fs_global) catch |err| {
         vga.writeString("Application injection failure: ", 12, 5);
         vga.writeString(@errorName(err), 12, 5);
         vga.writeString("\n", 12, 5);
     };
 
-    // ... Right after bin_loader.installEmbeddedApps(allocator, &fs_global) ...
+    // -------------------------------------------------------------------------
+    //  FILESYSTEM VALIDATION TEST
+    // -------------------------------------------------------------------------
+    //
+    // Performs a simple read-path verification against an installed
+    // application image. Useful for catching early filesystem,
+    // block-device, and loader regressions.
+    //
 
-    //vga.writeString("\n🔍 Verifying prog1.bin read...", 10, 6);
+    // vga.writeString("\n🔍 Verifying prog1.bin read...", 10, 6);
 
-    // 1. Allocate a buffer large enough to hold the file (4236 bytes)
+    // Allocate a test buffer large enough to hold the file.
     const test_buf = allocator.alloc(u8, 4236) catch |err| {
         @panic(@errorName(err));
     };
     defer allocator.free(test_buf);
 
-    // 2. Call our new readFile function
+    // Read a known embedded application from the filesystem.
     const bytes_read = fs_global.readFile(allocator, "/prog1", test_buf) catch |err| {
         vga.writeString("\n❌ Read failed: ", 12, 7);
         vga.writeString(@errorName(err), 12, 7);
         @panic(@errorName(err));
     };
 
-    // Silence the unused variable error for bytes_read
+    // The successful read is currently used only as a validation check.
     _ = bytes_read;
 
-    // 3. Print a success indicator to the screen
-    //vga.writeString("\n✅ Read successful!", 10, 8);
+    // vga.writeString("\n✅ Read successful!", 10, 8);
 
-    // Silence the unused capture by using a blank identifier in the loop
+    // Touch the buffer to make its use explicit during validation.
     for (test_buf[0..4]) |_| {
-        // We can leave this empty now, Zig is happy with the underscore
+        // Intentionally empty.
     }
-    //pause();
-    //Turn off splash screen
+
+    // pause();
+
+    // Remove the startup splash screen and transition to normal UI.
     splash.dismiss();
 
-
-
-
     // =========================================================================
-    //  SHELL STARTUP WITH DEDICATED STACK SWAP
+    //  SHELL AND USERLAND HANDOFF
     // =========================================================================
+
     serial.writeString("CP6: about to call shell.run()\n");
+
     if (conf.USE_SCHEDULER_SHELL) {
-        // 1. Calculate the absolute top of our private shell stack buffer
+
+        // Calculate the top of the dedicated shell task stack.
         const stack_top = @intFromPtr(&shell_stack_buf) + shell_stack_buf.len;
 
-        // 2. HARDWARE SWAP: Force the CPU to leave the kernel boot stack
-        // and instantly start using our private shell stack buffer.
+        // Switch execution from the bootstrap kernel stack to the
+        // shell task's permanent stack.
+        //
+        // From this point onward, shell execution is completely
+        // isolated from the early-boot stack environment.
         asm volatile (
             \\ mov %[top], %%rsp
             \\ xor %%rbp, %%rbp
             :
             : [top] "r" (stack_top)
-            : .{} // Passes an empty compile-time struct literal
+            : .{}
         );
 
-        // 3. Now that the CPU is physically isolated on its own stack,
-        // we register this exact execution state as Task 0.
+        // Register the current execution context as Task 0.
         scheduler.manager.registerCurrentThreadAsTask(0, 0);
         scheduler.manager.current_task_idx = 0;
 
-        // 4. Safely enable the preemption engine
+        // Enable scheduler-driven preemption.
         scheduler.manager.yield_enabled = true;
 
-        // Unmask the hardware timer interrupts
+        // Ensure hardware interrupts are enabled before entering the
+        // interactive environment.
         asm volatile ("sti");
 
-        // 5. Run the shell natively. Every variable it allocates now lands
-        // cleanly inside 'shell_stack_buf', completely leaving the kernel stack behind.
+        // Transfer control to the shell.
+        //
+        // All subsequent stack allocations occur within the dedicated
+        // shell stack rather than the bootstrap kernel stack.
         shell.run(&fs_global, allocator);
 
-        while (true) { asm volatile ("hlt"); }
+        while (true) {
+            asm volatile ("hlt");
+        }
+
     } else {
+
+        // Scheduler-disabled mode.
+        //
+        // The shell runs directly without task switching or preemption.
         scheduler.manager.yield_enabled = false;
         shell.run(&fs_global, allocator);
     }
 
-    // Optional allocator tests (kept as-is)
+    // -------------------------------------------------------------------------
+    //  OPTIONAL DEVELOPMENT TESTS
+    // -------------------------------------------------------------------------
+
     const ENABLE_TESTS = false;
+
     if (ENABLE_TESTS) {
         tests.runAllocatorTests(allocator);
-        //vga.step(7);
+        // vga.step(7);
     }
 
+    // The kernel should never return past shell execution.
     while (true) {
         asm volatile ("hlt");
     }

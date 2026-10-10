@@ -1,29 +1,66 @@
 // src/kernel/framebuffer.zig
 //
-// Framebuffer text renderer for VESA graphics mode.
-// Draws characters as 8x16 pixel glyphs into a linear framebuffer.
-// Provides the same interface as vga.zig so call sites can switch
-// between text mode and graphics mode transparently.
-
+// Framebuffer-based text renderer for VESA graphics modes.
+//
+// Characters are rendered using the built-in 8x16 bitmap font and
+// written directly into a linear framebuffer. The public interface
+// mirrors vga.zig so higher-level kernel code can switch between
+// text-mode and graphics-mode output without modification.
+//
 const font = @import("font.zig");
 const serial = @import("drivers/serial.zig");
 
-// Framebuffer state — set once at boot from BootInfo
-var fb_ptr:    [*]volatile u8 = undefined;
-pub var fb_stride: u32 = 0;  // bytes per scanline
-pub var fb_width:  u32 = 0;  // pixels per row
-pub var fb_height: u32 = 0;  // pixels per column
-var fb_bpp:    u32 = 0;  // bytes per pixel (3 for 24bpp, 4 for 32bpp)
+// -----------------------------------------------------------------------------
+//  FRAMEBUFFER STATE
+// -----------------------------------------------------------------------------
 
-// Text cursor position in character cells
+/// Framebuffer base address supplied by BootInfo during startup.
+var fb_ptr: [*]volatile u8 = undefined;
+
+/// Number of bytes between the start of one scanline and the next.
+pub var fb_stride: u32 = 0;
+
+/// Framebuffer width in pixels.
+pub var fb_width: u32 = 0;
+
+/// Framebuffer height in pixels.
+pub var fb_height: u32 = 0;
+
+/// Bytes per pixel.
+///
+/// Typical values:
+///   3 = 24-bit colour
+///   4 = 32-bit colour
+var fb_bpp: u32 = 0;
+
+// -----------------------------------------------------------------------------
+//  TEXT CURSOR STATE
+// -----------------------------------------------------------------------------
+
+/// Current text cursor column in character-cell coordinates.
 pub var cursor_col: u32 = 0;
+
+/// Current text cursor row in character-cell coordinates.
 pub var cursor_row: u32 = 0;
 
-// Derived text dimensions
-var cols: u32 = 0;  // fb_width  / GLYPH_WIDTH
-var rows: u32 = 0;  // fb_height / GLYPH_HEIGHT
+// -----------------------------------------------------------------------------
+//  DERIVED TEXT DIMENSIONS
+// -----------------------------------------------------------------------------
 
-// Colour palette — 4-bit VGA colour index to 24-bit BGR values
+/// Number of text columns that fit on the framebuffer.
+var cols: u32 = 0;
+
+/// Number of text rows that fit on the framebuffer.
+var rows: u32 = 0;
+
+// -----------------------------------------------------------------------------
+//  VGA-COMPATIBLE COLOUR PALETTE
+// -----------------------------------------------------------------------------
+
+/// Mapping from 4-bit VGA colour indices to 24-bit RGB values.
+///
+/// This allows framebuffer text rendering to use the same colour
+/// identifiers as the traditional VGA text renderer.
 const palette: [16]u32 = .{
     0x000000, // 0  black
     0xAA0000, // 1  blue
@@ -43,13 +80,19 @@ const palette: [16]u32 = .{
     0xFFFFFF, // 15 white
 };
 
-/// Initialise the framebuffer renderer.
-/// Must be called before any putChar/writeString calls.
-
+/// Colour channel bit positions supplied by VESA mode information.
+///
+/// These defaults match the common X8R8G8B8 layout but are replaced
+/// during initialisation with values reported by the bootloader.
 pub var red_pos: u5 = 16;
 pub var green_pos: u5 = 8;
 pub var blue_pos: u5 = 0;
 
+/// Initialise framebuffer rendering state.
+///
+/// Must be called before any text output or pixel operations.
+/// The supplied parameters are obtained from the bootloader's
+/// framebuffer information structure.
 pub fn init(
     addr: usize,
     stride: u32,
@@ -65,20 +108,30 @@ pub fn init(
     fb_width   = width;
     fb_height  = height;
     fb_bpp     = bpp / 8;
+
+    // Calculate the framebuffer's text dimensions based on the
+    // fixed-size bitmap font.
     cols       = width / font.GLYPH_WIDTH;
     rows       = height / font.GLYPH_HEIGHT;
 
+    // Record hardware-specific colour channel locations.
     red_pos   = @intCast(r_pos);
     green_pos = @intCast(g_pos);
     blue_pos  = @intCast(b_pos);
 
+    // Begin text output at the top-left corner.
     cursor_col = 0;
     cursor_row = 0;
 }
 
-/// Internal helper to draw a single 32-bit color pixel at (x, y)
+/// Write a single pixel to the framebuffer.
+///
+/// Supports both 24-bit and 32-bit framebuffer formats.
+/// The colour value must already be packed into the format
+/// expected by the active video mode.
 inline fn plotPixel(x: u32, y: u32, color: u32) void {
     const offset = y * fb_stride + x * fb_bpp;
+
     if (fb_bpp == 4) {
         const ptr: *volatile u32 = @ptrCast(@alignCast(&fb_ptr[offset]));
         ptr.* = color;
@@ -89,7 +142,8 @@ inline fn plotPixel(x: u32, y: u32, color: u32) void {
     }
 }
 
-/// Dynamic color packing based on VESA hardware info
+/// Pack RGB colour components into the framebuffer's native pixel
+/// format using the channel positions reported by the video mode.
 pub fn packColor(r: u8, g: u8, b: u8) u32 {
     const red   = @as(u32, r) << red_pos;
     const green = @as(u32, g) << green_pos;
@@ -97,7 +151,11 @@ pub fn packColor(r: u8, g: u8, b: u8) u32 {
     return red | green | blue;
 }
 
-/// Draw a single glyph at character cell (col, row) with given colours.
+/// Render a single character glyph at the specified text cell.
+///
+/// The glyph bitmap is read from font.zig and expanded into pixels
+/// within the framebuffer using the supplied foreground and
+/// background VGA colour indices.
 fn drawGlyph(char: u8, col: u32, row: u32, fg: u8, bg: u8) void {
     const fg_hex = palette[fg & 0x0F];
     const fg_colour = packColor(
@@ -113,40 +171,53 @@ fn drawGlyph(char: u8, col: u32, row: u32, fg: u8, bg: u8) void {
                                 @truncate(bg_hex & 0xFF),
     );
 
+    // Convert character-cell coordinates into framebuffer pixels.
     const px = col * font.GLYPH_WIDTH;
     const py = row * font.GLYPH_HEIGHT;
 
     var gy: u32 = 0;
     while (gy < font.GLYPH_HEIGHT) : (gy += 1) {
+
+        // Each row of a glyph is stored as a single byte whose bits
+        // represent the eight horizontal pixels.
         const glyph_row = font.glyphs[@as(u32, char) * font.GLYPH_HEIGHT + gy];
+
         var gx: u32 = 0;
         while (gx < font.GLYPH_WIDTH) : (gx += 1) {
             const bit = @as(u8, 1) << @truncate(7 - gx);
-            const colour = if ((glyph_row & bit) != 0) fg_colour else bg_colour;
+            const colour = if ((glyph_row & bit) != 0)
+            fg_colour
+            else
+                bg_colour;
+
             plotPixel(px + gx, py + gy, colour);
         }
     }
 }
 
-/// Scroll the screen up by one character row.
-/// Scroll the screen up by one character row.
-/// Scroll the screen up by one character row.
+/// Scroll the framebuffer contents upward by one text row.
+///
+/// The framebuffer is treated as a large pixel array. All scanlines
+/// except the first character row are moved upward, and the newly
+/// exposed bottom row is cleared.
 fn scroll() void {
     const copy_height = (rows - 1) * font.GLYPH_HEIGHT;
     const copy_size = copy_height * fb_stride;
     const src_offset = font.GLYPH_HEIGHT * fb_stride;
 
-    // 1. Strip volatile using @volatileCast, then change the base type to u8 via @ptrCast
+    // Temporarily obtain a non-volatile view so bulk memory
+    // operations can be performed efficiently.
     const raw_fb = @as([*]u8, @ptrCast(@volatileCast(fb_ptr)));
 
-    // 2. Define the destination and source memory windows
+    // Define the destination and source framebuffer regions.
     const dest_slice = raw_fb[0..copy_size];
     const src_slice = raw_fb[src_offset .. src_offset + copy_size];
 
-    // 3. Move the screen up safely using @memmove to handle the overlapping memory regions
+    // Move the framebuffer contents upward. @memmove() is required
+    // because the source and destination ranges overlap.
     @memmove(dest_slice, src_slice);
 
-    // 4. Clear the last row to black instantly
+    // Clear the newly exposed bottom text row.
     const clear_start = (rows - 1) * font.GLYPH_HEIGHT * fb_stride;
     const clear_size = font.GLYPH_HEIGHT * fb_stride;
     const clear_slice = raw_fb[clear_start .. clear_start + clear_size];
@@ -155,6 +226,9 @@ fn scroll() void {
 }
 
 /// Write a single character at the current cursor position.
+///
+/// Printable characters are rendered into the framebuffer while
+/// control characters update cursor state as appropriate.
 pub fn putChar(c: u8, fg: u8, bg: u8) void {
     serial.putChar(c);
 
@@ -166,24 +240,29 @@ pub fn putChar(c: u8, fg: u8, bg: u8) void {
     } else {
         drawGlyph(c, cursor_col, cursor_row, fg, bg);
         cursor_col += 1;
+
+        // Automatically wrap at the right edge of the screen.
         if (cursor_col >= cols) {
             cursor_col = 0;
             cursor_row += 1;
         }
     }
 
+    // Scroll once the cursor moves beyond the final visible row.
     if (cursor_row >= rows) {
         scroll();
         cursor_row = rows - 1;
     }
 }
 
-/// Write a string at the current cursor position.
+/// Write a string at the current cursor position using the supplied
+/// foreground and background colours.
 pub fn writeString(s: []const u8, fg: u8, bg: u8) void {
     for (s) |c| putChar(c, fg, bg);
 }
 
-/// Write a string at a fixed character cell position.
+/// Draw a string at a fixed text-cell position without modifying the
+/// current cursor location.
 pub fn writeStringAt(row: u16, col: u16, s: []const u8, fg: u8, bg: u8) void {
     var i: u32 = 0;
     while (i < s.len) : (i += 1) {
@@ -191,19 +270,24 @@ pub fn writeStringAt(row: u16, col: u16, s: []const u8, fg: u8, bg: u8) void {
     }
 }
 
-/// Clear the screen to background colour.
-/// Clear the screen to background colour.
+/// Clear the entire framebuffer and reset the text cursor.
+///
+/// A fast memset path is used when the requested background colour is
+/// black, otherwise every pixel is explicitly redrawn.
 pub fn clearScreen(fg: u8, bg: u8) void {
     _ = fg;
+
     const raw_fb = @as([*]u8, @ptrCast(@volatileCast(fb_ptr)));
 
-    // Fast path: clearing to black (0x00)
+    // Fast path for black backgrounds.
     if (bg == 0) {
         const total_bytes = fb_height * fb_stride;
         @memset(raw_fb[0..total_bytes], 0);
     } else {
-        // Fill non-black background line by line
+
+        // Non-black clears must be performed pixel by pixel.
         const color = palette[bg & 0x0F];
+
         var y: u32 = 0;
         while (y < fb_height) : (y += 1) {
             var x: u32 = 0;
@@ -217,11 +301,18 @@ pub fn clearScreen(fg: u8, bg: u8) void {
     cursor_row = 0;
 }
 
+/// Return the number of visible text rows supported by the current
+/// framebuffer configuration.
 pub fn getRows() u32 { return rows; }
+
+/// Return the number of visible text columns supported by the current
+/// framebuffer configuration.
 pub fn getCols() u32 { return cols; }
 
-/// Draws or erases a solid line under the current character cell.
-/// Set `visible` to true to show the cursor, or false to clear it.
+/// Draw or erase a simple text cursor at the current character cell.
+///
+/// The cursor is rendered as a solid underline occupying the bottom
+/// two pixel rows of the active character cell.
 pub fn setCursorVisible(visible: bool) void {
     if (cursor_col >= cols or cursor_row >= rows) return;
 
@@ -230,12 +321,14 @@ pub fn setCursorVisible(visible: bool) void {
 
     const colour_idx: u8 = if (visible) 15 else 0;
     const hex = palette[colour_idx & 0x0F];
+
     const color = packColor(
         @truncate((hex >> 16) & 0xFF),
                             @truncate((hex >> 8) & 0xFF),
                             @truncate(hex & 0xFF),
     );
 
+    // Draw the underline across the bottom of the cell.
     var y = start_y + 14;
     while (y < start_y + 16) : (y += 1) {
         if (y >= fb_height) break;
@@ -248,12 +341,11 @@ pub fn setCursorVisible(visible: bool) void {
     }
 }
 
-
 // -----------------------------------------------------------------------------
 //  GRAPHICS PRIMITIVES & DRAWING HELPERS
 // -----------------------------------------------------------------------------
 
-/// Fills a rectangular region with a 32-bit packed color.
+/// Fill a rectangular region with a packed framebuffer colour.
 pub fn fillRect(x: u32, y: u32, width: u32, height: u32, color: u32) void {
     if (x >= fb_width or y >= fb_height) return;
 
@@ -269,18 +361,18 @@ pub fn fillRect(x: u32, y: u32, width: u32, height: u32, color: u32) void {
     }
 }
 
-/// Draws a 1-pixel-thick rectangle outline with a 32-bit packed color.
+/// Draw a one-pixel-wide rectangular outline.
 pub fn drawRectOutline(x: u32, y: u32, width: u32, height: u32, color: u32) void {
     if (width == 0 or height == 0) return;
 
-    // Top and bottom horizontal borders
+    // Draw the top and bottom borders.
     var px = x;
     while (px < x + width and px < fb_width) : (px += 1) {
         if (y < fb_height) plotPixel(px, y, color);
         if (y + height - 1 < fb_height) plotPixel(px, y + height - 1, color);
     }
 
-    // Left and right vertical borders
+    // Draw the left and right borders.
     var py = y;
     while (py < y + height and py < fb_height) : (py += 1) {
         if (x < fb_width) plotPixel(x, py, color);
@@ -288,7 +380,10 @@ pub fn drawRectOutline(x: u32, y: u32, width: u32, height: u32, color: u32) void
     }
 }
 
-/// Renders raw 24-bit RGB pixel data onto the screen at (x, y).
+/// Render raw 24-bit RGB image data into the framebuffer.
+///
+/// The input buffer is expected to contain tightly packed RGB triplets
+/// in row-major order.
 pub fn drawImage(x: u32, y: u32, img_width: u32, img_height: u32, data: []const u8) void {
     const expected_len: usize = @as(usize, img_width) * @as(usize, img_height) * 3;
     if (data.len < expected_len) return;
@@ -310,8 +405,11 @@ pub fn drawImage(x: u32, y: u32, img_width: u32, img_height: u32, data: []const 
     }
 }
 
-/// Renders raw 24-bit RGB pixel data onto the screen, scaled to (dest_width, dest_height)
-/// using nearest-neighbor sampling.
+/// Render a 24-bit RGB image using nearest-neighbour scaling.
+///
+/// Each destination pixel maps to the closest source pixel. This
+/// approach is simple and fast, making it suitable for early-kernel
+/// graphics where image quality is less important than performance.
 pub fn drawImageScaled(
     x: u32, y: u32,
     src_width: u32, src_height: u32,
@@ -324,6 +422,8 @@ pub fn drawImageScaled(
 
     var dy: u32 = 0;
     while (dy < dest_height) : (dy += 1) {
+
+        // Map destination coordinates back into source space.
         const sy = (dy * src_height) / dest_height;
 
         var dx: u32 = 0;
@@ -343,9 +443,14 @@ pub fn drawImageScaled(
     }
 }
 
-/// Renders text at exact pixel coordinates (x, y) rather than cell coordinates.
+/// Render text at exact pixel coordinates rather than text-cell
+/// coordinates.
+///
+/// Unlike writeStringAt(), this function is intended for graphical
+/// interfaces where text must be positioned with pixel precision.
 pub fn drawStringAtPixel(x: u32, y: u32, text: []const u8, fg_color: u32, bg_color: u32) void {
     var curr_x = x;
+
     for (text) |char| {
         if (curr_x + font.GLYPH_WIDTH > fb_width) break;
 
@@ -354,39 +459,62 @@ pub fn drawStringAtPixel(x: u32, y: u32, text: []const u8, fg_color: u32, bg_col
             if (y + gy >= fb_height) break;
 
             const glyph_row = font.glyphs[@as(u32, char) * font.GLYPH_HEIGHT + gy];
+
             var gx: u32 = 0;
             while (gx < font.GLYPH_WIDTH) : (gx += 1) {
                 const bit = @as(u8, 1) << @truncate(7 - gx);
-                const color = if ((glyph_row & bit) != 0) fg_color else bg_color;
+                const color = if ((glyph_row & bit) != 0)
+                fg_color
+                else
+                    bg_color;
 
                 plotPixel(curr_x + gx, y + gy, color);
             }
         }
+
+        // Advance to the next character position.
         curr_x += font.GLYPH_WIDTH;
     }
 }
 
+/// Write a hexadecimal value to the serial console.
+///
+/// Intended for low-level debugging where framebuffer output may not
+/// yet be available or reliable.
 fn printHex(label: []const u8, value: usize) void {
     const hex_chars = "0123456789ABCDEF";
+
     serial.writeString(label);
     serial.writeString(": 0x");
+
     var i: usize = 16;
     while (i > 0) {
         i -= 1;
+
         const nibble: u8 = @truncate((value >> @intCast(i * 4)) & 0xF);
         serial.putChar(hex_chars[nibble]);
     }
+
     serial.writeString("\n");
 }
 
+/// Halt the processor indefinitely.
+///
+/// Useful as a final error path when execution cannot safely continue.
 pub fn pause() void {
     while (true) {
         asm volatile ("hlt");
     }
 }
-/// Convert a 4-bit VGA palette index into a hardware-packed pixel colour.
+
+/// Convert a VGA palette index into a colour value suitable for the
+/// current framebuffer pixel format.
+///
+/// The returned value is already packed using the active hardware
+/// colour-channel layout.
 pub fn paletteColor(idx: u8) u32 {
     const hex = palette[idx & 0x0F];
+
     return packColor(
         @truncate((hex >> 16) & 0xFF),
                      @truncate((hex >> 8) & 0xFF),

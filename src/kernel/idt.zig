@@ -1,26 +1,33 @@
 // src/kernel/idt.zig
 //
-// Interrupt Descriptor Table (IDT) setup for x86_64 long mode.
+// Interrupt Descriptor Table (IDT) support for x86_64 long mode.
 //
 // Responsibilities:
-//   • Define IDT entry + IDTR structures
-//   • Build a 256‑entry IDT
-//   • Install exception handlers for common CPU faults
-//   • Provide a Zig‑level exception handler
+//   • Define the x86_64 IDT and IDTR structures
+//   • Maintain the kernel's 256-entry Interrupt Descriptor Table
+//   • Install handlers for selected CPU exceptions
+//   • Provide a bridge between assembly stubs and Zig exception handling
 //
 // Notes:
-//   • No IST, no user mode, no IRQs here (IRQs handled elsewhere)
-//   • Assembly stubs push (num, error_code) in a uniform format
-
+//   • Interrupt Stack Tables (ISTs) are not currently used
+//   • User-mode interrupt gates are not yet supported
+//   • Hardware IRQ registration is handled separately
+//   • Assembly stubs normalise exception data into a consistent
+//     (vector, error_code) format before entering Zig code
+//
 const vga = @import("vga.zig");
 const conv = @import("convert.zig");
 
 extern fn load_idt(ptr: *const IDTR) void;
 
 // -----------------------------------------------------------------------------
-//  IDT ENTRY STRUCTURES
+//  IDT DESCRIPTOR STRUCTURES
 // -----------------------------------------------------------------------------
 
+/// x86_64 interrupt gate descriptor.
+///
+/// The processor requires a 64-bit handler address to be split across
+/// three separate fields within each IDT entry.
 const IDTEntry = packed struct {
     offset_low:  u16,
     selector:    u16,
@@ -31,12 +38,20 @@ const IDTEntry = packed struct {
     reserved:    u32 = 0,
 };
 
+/// Interrupt Descriptor Table Register (IDTR).
+///
+/// Loaded with the lidt instruction to activate an Interrupt
+/// Descriptor Table.
 const IDTR = packed struct {
     limit: u16,
     base:  u64,
 };
 
-// 256‑entry IDT, aligned for CPU requirements
+/// The kernel's Interrupt Descriptor Table.
+///
+/// x86 processors support 256 interrupt vectors. The table is aligned
+/// to a 16-byte boundary for predictable low-level access and CPU
+/// compatibility.
 var idt: [256]IDTEntry align(16) = [_]IDTEntry{.{
     .offset_low = 0,
     .selector   = 0,
@@ -48,9 +63,13 @@ var idt: [256]IDTEntry align(16) = [_]IDTEntry{.{
 }} ** 256;
 
 // -----------------------------------------------------------------------------
-//  HUMAN‑READABLE EXCEPTION NAMES
+//  EXCEPTION DESCRIPTIONS
 // -----------------------------------------------------------------------------
 
+/// Human-readable names for standard CPU exception vectors.
+///
+/// Used when displaying fault information during exception handling
+/// and early-kernel debugging.
 const exception_names = [_][]const u8{
     "Division By Zero",                // 0
     "Debug",                           // 1
@@ -77,9 +96,13 @@ const exception_names = [_][]const u8{
 };
 
 // -----------------------------------------------------------------------------
-//  IDT ENTRY BUILDER
+//  IDT ENTRY CONSTRUCTION
 // -----------------------------------------------------------------------------
 
+/// Populate a single Interrupt Descriptor Table entry.
+///
+/// The supplied 64-bit handler address is split into the individual
+/// fields required by the x86_64 interrupt-gate descriptor format.
 fn setIDTEntry(index: u8, handler: u64, selector: u16, flags: u8, ist: u8) void {
     idt[index] = IDTEntry{
         .offset_low  = @truncate(handler & 0xFFFF),
@@ -93,14 +116,18 @@ fn setIDTEntry(index: u8, handler: u64, selector: u16, flags: u8, ist: u8) void 
 }
 
 // -----------------------------------------------------------------------------
-//  PUBLIC INITIALIZATION
+//  IDT INITIALISATION
 // -----------------------------------------------------------------------------
 
+/// Construct and load the kernel Interrupt Descriptor Table.
+///
+/// Installs handlers for the most common processor exceptions and
+/// then activates the completed table using the lidt instruction.
 pub fn init() void {
-    const cs_selector: u16 = 0x08; // kernel code segment
-    const flags: u8 = 0x8E;        // present, ring 0, interrupt gate
+    const cs_selector: u16 = 0x08; // Kernel code segment selector
+    const flags: u8 = 0x8E;        // Present, Ring 0, interrupt gate
 
-    // Install exception handlers
+    // Register exception handlers for selected CPU fault vectors.
     setIDTEntry(0,  @intFromPtr(&exception0_asm),  cs_selector, flags, 0);
     setIDTEntry(1,  @intFromPtr(&exception1_asm),  cs_selector, flags, 0);
     setIDTEntry(2,  @intFromPtr(&exception2_asm),  cs_selector, flags, 0);
@@ -122,9 +149,13 @@ pub fn init() void {
 }
 
 // -----------------------------------------------------------------------------
-//  ZIG‑LEVEL EXCEPTION HANDLER
+//  FATAL EXCEPTION HANDLING
 // -----------------------------------------------------------------------------
 
+/// Display exception information and permanently halt execution.
+///
+/// Called after the assembly exception stubs have converted CPU-
+/// specific exception state into a common (vector, error_code) form.
 fn exceptionHandler(num: u64, error_code: u64) noreturn {
     vga.clearScreen(15, 4);
 
@@ -146,9 +177,13 @@ fn exceptionHandler(num: u64, error_code: u64) noreturn {
 }
 
 // -----------------------------------------------------------------------------
-//  EXCEPTION STUBS (ASM)
+//  ASSEMBLY EXCEPTION ENTRY POINTS
 // -----------------------------------------------------------------------------
 
+/// Low-level assembly stubs.
+///
+/// These routines save processor state, normalise exception stack
+/// layouts, and transfer control into Zig exception handling code.
 extern fn exception0_asm()  void;
 extern fn exception1_asm()  void;
 extern fn exception2_asm()  void;
@@ -162,29 +197,42 @@ extern fn exception13_asm() void;
 extern fn exception14_asm() void;
 
 // -----------------------------------------------------------------------------
-//  WRAPPER — CALLED BY ASM STUBS
+//  ASM → ZIG EXCEPTION BRIDGE
 // -----------------------------------------------------------------------------
 
+/// Entry point invoked by assembly exception handlers.
+///
+/// The stack pointer references a small structure constructed by the
+/// assembly stubs containing the exception vector followed by the
+/// associated error code.
 pub export fn exceptionHandlerWrapper(stack_ptr: u64) noreturn {
     const num_ptr = @as(*const u64, @ptrFromInt(stack_ptr + 0));
     const err_ptr = @as(*const u64, @ptrFromInt(stack_ptr + 8));
+
     exceptionHandler(num_ptr.*, err_ptr.*);
 }
 
 // -----------------------------------------------------------------------------
-//  PUBLIC GATE SETTERS
+//  DYNAMIC GATE REGISTRATION
 // -----------------------------------------------------------------------------
 
+/// Install a standard interrupt gate using the default IST entry.
 pub fn setGate(vector: u8, handler_addr: u64) void {
     setGateIst(vector, handler_addr, 0);
 }
 
+/// Install an interrupt gate with an explicitly specified Interrupt
+/// Stack Table entry.
 pub fn setGateIst(vector: u8, handler_addr: u64, ist: u8) void {
     const cs_selector: u16 = 0x18;
     const flags: u8 = 0x8E;
+
     setIDTEntry(vector, handler_addr, cs_selector, flags, ist);
 }
 
+/// Register a handler for a remapped hardware IRQ.
+///
+/// IRQ n is mapped to interrupt vector 32 + n.
 pub fn setIrqHandler(irq: u8, handler: *const void) void {
     const vector: u8 = 32 + irq;
     setGate(vector, handler);
