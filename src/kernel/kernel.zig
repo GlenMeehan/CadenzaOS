@@ -112,7 +112,7 @@ var kmain_stack: [16384]u8 align(16) linksection(".bss") = undefined;
 ///
 /// Stored outside the kmain() stack frame so it remains valid for the
 /// lifetime of the shell task.
-var shell_stack_buf: [16384]u8 align(16) = undefined;
+var shell_stack_buf: [65536]u8 align(16) = [_]u8{0} ** 65536;
 
 extern const _kernel_end: u8;
 extern fn isr80_stub() callconv(.c) void;

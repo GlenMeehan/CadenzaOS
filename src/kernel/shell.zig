@@ -1514,6 +1514,10 @@ fn checkEntropy(current_tick: u64) bool {
     return false;
 }
 
+// ------------------------------------------
+// DEBUG HELPER FUNCTIONS
+// ------------------------------------------
+
 pub fn pause() void {
     // Disable interrupts so the timer can't kick us out,
     // then put the CPU into a permanent halt state.
