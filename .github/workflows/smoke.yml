@@ -1,0 +1,29 @@
+name: smoke
+
+on: [push, pull_request]
+
+jobs:
+  boot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y nasm qemu-system-x86 binutils
+
+      - name: Build disk image
+        run: ./build.sh ci
+
+      - name: Boot smoke test
+        run: ./tests/smoke.sh
+
+      - name: Upload serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: serial-log
+          path: smoke-serial.log
