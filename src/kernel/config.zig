@@ -226,7 +226,7 @@ pub var kernel_allocator: std.mem.Allocator = undefined;
 pub const Version = struct {
     pub const major: u32 = 0;
     pub const minor: u32 = 4;
-    pub const patch: u32 = 4;
+    pub const patch: u32 = 5;
 };
 
 /// Build metadata generated at build time.

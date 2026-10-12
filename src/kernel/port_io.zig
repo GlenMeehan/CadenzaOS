@@ -1,10 +1,17 @@
 // src/kernel/port_io.zig
 //
-// Low‑level port I/O helpers for x86.
-// These wrap the `in`/`out` instructions using inline assembly.
-// All functions are `noreturn` or side‑effect‑only and never allocate.
+// Low-level x86 port I/O primitives.
+//
+// These helpers provide direct access to the processor's I/O port
+// space using the IN and OUT instructions. They are used by hardware
+// drivers and platform-support code to communicate with legacy
+// devices such as the PIC, PIT, keyboard controller, and ATA devices.
+//
+// All functions are synchronous, perform no allocation, and operate
+// directly on hardware state.
+//
 
-/// Write an 8‑bit value to an I/O port.
+/// Write an 8-bit value to an I/O port.
 pub fn outb(port: u16, value: u8) void {
     asm volatile (
         "outb %[value], %[port]"
@@ -14,7 +21,7 @@ pub fn outb(port: u16, value: u8) void {
     );
 }
 
-/// Read an 8‑bit value from an I/O port.
+/// Read an 8-bit value from an I/O port.
 pub fn inb(port: u16) u8 {
     return asm volatile (
         "inb %[port], %[ret]"
@@ -23,7 +30,7 @@ pub fn inb(port: u16) u8 {
     );
 }
 
-/// Write a 16‑bit value to an I/O port.
+/// Write a 16-bit value to an I/O port.
 pub fn outw(port: u16, value: u16) void {
     asm volatile (
         "outw %[value], %[port]"
@@ -33,7 +40,7 @@ pub fn outw(port: u16, value: u16) void {
     );
 }
 
-/// Read a 16‑bit value from an I/O port.
+/// Read a 16-bit value from an I/O port.
 pub fn inw(port: u16) u16 {
     return asm volatile (
         "inw %[port], %[ret]"
@@ -42,8 +49,10 @@ pub fn inw(port: u16) u16 {
     );
 }
 
-/// Halt the CPU forever.
-/// Useful as a final fallback when shutdown/reboot fails.
+/// Halt the processor indefinitely.
+///
+/// Intended for fatal error paths and low-level debugging scenarios
+/// where execution cannot safely continue.
 pub fn pause() noreturn {
     while (true) {
         asm volatile ("hlt");

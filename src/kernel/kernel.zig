@@ -359,7 +359,7 @@ pub export fn kmain() noreturn {
     tss.init();
 
     splash.updateProgress(20, "Disk / File System Restore or Init...");
-    splash.delay_crude(20_000_000);
+    splash.delay_crude(10_000_000);
 
     // -------------------------------------------------------------------------
     //  DISK / FILESYSTEM DISCOVERY
@@ -568,7 +568,7 @@ pub export fn kmain() noreturn {
     // }
 
     splash.updateProgress(40, "Initialising memory...");
-    splash.delay_crude(20_000_000);
+    splash.delay_crude(10_000_000);
 
     // -------------------------------------------------------------------------
     //  PHYSICAL FRAME ALLOCATOR INITIALISATION
@@ -660,7 +660,7 @@ pub export fn kmain() noreturn {
     @memset(scratch_ptr[0..4096], 0);
 
     splash.updateProgress(60, "Configuring interrupts...");
-    splash.delay_crude(20_000_000);
+    splash.delay_crude(10_000_000);
 
     // -------------------------------------------------------------------------
     //  APIC VIRTUAL MEMORY MAPPING
@@ -801,7 +801,7 @@ pub export fn kmain() noreturn {
     asm volatile ("sti");
 
     splash.updateProgress(80, "Task manager initialising...");
-    splash.delay_crude(20_000_000);
+    splash.delay_crude(10_000_000);
 
     // =========================================================================
     //  TASK SCHEDULER INITIALISATION
@@ -818,7 +818,7 @@ pub export fn kmain() noreturn {
     }
 
     splash.updateProgress(100, "Final setup...");
-    splash.delay_crude(20_000_000);
+    splash.delay_crude(10_000_000);
 
     // =========================================================================
     //  FILESYSTEM MOUNT AND APPLICATION STAGING

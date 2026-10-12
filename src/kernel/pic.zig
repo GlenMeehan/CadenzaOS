@@ -1,65 +1,106 @@
 // src/kernel/pic.zig
 //
-// 8259A Programmable Interrupt Controller (PIC) control.
-// Provides:
-//   • remap()     — move IRQ vectors to new IDT offsets
-//   • unmaskIrq() — enable a specific IRQ line
+// 8259A Programmable Interrupt Controller (PIC) support.
 //
-// This is required before enabling hardware interrupts so that
-// IRQ0–IRQ15 do not overlap CPU exception vectors (0–31).
-
+// Provides:
+//   • remap()     — relocate IRQ vectors within the IDT
+//   • unmaskIrq() — enable delivery of a specific IRQ line
+//
+// PIC remapping is required before enabling hardware interrupts so
+// that IRQ vectors do not overlap the processor exception range
+// (vectors 0–31).
+//
 const io = @import("port_io.zig");
 
-// PIC I/O ports
-const MASTER_CMD:  u16 = 0x20;
-const MASTER_DATA: u16 = 0x21;
-const SLAVE_CMD:   u16 = 0xA0;
-const SLAVE_DATA:  u16 = 0xA1;
+// -----------------------------------------------------------------------------
+//  PIC I/O PORTS
+// -----------------------------------------------------------------------------
 
-/// Remap the PIC interrupt vectors.
-/// `master_offset` — new IDT vector for IRQ0
-/// `slave_offset`  — new IDT vector for IRQ8
+/// Master PIC command port.
+const MASTER_CMD: u16 = 0x20;
+
+/// Master PIC data port.
+const MASTER_DATA: u16 = 0x21;
+
+/// Slave PIC command port.
+const SLAVE_CMD: u16 = 0xA0;
+
+/// Slave PIC data port.
+const SLAVE_DATA: u16 = 0xA1;
+
+/// Remap hardware IRQ vectors to new IDT offsets.
 ///
-/// Standard OSDev mapping is:
-///     master_offset = 0x20
-///     slave_offset  = 0x28
+/// Parameters:
+///   master_offset - Interrupt vector assigned to IRQ0
+///   slave_offset  - Interrupt vector assigned to IRQ8
+///
+/// The conventional x86 operating-system layout is:
+///
+///     IRQ0-IRQ7   -> 0x20-0x27
+///     IRQ8-IRQ15  -> 0x28-0x2F
+///
+/// This avoids conflicts with the CPU exception vectors located
+/// at 0x00-0x1F.
 pub fn remap(master_offset: u8, slave_offset: u8) void {
-    // Save current interrupt masks
+
+    // Preserve the current interrupt masks so they can be restored
+    // after reconfiguration.
     const master_mask = io.inb(MASTER_DATA);
     const slave_mask  = io.inb(SLAVE_DATA);
 
-    // --- ICW1: Start initialization ---
+    // -------------------------------------------------------------------------
+    //  ICW1 - Enter initialisation mode
+    // -------------------------------------------------------------------------
+
     io.outb(MASTER_CMD, 0x11);
     io.outb(SLAVE_CMD,  0x11);
 
-    // --- ICW2: Set vector offsets ---
+    // -------------------------------------------------------------------------
+    //  ICW2 - Configure vector offsets
+    // -------------------------------------------------------------------------
+
     io.outb(MASTER_DATA, master_offset);
     io.outb(SLAVE_DATA,  slave_offset);
 
-    // --- ICW3: Wiring information ---
-    io.outb(MASTER_DATA, 0x04); // Slave PIC is on IRQ2
-    io.outb(SLAVE_DATA,  0x02); // Slave identity (cascade)
+    // -------------------------------------------------------------------------
+    //  ICW3 - Configure master/slave cascade wiring
+    // -------------------------------------------------------------------------
 
-    // --- ICW4: Environment info ---
-    io.outb(MASTER_DATA, 0x01); // 8086/88 mode
+    io.outb(MASTER_DATA, 0x04); // Slave PIC connected to IRQ2
+    io.outb(SLAVE_DATA,  0x02); // Slave cascade identity
+
+    // -------------------------------------------------------------------------
+    //  ICW4 - Enable 8086/88 operating mode
+    // -------------------------------------------------------------------------
+
+    io.outb(MASTER_DATA, 0x01);
     io.outb(SLAVE_DATA,  0x01);
 
-    // Restore saved masks
+    // Restore the previously active interrupt masks.
     io.outb(MASTER_DATA, master_mask);
     io.outb(SLAVE_DATA,  slave_mask);
 }
 
-/// Unmask (enable) a specific IRQ line.
-/// IRQ 0–7  → master PIC
-/// IRQ 8–15 → slave PIC
+/// Unmask (enable) a hardware IRQ line.
+///
+/// IRQs 0-7 are managed by the master PIC.
+/// IRQs 8-15 are managed by the slave PIC.
 pub fn unmaskIrq(irq: u8) void {
     if (irq < 8) {
         const mask = io.inb(MASTER_DATA);
         const bit: u3 = @intCast(irq);
-        io.outb(MASTER_DATA, mask & ~(@as(u8, 1) << bit));
+
+        io.outb(
+            MASTER_DATA,
+            mask & ~(@as(u8, 1) << bit),
+        );
     } else {
         const mask = io.inb(SLAVE_DATA);
         const bit: u3 = @intCast(irq - 8);
-        io.outb(SLAVE_DATA, mask & ~(@as(u8, 1) << bit));
+
+        io.outb(
+            SLAVE_DATA,
+            mask & ~(@as(u8, 1) << bit),
+        );
     }
 }

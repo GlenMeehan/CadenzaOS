@@ -1,13 +1,23 @@
 #!/bin/bash
-
-#Build assumes a GNU/Linux toolchain. For example stat -c %s is GNU syntax (BSD uses stat -f),
-#and the script relies on readelf, objcopy and as.
-#A POSIX sed version works everywhere:
+#
+# Cadenza OS build script.
+#
+# Assumes a GNU/Linux toolchain: stat -c %s is GNU syntax (BSD uses stat -f),
+# and the script relies on readelf, objcopy, as, ld and nasm.
+#
+# Usage:
+#   ./build.sh         full build (asks whether to preserve the filesystem), then runs QEMU
+#   ./build.sh run     launch QEMU on the existing disk image
+#   ./build.sh clean   remove the disk image
+#   ./build.sh ci       ci smoke test
 set -e
 
 # --- Configuration ---
-#ZIG="/home/glen/zig/zig-0.16-dev/zig"
-ZIG="/home/glen/zig/stable-0.16.0/zig"
+ZIG="${ZIG:-zig}"
+if ! command -v "$ZIG" >/dev/null 2>&1; then
+    echo "❌ Zig not found. Install Zig 0.16 or set ZIG=/path/to/zig"
+    exit 1
+fi
 ROOT=$(dirname "$0")
 SRC="$ROOT/src"
 BUILD="$ROOT/build"
@@ -15,16 +25,16 @@ IMG="$BUILD/disk.img"
 
 # --- Disk layout (sectors) ---
 KERNEL_LBA=16        # kernel written here
-#APP_LBA_START is stored in config.zig and used by binary_loader.zig.
-#Use of grep -oP, where -P (Perl-style regex, needed for \K) is a GNU extension.
-#BSD or macOS grep doesn't support it, and neither does BusyBox grep on Alpine.
-APP_LBA=$(grep -oP 'APP_LBA_START: u64 = \K[0-9]+' "$SRC/kernel/config.zig")
-#Check APP_LBA_START loaded correctly. Abort build if not
+PARTITION_LBA=4096   # CodaFS partition starts here (PARTITION_START_LBA in config.zig)
+
+# APP_LBA_START lives in config.zig and is also used by binary_loader.zig,
+# so read it from there instead of keeping a second copy.
+# (POSIX sed, so this works without GNU grep.)
+APP_LBA=$(sed -n 's/.*APP_LBA_START: u64 = \([0-9][0-9]*\).*/\1/p' "$SRC/kernel/config.zig" | head -n 1)
 if [ -z "$APP_LBA" ]; then
     echo "❌ ERROR: could not read APP_LBA_START from config.zig"
     exit 1
 fi
-PARTITION_LBA=4096   # CodaFS partition starts here
 
 # --- Argument Check ---
 if [ "$1" == "run" ]; then
@@ -46,6 +56,9 @@ if [ "$1" == "clean" ]; then
     echo "✅ Disk image removed. Run ./build.sh to create a fresh one."
     exit 0
 fi
+
+# CI mode: always start from a fresh image, never ask questions
+if [ "$1" == "ci" ]; then rm -f "$IMG"; fi
 
 # --- 1. Clean Phase ---
 # Since we are not in 'run' mode, we perform a full rebuild.
@@ -75,6 +88,7 @@ mkdir -p "$BUILD"
 # --- 2. Build Phase ---
 echo "[1/6] Assembling bootloader..."
 nasm -f bin "$SRC/boot/boot.asm" -o "$BUILD/boot.bin"
+
 # --- Git / build metadata ---
 GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "nogit")
 if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
@@ -98,7 +112,7 @@ pub const git_dirty: bool = $GIT_DIRTY_BOOL;
 pub const build_ts: []const u8 = "$BUILD_TS";
 EOF
 
-
+echo "[2/6] Compiling kernel..."
 $ZIG build-obj "$SRC/kernel/kernel.zig" \
     -target x86_64-freestanding -mcpu=x86_64 -mcmodel=kernel -fPIC -O Debug \
     -fno-stack-protector -freference-trace=12 -femit-bin="$BUILD/kernel.o"
@@ -119,6 +133,8 @@ KERNEL_SECTORS=$(( (KERNEL_SIZE + 511) / 512 ))
 echo "KERNEL_SECTORS equ $KERNEL_SECTORS" > "$BUILD/kernel_info.inc"
 echo "KERNEL_ENTRY equ $ENTRY_POINT" >> "$BUILD/kernel_info.inc"
 
+# The kernel starts at KERNEL_LBA and must not run into the app staging area,
+# which in turn sits below the CodaFS partition.
 KERNEL_MAX_SECTORS=$(( APP_LBA - KERNEL_LBA ))
 if [ "$KERNEL_SECTORS" -gt "$KERNEL_MAX_SECTORS" ]; then
     echo "❌ ERROR: Kernel ($KERNEL_SECTORS sectors) would overwrite the app staging area at sector $APP_LBA (max $KERNEL_MAX_SECTORS)!"
@@ -139,14 +155,13 @@ echo "BSS_SIZE_DWORDS equ $BSS_SIZE_DWORDS" >> "$BUILD/kernel_info.inc"
 echo "----------------------------------------"
 echo "📏 Kernel Size Report"
 echo "Bytes:          $KERNEL_SIZE"
-echo "512-byte Sectors: $KERNEL_SECTORS"
+echo "512-byte Sectors: $KERNEL_SECTORS (max $KERNEL_MAX_SECTORS)"
 echo "ELF Entry:      $ENTRY_POINT"
-echo "Kernel written to disk at LBA 3"
+echo "Kernel written to disk at LBA $KERNEL_LBA"
 echo "----------------------------------------"
 
 echo "[5/6] Stage2..."
 nasm -f bin "$SRC/stage2/stage2.asm" -o "$BUILD/stage2.bin"
-#truncate -s 4096 "$BUILD/stage2.bin"
 
 # --- 6. Install Phase ---
 if [ "$PRESERVE_FS" = false ]; then
@@ -157,28 +172,45 @@ fi
 
 echo "💾 Writing OS sectors..."
 # We use conv=notrunc so dd doesn't wipe the rest of the 10MB image.
-# When preserving the filesystem, only the boot/stage2/kernel sectors
-# (0..2047) are overwritten — the CodaFS partition (2048+) is untouched.
+# When preserving the filesystem, only the boot, stage2, kernel and app staging
+# sectors (below sector $PARTITION_LBA) are overwritten — the CodaFS partition
+# ($PARTITION_LBA onwards) is untouched.
 dd if="$BUILD/boot.bin" of="$IMG" bs=512 count=1 conv=notrunc status=none
 dd if="$BUILD/stage2.bin" of="$IMG" bs=512 seek=1 conv=notrunc status=none
-dd if="$BUILD/kernel.bin" of="$IMG" bs=512 seek=16 conv=notrunc status=none
+dd if="$BUILD/kernel.bin" of="$IMG" bs=512 seek=$KERNEL_LBA conv=notrunc status=none
 
 # -------------------------------------------------------------------------
-#  APPLICATION BINARY STORE STAGING
+#  USERLAND: build prog1 from source, then stage it into the disk image
 # -------------------------------------------------------------------------
 APPS_DIR="$BUILD/apps"
 mkdir -p "$APPS_DIR"
-cp src/apps/prog1.bin "$APPS_DIR/prog1.bin"
 
-if [ -f "$APPS_DIR/prog1.bin" ]; then
-    echo "📦 Staging prog1.bin into disk image at LBA $APP_LBA..."
-    dd if="$APPS_DIR/prog1.bin" of="$IMG" bs=512 seek=$APP_LBA conv=notrunc status=none
-else
-    echo "⚠️ Warning: prog1.bin not found in $APPS_DIR, skipping binary store injection."
+echo "[prog1] Building userland program..."
+$ZIG build-exe "$ROOT/userland/prog1/prog1.zig" \
+    -target x86_64-freestanding \
+    -O ReleaseSmall \
+    -fstrip \
+    -T "$ROOT/userland/prog1/linker.ld" \
+    --name "prog1.elf"
+
+# build-exe leaves the ELF in the current directory, as env.sh did
+mv prog1.elf "$APPS_DIR/prog1.elf"
+$ZIG objcopy -O binary "$APPS_DIR/prog1.elf" "$APPS_DIR/prog1.bin"
+
+# Sanity check: the program header magic must be present ("CDZP")
+if [ "$(head -c 4 "$APPS_DIR/prog1.bin")" != "CDZP" ]; then
+    echo "❌ ERROR: prog1.bin has no valid header (linker script or header block broken)"
+    exit 1
 fi
+
+echo "📦 Staging prog1.bin into disk image at LBA $APP_LBA..."
+dd if="$APPS_DIR/prog1.bin" of="$IMG" bs=512 seek=$APP_LBA conv=notrunc status=none
 # -------------------------------------------------------------------------
 
 echo "✅ Build & Update complete."
+
+# CI mode: stop here, don't launch QEMU (the smoke test does that)
+if [ "$1" == "ci" ]; then exit 0; fi
 
 # Launch QEMU automatically after build
 qemu-system-x86_64 \

@@ -16,3 +16,4 @@ qemu.log
 *.disasm
 *.lst
 *.kate-swp
+smoke-serial.log

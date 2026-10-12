@@ -1,46 +1,68 @@
 // src/kernel/panic.zig
 //
 // Kernel panic handler.
-// This overrides Zig's default panic function.
+//
+// This module provides the kernel's final unrecoverable error path,
+// replacing Zig's default panic implementation.
+//
 // Behaviour:
-//   • Clear screen to red background
-//   • Print panic banner + message
-//   • Optionally print return address
-//   • Halt CPU forever (cli + hlt)
-
+//   • Clear the display using high-visibility panic colours
+//   • Display a panic banner and diagnostic message
+//   • Optionally display a return address
+//   • Halt the processor permanently
+//
 const std = @import("std");
 const vga = @import("vga.zig");
 const conv = @import("convert.zig");
 
+/// Handle a fatal kernel error.
+///
+/// Once entered, this function never returns. Diagnostic information
+/// is displayed to the user before the processor is halted.
 pub fn panic(
     msg: []const u8,
     trace: ?*anyopaque,
     return_address: ?usize,
 ) noreturn {
-    // VGA text buffer at physical address 0xB8000
+    _ = trace;
+
+    // Direct VGA text buffer access.
     const vga_ptr = @as([*]volatile u16, @ptrFromInt(0xB8000));
 
-    // Clear screen to red background with bright white text.
-    // 0x4F20 = (bg=4 red, fg=F bright white, char=' ')
+    // Fill the entire screen with red-background panic cells using
+    // bright white foreground text.
+    //
+    // 0x4F20:
+    //   bg = 0x4 (red)
+    //   fg = 0xF (bright white)
+    //   ch = ' '
     var i: usize = 0;
     while (i < 80 * 25) : (i += 1) {
         vga_ptr[i] = 0x4F20;
     }
 
-    // Panic banner
+    // Display the panic banner.
     vga.writeStringAt(10, 0, "KERNEL PANIC!", 0x0F, 0x04);
 
-    // Panic message
+    // Display the panic message supplied by the caller.
     vga.writeStringAt(12, 0, message, 0x0F, 0x04);
 
-    // Optional return address (if Zig provided one)
+    // Display the return address when available. This can assist
+    // with fault isolation during kernel debugging.
     if (ret_addr) |addr| {
         var buf: [16]u8 = undefined;
+
         vga.writeStringAt(14, 0, "At address: ", 0x0F, 0x04);
-        vga.writeStringAt(14, 12, conv.toHex(u64, addr, &buf), 0x0F, 0x04);
+        vga.writeStringAt(
+            14,
+            12,
+            conv.toHex(u64, addr, &buf),
+                          0x0F,
+                          0x04,
+        );
     }
 
-    // Halt CPU forever
+    // Disable interrupts and halt permanently.
     while (true) {
         asm volatile ("cli; hlt");
     }
