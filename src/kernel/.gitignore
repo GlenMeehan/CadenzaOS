@@ -25,3 +25,4 @@ serial.log
 *.disasm
 *.lst
 ram_dump.bin
+!font8x16.bin
