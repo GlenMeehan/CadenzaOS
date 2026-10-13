@@ -1,18 +1,28 @@
 // src/kernel/terminal.zig
 //
-// Line-editing and command input for the kernel terminal.
+// Interactive terminal line editor and input manager.
 //
 // Responsibilities:
-//  - Maintain an editable input line (buffer, cursor, history)
-//  - Render the line in "Canvas" mode on the first row (with ghost predictions)
-//  - Fall back to "Stream" mode (hardware-driven) after wrapping
-//  - Expose a simple API to the shell: startNewLine, handleKeyEvent, takeLine, consumeLine
+//   • Maintain an editable command line
+//   • Track cursor position and command history
+//   • Support command prediction and ghost-text rendering
+//   • Switch automatically between Canvas and Stream modes
+//   • Present a simple line-based interface to the shell
 //
-// Important invariants:
-//  - Canvas mode: input line is on a single row, ghost text is visible, redrawLine() is used.
-//  - Stream mode: after wrapping, hardware VGA putChar() drives display; redrawLine() must not
-//    touch wrapped rows. Ghost text is disabled in this mode.
-
+// Display modes:
+//
+//   Canvas mode:
+//     • Input remains on a single display row
+//     • Full-line redraws are permitted
+//     • Ghost predictions are visible
+//     • Cursor position is managed logically
+//
+//   Stream mode:
+//     • Activated once input wraps beyond the canvas row
+//     • Text output becomes append-only
+//     • VGA/framebuffer cursor behaviour controls layout
+//     • Ghost predictions are disabled
+//
 const vga = @import("vga.zig");
 const conv = @import("convert.zig");
 const std = @import("std");
@@ -28,85 +38,149 @@ const MAX_LINE = config.TERMINAL_LINE_SIZE;
 const MAX_HISTORY = 32;
 
 // -----------------------------------------------------------------------------
-//  LINE STATE
+//  ACTIVE INPUT LINE STATE
 // -----------------------------------------------------------------------------
 
+/// Current editable command buffer.
 var line_buffer: [MAX_LINE]u8 = undefined;
+
+/// Length of the active command line.
 var line_len: usize = 0;
+
+/// Set when a complete line has been entered and is ready for
+/// consumption by the shell.
 pub var line_ready = std.atomic.Value(bool).init(false);
 
-// Screen position of the current input line
-var cursor_row: usize = 0;      // row on screen where the input line lives
-var prompt_start: usize = 9;    // column where the prompt starts
-var cursor_pos: usize = 0;      // logical position within the input line
+/// Screen row currently associated with the editable input line.
+var cursor_row: usize = 0;
 
-// We treat the row where startNewLine() was called as the "Canvas row".
+/// Column immediately following the shell prompt.
+var prompt_start: usize = 9;
+
+/// Cursor position within line_buffer.
+var cursor_pos: usize = 0;
+
+/// Row used as the Canvas-mode editing surface.
 var canvas_row: usize = 0;
 
 // -----------------------------------------------------------------------------
-//  HISTORY STATE
+//  COMMAND HISTORY
 // -----------------------------------------------------------------------------
 
+/// Circular history buffer containing previously executed commands.
 var history: [MAX_HISTORY][MAX_LINE]u8 = undefined;
-pub var history_len: usize = 0;     // how many entries are valid
-var history_head: usize = 0;        // next slot to write into
 
-// Index into history while browsing
-// -1 means: not currently browsing history
+/// Number of valid history entries.
+pub var history_len: usize = 0;
+
+/// Next history slot to overwrite.
+var history_head: usize = 0;
+
+/// Current history navigation position.
+///
+/// A value of -1 indicates normal editing mode.
 var history_index: isize = -1;
 
-// Scratch buffer for the line being typed while browsing history
+/// Preserved command line used while browsing history.
 var saved_line: [MAX_LINE]u8 = undefined;
+
+/// Length of the preserved command line.
 var saved_line_len: usize = 0;
 
 // -----------------------------------------------------------------------------
-//  PREDICTION HOOK
+//  COMMAND PREDICTION
 // -----------------------------------------------------------------------------
 
-pub const PredictorFn = *const fn (input: []const u8) []const u8;
+/// Callback type used for command prediction.
+pub const PredictorFn =
+*const fn (input: []const u8) []const u8;
 
-// This is the "slot" where the shell will plug in its the Composer
+/// Optional external prediction provider.
 var external_predictor: ?PredictorFn = null;
 
+/// Register a prediction callback.
+///
+/// Typically called by the shell during initialisation.
 pub fn setPredictor(func: PredictorFn) void {
     external_predictor = func;
 }
 
 // -----------------------------------------------------------------------------
-//  MODE HELPERS (Canvas vs Stream)
+//  DISPLAY MODE HELPERS
 // -----------------------------------------------------------------------------
 
+/// Determine whether the current line can still be rendered using
+/// single-row canvas editing.
 fn inCanvasMode() bool {
+
+    // Leaving the original canvas row automatically enters
+    // stream-editing mode.
     if (cursor_row != canvas_row) return false;
-    const max_rows: usize = if (vga.graphics_mode) @as(usize, fb.getRows()) else 25;
+
+    const max_rows: usize =
+    if (vga.graphics_mode)
+        @as(usize, fb.getRows())
+        else
+            25;
+
     if (cursor_row >= max_rows) return false;
 
-    // Dynamically check against the total column width minus 1
-    const max_cols = if (vga.graphics_mode) @as(usize, fb.getCols()) else 80;
+    const max_cols =
+    if (vga.graphics_mode)
+        @as(usize, fb.getCols())
+        else
+            80;
+
     return prompt_start + line_len < (max_cols - 1);
 }
 
+/// Determine whether the terminal is operating in wrapped,
+/// streaming-output mode.
 fn inStreamMode() bool {
     return !inCanvasMode();
 }
 
 // -----------------------------------------------------------------------------
-//  PUBLIC API
+//  CHARACTER INPUT
 // -----------------------------------------------------------------------------
 
+/// Process a character generated by the keyboard subsystem.
+///
+/// Handles:
+///   • Character insertion
+///   • Backspace editing
+///   • Line submission
+///   • Canvas/Stream mode rendering
 pub fn processChar(ch: u8) void {
-    // Backspace
+
+    // -------------------------------------------------------------
+    //  BACKSPACE
+    // -------------------------------------------------------------
+
     if (ch == 0x08) {
         if (cursor_pos > 0) {
             cursor_pos -= 1;
             line_len -= 1;
 
             if (inCanvasMode()) {
+
+                // Canvas mode rebuilds the complete visible line.
                 redrawLine();
+
             } else {
-                // Stream mode backspace
-                const current_col = if (vga.graphics_mode) fb.cursor_col else vga.cursor_col;
-                const current_row = if (vga.graphics_mode) fb.cursor_row else vga.cursor_row;
+
+                // Stream mode edits only the current cursor position.
+                const current_col =
+                if (vga.graphics_mode)
+                    fb.cursor_col
+                    else
+                        vga.cursor_col;
+
+                const current_row =
+                if (vga.graphics_mode)
+                    fb.cursor_row
+                    else
+                        vga.cursor_row;
 
                 if (current_col > 0) {
                     vga.setCursor(current_row, current_col - 1);
@@ -115,98 +189,137 @@ pub fn processChar(ch: u8) void {
                 }
             }
         }
+
         return;
     }
 
-    // Enter
+    // -------------------------------------------------------------
+    //  LINE SUBMISSION
+    // -------------------------------------------------------------
+
     if (ch == '\n' or ch == '\r') {
         line_ready.store(true, .release);
         vga.putChar('\n', 15, 0);
         return;
     }
 
-    // Printable
+    // -------------------------------------------------------------
+    //  PRINTABLE INPUT
+    // -------------------------------------------------------------
+
     if (isPrintable(ch)) {
         if (line_len >= MAX_LINE) return;
 
-        // Update logical buffer
+        // Append the new character to the logical command buffer.
         line_buffer[line_len] = ch;
         line_len += 1;
         cursor_pos = line_len;
 
         if (inCanvasMode()) {
-            // Canvas mode: redraw the whole line + ghost text on the single row.
+
+            // Canvas mode redraws the entire line so predictions
+            // remain visually synchronised.
             redrawLine();
+
         } else {
-            // Stream mode: let hardware handle wrapping/scrolling.
+
+            // Stream mode defers wrapping and scrolling behaviour
+            // to the display backend.
             vga.putChar(ch, 15, 0);
         }
     }
 }
 
+/// Determine whether a character may be inserted into the editable
+/// command buffer.
 fn isPrintable(ch: u8) bool {
     return ch >= 32 and ch < 127;
 }
 
+/// Wait for and return a complete input line.
+///
+/// This function forms the main shell-facing input loop:
+///   1. Drain pending keyboard input
+///   2. Update the line editor state
+///   3. Check for completed lines
+///   4. Yield execution until more input arrives
 pub fn takeLine() []const u8 {
     while (true) {
-        // 1. First, drain the raw ring buffer keys into the line buffer
-        //    (Show the solid cursor right before we wait or poll for characters)
-        if (vga.graphics_mode) fb.setCursorVisible(true);
 
+        // Display the visual cursor before checking for input.
+        if (vga.graphics_mode) {
+            fb.setCursorVisible(true);
+        }
+
+        // Process all buffered keyboard input.
         pollKeyboard();
 
-        // 2. Erase the cursor immediately once a key lands, so text rendering doesn't smear it
-        //if (vga.graphics_mode) fb.setCursorVisible(false);
-
-        // 3. Check if a full line is ready (user pressed Enter)
+        // Return immediately once Enter has completed the line.
         if (line_ready.load(.acquire)) {
             return line_buffer[0..line_len];
         }
 
-        // 4. The line isn't ready. Stop spinning!
+        // Mark the shell task as runnable while waiting for further
+        // keyboard activity.
         if (scheduler.manager.tasks[0]) |*shell_task| {
             shell_task.state = .Ready;
         }
 
-        // 5. Immediately give up the rest of our time slot.
+        // Yield the remainder of the current scheduling slice.
         scheduler.manager.yield();
     }
 }
 
-/// Drains all characters currently waiting in the keyboard's circular buffer
-/// and processes them through the terminal's line-editor and UI state machine.
+/// Drain all pending keyboard input and feed it into the terminal's
+/// line editor.
+///
+/// Characters are read from the keyboard subsystem's ring buffer and
+/// translated into terminal editing operations.
 pub fn pollKeyboard() void {
-    // Continuously pop from the ring buffer until it returns null (empty)
     while (keyboard.readChar()) |ch| {
-        // Feed the raw character to your existing line processor
+
+        // Prevent concurrent modification of terminal state while
+        // processing keyboard input.
         asm volatile ("cli");
         processChar(ch);
         asm volatile ("sti");
     }
 }
 
+/// Reset terminal line state after a command has been consumed.
+///
+/// This prepares the editor for the next command entry operation.
 pub fn consumeLine() void {
     line_len = 0;
     cursor_pos = 0;
     history_index = -1;
+
     line_ready.store(false, .release);
 }
 
+/// Store the current command line in the history buffer.
+///
+/// Empty commands are ignored. History is maintained using a fixed-
+/// size circular buffer.
 pub fn commitHistory() void {
-    // Do not store empty lines
+
+    // Ignore blank commands.
     if (line_len == 0) return;
 
-    // Copy current line into history ring buffer
     const dst = history_head;
-    _ = mem.memcpy(history[dst][0..line_len].ptr, line_buffer[0..line_len].ptr, line_len);
 
-    // Optionally null-terminate (useful later)
+    _ = mem.memcpy(
+        history[dst][0..line_len].ptr,
+        line_buffer[0..line_len].ptr,
+        line_len,
+    );
+
+    // Optional NUL terminator simplifies later history retrieval.
     if (line_len < MAX_LINE) {
         history[dst][line_len] = 0;
     }
 
-    // Advance ring buffer
+    // Advance the circular history buffer.
     history_head = (history_head + 1) % MAX_HISTORY;
 
     if (history_len < MAX_HISTORY) {
@@ -214,17 +327,22 @@ pub fn commitHistory() void {
     }
 }
 
+/// Handle a high-level keyboard event.
+///
+/// Character keys are dispatched to the line editor while special
+/// keys invoke cursor movement, history navigation, and editing
+/// commands.
 pub fn handleKeyEvent(ev: KeyEvent) void {
     switch (ev) {
         .char => |c| {
             switch (c) {
-                0x01 => moveCursorToStart(),
-                0x05 => moveCursorToEnd(),
-                0x15 => killToStart(),
-                0x0B => killToEnd(),
-                0x03 => abortLine(),
-                0x0C => clearScreen(),
-                0x17 => deletePreviousWord(),
+                0x01 => moveCursorToStart(), // Ctrl+A
+                0x05 => moveCursorToEnd(),   // Ctrl+E
+                0x15 => killToStart(),       // Ctrl+U
+                0x0B => killToEnd(),         // Ctrl+K
+                0x03 => abortLine(),         // Ctrl+C
+                0x0C => clearScreen(),       // Ctrl+L
+                0x17 => deletePreviousWord(),// Ctrl+W
                 else => processChar(c),
             }
         },
@@ -242,22 +360,32 @@ pub fn handleKeyEvent(ev: KeyEvent) void {
     }
 }
 
+/// Initialise terminal state for a newly displayed shell prompt.
+///
+/// The current cursor position becomes the anchor point for canvas-
+/// mode editing and prediction rendering.
 pub fn startNewLine() void {
     cursor_pos = 0;
     line_len = 0;
 
-    // Capture the current VGA cursor as the start of our Canvas line.
+    // Capture the prompt location as the editable canvas origin.
     prompt_start = vga.getCursorCol();
     cursor_row = vga.getCursorRow();
     canvas_row = cursor_row;
 }
 
+/// Retrieve a history entry by age.
+///
+/// Index mapping:
+///   • 0                = oldest entry
+///   • history_len - 1 = newest entry
 pub fn getHistoryEntry(n: usize) ?[]const u8 {
-    // n = 0 → oldest
-    // n = history_len-1 → newest
     if (n >= history_len) return null;
 
-    const idx = (history_head + MAX_HISTORY - history_len + n) % MAX_HISTORY;
+    const idx =
+    (history_head + MAX_HISTORY - history_len + n)
+    % MAX_HISTORY;
+
     const entry = history[idx];
 
     var len: usize = 0;
@@ -266,69 +394,132 @@ pub fn getHistoryEntry(n: usize) ?[]const u8 {
     return entry[0..len];
 }
 
+/// Refresh the visible editor state.
+///
+/// In Canvas mode this redraws the editable line and prediction text.
+/// In Stream mode the request is ignored to avoid modifying wrapped
+/// output that has already been emitted.
 pub fn refresh() void {
-    // Only meaningful in Canvas mode; in Stream mode we do nothing to avoid
-    // overwriting wrapped rows.
     redrawLine();
 }
 
 // -----------------------------------------------------------------------------
-//  CURSOR & RENDERING HELPERS
+//  CURSOR AND RENDERING HELPERS
 // -----------------------------------------------------------------------------
 
+/// Position the display cursor at the current logical editing
+/// location within the active input line.
 fn setCursorToLogical() void {
     vga.setCursor(cursor_row, prompt_start + cursor_pos);
 }
 
+/// Clear the editable portion of the canvas row.
+///
+/// The prompt area is preserved while all editable text and ghost
+/// prediction characters are erased.
 fn clearCanvasRegion() void {
-    const max_cols = if (vga.graphics_mode) @as(usize, fb.getCols()) else 80;
+    const max_cols =
+    if (vga.graphics_mode)
+        @as(usize, fb.getCols())
+        else
+            80;
+
     var col: usize = prompt_start;
+
     while (col < (max_cols - 1)) : (col += 1) {
         vga.setCursor(cursor_row, col);
         vga.putChar(' ', 15, 0);
     }
 }
 
+/// Render the actual command-buffer contents onto the canvas row.
 fn drawRealTextOnCanvas() void {
-    const max_cols = if (vga.graphics_mode) @as(usize, fb.getCols()) else 80;
+    const max_cols =
+    if (vga.graphics_mode)
+        @as(usize, fb.getCols())
+        else
+            80;
+
     var i: usize = 0;
+
     while (i < line_len) : (i += 1) {
         const target_col = prompt_start + i;
-        if (target_col >= (max_cols - 1)) break;
+
+        if (target_col >= (max_cols - 1)) {
+            break;
+        }
 
         vga.setCursor(cursor_row, target_col);
         vga.putChar(line_buffer[i], 15, 0);
     }
 }
 
+/// Render prediction text following the user's current input.
+///
+/// Ghost text is only displayed when:
+///   • The cursor is at the end of the line
+///   • A prediction exists
+///   • The terminal remains in Canvas mode
 fn drawGhostText() void {
+
     if (cursor_pos != line_len) return;
     if (!inCanvasMode()) return;
 
-    const prediction = getPrediction(line_buffer[0..line_len]);
+    const prediction =
+    getPrediction(line_buffer[0..line_len]);
+
     if (prediction.len == 0) return;
 
-    const max_cols = if (vga.graphics_mode) @as(usize, fb.getCols()) else 80;
+    const max_cols =
+    if (vga.graphics_mode)
+        @as(usize, fb.getCols())
+        else
+            80;
+
     var j: usize = 0;
+
     while (j < prediction.len) : (j += 1) {
         const ghost_col = prompt_start + line_len + j;
-        if (ghost_col >= (max_cols - 1)) break;
+
+        if (ghost_col >= (max_cols - 1)) {
+            break;
+        }
 
         vga.setCursor(cursor_row, ghost_col);
+
+        // Dark-grey prediction text distinguishes suggested
+        // characters from confirmed user input.
         vga.putChar(prediction[j], 8, 0);
     }
 }
 
+/// Rebuild the visible editing row.
+///
+/// Canvas-mode rendering follows the sequence:
+///   1. Clear the editable region
+///   2. Draw committed input text
+///   3. Draw ghost prediction text
+///   4. Restore cursor position
+///
+/// Stream mode never performs redraws because wrapped output must
+/// remain untouched.
 fn redrawLine() void {
-    // Redraw is only safe/meaningful in Canvas mode.
+
     if (!inCanvasMode()) return;
 
-    // TEMPORARY SAFETY GUARD (Adjust if your graphics canvas supports more rows)
-    const max_rows = if (vga.graphics_mode) @as(usize, fb.getRows()) else 25;
+    const max_rows =
+    if (vga.graphics_mode)
+        @as(usize, fb.getRows())
+        else
+            25;
+
     if (cursor_row >= max_rows) return;
 
-    // Turn the cursor off before rendering new letters so it doesn't leave ghosts
-    if (vga.graphics_mode) fb.setCursorVisible(false);
+    // Hide the graphical cursor while rebuilding the line to avoid
+    // rendering artefacts.
+    if (vga.graphics_mode) {
+        fb.setCursorVisible(false);
+    }
 
     clearCanvasRegion();
     drawRealTextOnCanvas();
@@ -337,9 +528,10 @@ fn redrawLine() void {
 }
 
 // -----------------------------------------------------------------------------
-//  CURSOR MOVEMENT & EDITING
+//  CURSOR MOVEMENT AND EDITING OPERATIONS
 // -----------------------------------------------------------------------------
 
+/// Move the editing cursor one character to the left.
 fn moveLeft() void {
     if (cursor_pos == 0) return;
 
@@ -347,19 +539,28 @@ fn moveLeft() void {
     setCursorToLogical();
 }
 
+/// Move the editing cursor one character to the right.
+///
+/// If the cursor is already at the end of the line, an available
+/// prediction is accepted automatically.
 fn moveRight() void {
+
     if (cursor_pos < line_len) {
-        // Normal movement within the line
+
         cursor_pos += 1;
+
         setCursorToLogical();
         redrawLine();
+
         return;
     }
 
-    // At the end of the line? Check for prediction!
-    const prediction = getPrediction(line_buffer[0..line_len]);
+    // Accept the active prediction when moving past the end of
+    // the current command.
+    const prediction =
+    getPrediction(line_buffer[0..line_len]);
+
     if (prediction.len > 0) {
-        // Copy prediction into the real buffer
         for (prediction) |char| {
             if (line_len < MAX_LINE) {
                 line_buffer[line_len] = char;
@@ -373,46 +574,67 @@ fn moveRight() void {
     redrawLine();
 }
 
+/// Clear the entire current command line.
 fn cancelLine() void {
     line_len = 0;
     cursor_pos = 0;
+
     redrawLine();
 }
 
+/// Handle Tab-key completion.
+///
+/// Behaviour:
+///   • Accept the active prediction when available
+///   • Otherwise insert a conventional four-space tab
 fn insertTab() void {
-    const prediction = getPrediction(line_buffer[0..line_len]);
+    const prediction =
+    getPrediction(line_buffer[0..line_len]);
 
-    // If a prediction exists, Tab accepts it instead of indenting
     if (prediction.len > 0) {
+
+        // Command-completion behaviour.
         acceptPrediction(prediction);
+
     } else {
-        // Fallback to original tab logic (4 spaces)
+
+        // Fallback indentation behaviour.
         const TAB_SIZE: u8 = 4;
+
         var i: u8 = 0;
+
         while (i < TAB_SIZE and line_len < MAX_LINE) : (i += 1) {
             line_buffer[line_len] = ' ';
             line_len += 1;
             cursor_pos += 1;
         }
+
         redrawLine();
     }
 }
 
+/// Move the cursor to the beginning of the command line.
 fn moveCursorToStart() void {
     cursor_pos = 0;
     setCursorToLogical();
 }
 
+/// Move the cursor to the end of the command line.
 fn moveCursorToEnd() void {
     cursor_pos = line_len;
     setCursorToLogical();
 }
 
+/// Delete all text from the start of the line up to the current
+/// cursor position.
+///
+/// Similar to Ctrl+U behaviour in many shells.
 fn killToStart() void {
     const old_len = line_len;
 
-    // Shift everything right of cursor to the start
+    // Shift the remaining text toward the beginning of the buffer.
     var i: usize = 0;
+
     while (cursor_pos + i < line_len) : (i += 1) {
         line_buffer[i] = line_buffer[cursor_pos + i];
     }
@@ -420,8 +642,10 @@ fn killToStart() void {
     line_len -= cursor_pos;
     cursor_pos = 0;
 
-    // Clear old visible region
+    // Remove any stale characters remaining from the previous
+    // visible line contents.
     var j: usize = 0;
+
     while (j < old_len + 1) : (j += 1) {
         vga.setCursor(cursor_row, prompt_start + j);
         vga.putChar(' ', 15, 0);
@@ -433,9 +657,10 @@ fn killToStart() void {
 fn killToEnd() void {
     const old_len = line_len;
 
+    // Discard everything from the cursor to the end of the line.
     line_len = cursor_pos;
 
-    // Clear old visible region
+    // Remove stale characters remaining from the previous render.
     var j: usize = 0;
     while (j < old_len + 1) : (j += 1) {
         vga.setCursor(cursor_row, prompt_start + j);
@@ -445,61 +670,89 @@ fn killToEnd() void {
     redrawLine();
 }
 
+/// Abort the current command line.
+///
+/// The line is cleared, submitted as empty input, and the cursor
+/// advances to the next line.
 fn abortLine() void {
     cancelLine();
     vga.putChar('\n', 15, 0);
     line_ready.store(true, .release);
 }
 
+/// Clear the terminal display and reset editor state.
+///
+/// The shell prompt is redrawn and the current editing session is
+/// re-anchored to the new cursor location.
 fn clearScreen() void {
     vga.clearScreen(15, 0);
     vga.setCursor(0, 0);
+
     vga.writeString("Cadenza> ", 3, 0);
 
-    // Anchor our input tracking exactly where the prompt finished printing
-    prompt_start = if (vga.graphics_mode) fb.cursor_col else vga.cursor_col;
-    cursor_row = if (vga.graphics_mode) fb.cursor_row else vga.cursor_row;
+    // Capture the post-prompt position as the new canvas origin.
+    prompt_start =
+    if (vga.graphics_mode)
+        fb.cursor_col
+        else
+            vga.cursor_col;
+
+    cursor_row =
+    if (vga.graphics_mode)
+        fb.cursor_row
+        else
+            vga.cursor_row;
+
     canvas_row = cursor_row;
+
     cursor_pos = 0;
     line_len = 0;
 }
 
+/// Delete the character currently under the cursor.
+///
+/// Similar to the Delete key found in most command-line editors.
 fn deleteUnderCursor() void {
     if (cursor_pos >= line_len) return;
 
-    // Shift buffer left
+    // Shift remaining characters left.
     var i: usize = cursor_pos;
+
     while (i + 1 < line_len) : (i += 1) {
         line_buffer[i] = line_buffer[i + 1];
     }
+
     line_len -= 1;
 
     redrawLine();
 }
 
+/// Delete the word immediately preceding the cursor.
+///
+/// Behaviour is similar to Ctrl+W in many Unix shells.
 fn deletePreviousWord() void {
     if (cursor_pos == 0) return;
 
     const old_len = line_len;
 
-    // 1. Find the start of the word to delete
+    // Find the start boundary of the word being removed.
     var start = cursor_pos;
 
-    // Skip spaces before cursor
+    // Skip trailing spaces.
     while (start > 0 and line_buffer[start - 1] == ' ') {
         start -= 1;
     }
 
-    // Skip the word characters
+    // Skip the word itself.
     while (start > 0 and line_buffer[start - 1] != ' ') {
         start -= 1;
     }
 
-    // 2. Compute how many characters to remove
     const count = cursor_pos - start;
 
-    // 3. Shift the rest of the buffer left
+    // Compact the remaining line contents.
     var i: usize = start;
+
     while (i + count < line_len) : (i += 1) {
         line_buffer[i] = line_buffer[i + count];
     }
@@ -507,32 +760,37 @@ fn deletePreviousWord() void {
     line_len -= count;
     cursor_pos = start;
 
-    // 4. Clear the old visible region
+    // Remove stale visible characters.
     var j: usize = 0;
+
     while (j < old_len + 1) : (j += 1) {
         vga.setCursor(cursor_row, prompt_start + j);
         vga.putChar(' ', 15, 0);
     }
 
-    // 5. Redraw the new line
     redrawLine();
 }
 
 // -----------------------------------------------------------------------------
-//  HISTORY BROWSING
+//  HISTORY NAVIGATION
 // -----------------------------------------------------------------------------
 
+/// Load the currently selected history entry into the editing buffer.
 fn loadHistoryLine() void {
     if (history_index < 0) return;
-    // Clear current input line visually
+
+    // Clear the currently displayed command line.
     var i: usize = 0;
+
     while (i < line_len) : (i += 1) {
         vga.setCursor(cursor_row, prompt_start + i);
         vga.putChar(' ', 15, 0);
     }
 
     const head: isize = @intCast(history_head);
-    const max:  isize = @intCast(MAX_HISTORY);
+    const max: isize = @intCast(MAX_HISTORY);
+
+    // Translate the browsing index into the circular history buffer.
     const hidx: isize = head + max - 1 - history_index;
     const wrapped: isize = @mod(hidx, max);
     const idx: usize = @intCast(wrapped);
@@ -541,6 +799,7 @@ fn loadHistoryLine() void {
 
     var new_len: usize = 0;
     while (new_len < MAX_LINE and src[new_len] != 0) : (new_len += 1) {}
+
     line_len = new_len;
     cursor_pos = line_len;
 
@@ -554,26 +813,47 @@ fn loadHistoryLine() void {
     vga.setCursor(cursor_row, prompt_start + cursor_pos);
 }
 
+/// Navigate backwards through command history.
+///
+/// The current partially typed command is preserved the first time
+/// history browsing begins.
 fn historyUp() void {
     if (history_len == 0) return;
 
     if (history_index == -1) {
+
+        // Preserve the active unfinished command.
         saved_line_len = line_len;
-        _ = mem.memcpy(saved_line[0..line_len].ptr, line_buffer[0..line_len].ptr, line_len);
+
+        _ = mem.memcpy(
+            saved_line[0..line_len].ptr,
+            line_buffer[0..line_len].ptr,
+            line_len,
+        );
+
         history_index = 0;
+
     } else if (history_index + 1 < history_len) {
+
         history_index += 1;
     }
 
     loadHistoryLine();
 }
 
+/// Navigate forwards through command history.
+///
+/// When the most recent history entry is passed, the previously
+/// edited command line is restored.
 fn historyDown() void {
     if (history_index == -1) return;
 
     if (history_index == 0) {
-        // Restore the partially typed line
+
+        // Restore the command that was being edited before
+        // history navigation began.
         var i: usize = 0;
+
         while (i < line_len) : (i += 1) {
             vga.setCursor(cursor_row, prompt_start + i);
             vga.putChar(' ', 15, 0);
@@ -581,30 +861,43 @@ fn historyDown() void {
 
         line_len = saved_line_len;
         cursor_pos = line_len;
-        _ = mem.memcpy(line_buffer[0..line_len].ptr, saved_line[0..line_len].ptr, line_len);
 
-        // Redraw
+        _ = mem.memcpy(
+            line_buffer[0..line_len].ptr,
+            saved_line[0..line_len].ptr,
+            line_len,
+        );
+
         redrawLine();
+
         vga.setCursor(cursor_row, prompt_start + cursor_pos);
 
         history_index = -1;
+
     } else {
+
         history_index -= 1;
         loadHistoryLine();
     }
 }
 
 // -----------------------------------------------------------------------------
-//  PREDICTION
+//  COMMAND PREDICTION
 // -----------------------------------------------------------------------------
 
+/// Request a prediction from the currently registered predictor.
 fn getPrediction(input: []const u8) []const u8 {
     if (external_predictor) |predict| {
         return predict(input);
     }
+
     return "";
 }
 
+/// Accept a prediction and append it to the active command line.
+///
+/// This is used by Tab completion and end-of-line prediction
+/// acceptance.
 fn acceptPrediction(prediction: []const u8) void {
     for (prediction) |char| {
         if (line_len < MAX_LINE) {
@@ -613,5 +906,6 @@ fn acceptPrediction(prediction: []const u8) void {
             cursor_pos += 1;
         }
     }
+
     redrawLine();
 }

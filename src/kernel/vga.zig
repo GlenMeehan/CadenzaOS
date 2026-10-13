@@ -1,57 +1,81 @@
 // src/kernel/vga.zig
 //
-// Minimal VGA text‑mode driver for 80×25 mode.
-// This module provides:
-//   • writeStringAt(row, col, text, fg, bg)
-//   • writeString(text, fg, bg) with cursor tracking
-//   • putChar()
-//   • scroll()
-//   • clearScreen()
-//   • cursor movement helpers
+// Text output abstraction for both VGA text mode and framebuffer
+// graphics mode.
 //
-// This driver is intentionally simple and synchronous — ideal for early kernel output.
-// All operations write directly to the VGA text buffer at 0xB8000.
-
+// Provides:
+//   • writeStringAt() — fixed-position text output
+//   • writeString()   — cursor-driven text output
+//   • writeRaw()      — output without implicit line management
+//   • putChar()       — single-character output
+//   • scroll()        — text scrolling support
+//   • clearScreen()   — display clearing
+//   • Cursor-management helpers
+//
+// When graphics_mode is false, output is written directly to the
+// VGA text buffer at physical address 0xB8000.
+//
+// When graphics_mode is true, all rendering is forwarded to the
+// framebuffer text renderer.
+//
 const conv = @import("convert.zig");
 const io = @import("port_io.zig");
 const serial = @import("drivers/serial.zig");
 const fb = @import("framebuffer.zig");
 
-// VGA text buffer (80×25 characters, 2 bytes per cell)
+/// VGA text buffer.
+///
+/// Each character cell occupies two bytes:
+///   • Character value
+///   • Colour attribute
 const VGA = @as([*]volatile u16, @ptrFromInt(0xB8000));
 
-// Set to true when VESA graphics mode is active.
-// Disables VGA text buffer writes and hardware cursor updates.
+/// Indicates whether framebuffer graphics mode is active.
+///
+/// When enabled, VGA buffer writes and hardware cursor updates are
+/// replaced with framebuffer rendering operations.
 pub var graphics_mode: bool = false;
 
-const WIDTH  = 80;
+/// VGA text-mode width in character cells.
+const WIDTH = 80;
+
+/// VGA text-mode height in character cells.
 const HEIGHT = 25;
 
-// Global cursor position used by writeString() and putChar()
+/// Current logical cursor row.
 pub var cursor_row: usize = 0;
+
+/// Current logical cursor column.
 pub var cursor_col: usize = 0;
 
 // -----------------------------------------------------------------------------
-//  HIGH‑LEVEL API
+//  HIGH-LEVEL TEXT OUTPUT API
 // -----------------------------------------------------------------------------
 
-/// Write a string starting at the next available line.
-/// Uses cursor tracking and putChar().
+/// Write a string using the managed text cursor.
+///
+/// The output position is advanced automatically and scrolling is
+/// performed as required.
 pub fn writeString(s: []const u8, fg: u8, bg: u8) void {
-    //serial.writeString(s);
+    // serial.writeString(s);
+
     if (graphics_mode) {
         fb.writeString(s, fg, bg);
         return;
     }
+
     nextLine();
+
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
         putChar(s[i], fg, bg);
     }
 }
 
-/// Write a string at a fixed position (no cursor movement).
-/// Colors: fg = foreground, bg = background (4‑bit each).
+/// Write text at a fixed screen position.
+///
+/// Unlike writeString(), this function does not modify the current
+/// cursor location.
 pub fn writeStringAt(
     row: u16,
     col: u16,
@@ -63,24 +87,36 @@ pub fn writeStringAt(
         fb.writeStringAt(row, col, s, fg, bg);
         return;
     }
-    const color = (@as(u16, bg) << 12) | (@as(u16, fg) << 8);
+
+    const color =
+    (@as(u16, bg) << 12) |
+    (@as(u16, fg) << 8);
 
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
-        const pos = row * WIDTH + col + @as(u16, @intCast(i));
+        const pos =
+        row * WIDTH +
+        col +
+        @as(u16, @intCast(i));
+
         VGA[pos] = color | s[i];
     }
 }
 
-/// Clear the entire screen to the given fg/bg colors.
-/// Resets cursor to (0,0).
+/// Clear the entire display and reset cursor state.
+///
+/// Behaviour is automatically routed to the active display backend.
 pub fn clearScreen(fg: u8, bg: u8) void {
     if (graphics_mode) {
         fb.clearScreen(fg, bg);
         return;
     }
-    const color = (@as(u16, bg) << 12) | (@as(u16, fg) << 8);
-    const blank = color | 0x20; // space
+
+    const color =
+    (@as(u16, bg) << 12) |
+    (@as(u16, fg) << 8);
+
+    const blank = color | 0x20; // ASCII space
 
     var i: usize = 0;
     while (i < WIDTH * HEIGHT) : (i += 1) {
@@ -91,9 +127,13 @@ pub fn clearScreen(fg: u8, bg: u8) void {
     cursor_col = 0;
 }
 
-/// Write raw text using putChar() without moving to a new line first.
+/// Write a string without automatically moving to a new line.
+///
+/// Useful when output should continue from the current cursor
+/// position.
 pub fn writeRaw(s: []const u8, fg: u8, bg: u8) void {
-    //serial.writeString(s);
+    // serial.writeString(s);
+
     var i: usize = 0;
     while (i < s.len) : (i += 1) {
         putChar(s[i], fg, bg);
@@ -105,17 +145,25 @@ pub fn writeRaw(s: []const u8, fg: u8, bg: u8) void {
 // -----------------------------------------------------------------------------
 
 /// Write a single character at the current cursor position.
-/// Handles newline, wrapping, and scrolling.
+///
+/// Handles:
+///   • Newline processing
+///   • Line wrapping
+///   • Screen scrolling
+///   • Hardware cursor updates
+///
+/// Output is automatically routed to the framebuffer renderer when
+/// graphics mode is active.
 pub fn putChar(c: u8, fg: u8, bg: u8) void {
     if (graphics_mode) {
         fb.putChar(c, fg, bg);
         return;
     }
 
-    //serial.putChar(c);
-    //if (graphics_mode) return; // skip VGA text buffer in graphics mode
+    const color =
+    (@as(u16, bg) << 12) |
+    (@as(u16, fg) << 8);
 
-    const color = (@as(u16, bg) << 12) | (@as(u16, fg) << 8);
     if (c == '\n') {
         cursor_row += 1;
         cursor_col = 0;
@@ -123,28 +171,35 @@ pub fn putChar(c: u8, fg: u8, bg: u8) void {
         VGA[cursor_row * WIDTH + cursor_col] = color | c;
         cursor_col += 1;
     }
+
     if (cursor_col >= WIDTH) {
         cursor_col = 0;
         cursor_row += 1;
     }
+
     if (cursor_row >= HEIGHT) {
         scroll();
         cursor_row = HEIGHT - 1;
     }
+
     updateCursorHardware();
 }
 
 // -----------------------------------------------------------------------------
-//  SCROLLING & LINE MANAGEMENT
+//  SCROLLING AND LINE MANAGEMENT
 // -----------------------------------------------------------------------------
 
-/// Scroll the screen up by one line.
-/// Row 1 → row 0, row 2 → row 1, etc.
-/// Last row is cleared.
+/// Scroll the display upward by one text row.
+///
+/// Rows are shifted toward the top of the screen and the final row
+/// is cleared for new output.
 pub fn scroll() void {
-    if (graphics_mode) return; // framebuffer.zig handles scrolling
-    // Shift rows upward
+
+    // Framebuffer mode provides its own scrolling implementation.
+    if (graphics_mode) return;
+
     var row: usize = 1;
+
     while (row < HEIGHT) : (row += 1) {
         const src = row * WIDTH;
         const dst = (row - 1) * WIDTH;
@@ -155,31 +210,37 @@ pub fn scroll() void {
         }
     }
 
-    // Clear last row (light grey on black)
+    // Clear the newly exposed final line.
     const last = (HEIGHT - 1) * WIDTH;
+
     var i: usize = 0;
     while (i < WIDTH) : (i += 1) {
-        VGA[last + i] = 0x0720; // space, fg=7, bg=0
+        VGA[last + i] = 0x0720; // Space, light grey on black
     }
 }
 
-/// Move the cursor to the first empty line.
-/// If no empty line exists, scroll the screen.
+/// Move the cursor to the first available blank row.
+///
+/// If no blank rows remain, the display is scrolled and the cursor
+/// is positioned on the final line.
 pub fn nextLine() void {
-    if (graphics_mode) return; // framebuffer.zig handles cursor in graphics mode
+
+    if (graphics_mode) return;
 
     var row: usize = 0;
 
-    // Search for a fully blank row
+    // Search for a completely empty row.
     while (row < HEIGHT) : (row += 1) {
         var empty = true;
 
         var col: usize = 0;
         while (col < WIDTH) : (col += 1) {
             const cell = VGA[row * WIDTH + col];
-            const ch = @as(u8, @truncate(cell)); // low byte = character
 
-            if (ch != 0x20) { // not a space
+            // Character value occupies the low byte.
+            const ch = @as(u8, @truncate(cell));
+
+            if (ch != 0x20) {
                 empty = false;
                 break;
             }
@@ -192,17 +253,21 @@ pub fn nextLine() void {
         }
     }
 
-    // No empty line → scroll
+    // No empty row exists.
     scroll();
+
     cursor_row = HEIGHT - 1;
     cursor_col = 0;
 }
 
 // -----------------------------------------------------------------------------
-//  CURSOR CONTROL (low‑level)
+//  CURSOR MANAGEMENT
 // -----------------------------------------------------------------------------
 
-/// Set the cursor to an explicit (row, col) position.
+/// Set the logical cursor position.
+///
+/// Cursor state is synchronised with either the framebuffer console
+/// or the VGA hardware cursor depending on the active display mode.
 pub fn setCursor(row: usize, col: usize) void {
     cursor_row = row;
     cursor_col = col;
@@ -215,16 +280,21 @@ pub fn setCursor(row: usize, col: usize) void {
     }
 }
 
-/// Move cursor left by one column (no wrapping).
+/// Move the cursor one column to the left.
+///
+/// No wrapping occurs across line boundaries.
 pub fn moveCursorLeft() void {
     const col = getCursorCol();
     const row = getCursorRow();
+
     if (col > 0) {
         setCursor(row, col - 1);
     }
 }
 
-/// Move cursor right by one column (no wrapping).
+/// Move the cursor one column to the right.
+///
+/// The cursor will not advance beyond the end of the current line.
 pub fn moveCursorRight() void {
     if (cursor_col < WIDTH - 1) {
         cursor_col += 1;
@@ -232,11 +302,17 @@ pub fn moveCursorRight() void {
     }
 }
 
-/// Update the VGA hardware cursor via ports 0x3D4/0x3D5.
+/// Update the VGA hardware cursor.
+///
+/// The cursor position is written through the CRT controller's
+/// index and data registers (ports 0x3D4 and 0x3D5).
 pub fn updateCursorHardware() void {
-    if (graphics_mode) return; // no hardware cursor in graphics mode
 
-    const pos: u16 = @intCast(cursor_row * WIDTH + cursor_col);
+    // Framebuffer mode uses a software-rendered cursor instead.
+    if (graphics_mode) return;
+
+    const pos: u16 =
+    @intCast(cursor_row * WIDTH + cursor_col);
 
     io.outb(0x3D4, 0x0F);
     io.outb(0x3D5, @intCast(pos & 0xFF));
@@ -246,19 +322,25 @@ pub fn updateCursorHardware() void {
 }
 
 // -----------------------------------------------------------------------------
-//  DEBUG UTILITIES
+//  DEBUGGING UTILITIES
 // -----------------------------------------------------------------------------
 
-/// Display a small "STEP: XX" indicator at the top‑right corner.
-/// Useful for debugging early boot code.
+/// Display a boot-progress marker in the upper-right corner.
+///
+/// Primarily used during early kernel initialisation to identify
+/// which startup stage is currently executing.
 pub fn step(n: u8) void {
     var buf: [4]u8 = undefined;
+
     const hex = conv.toHex(u8, n, &buf);
+
     writeStringAt(0, 72, "STEP: ", 15, 0);
     writeStringAt(0, 77, hex, 15, 0);
 }
 
-/// Hex‑dump a sequence of u16 words to the screen.
+/// Display a hexadecimal dump of a sequence of 16-bit values.
+///
+/// Intended primarily for storage and memory debugging.
 pub fn hexDump(data: []const u16, words_to_show: usize) void {
     var i: usize = 0;
     var buf: [16]u8 = undefined;
@@ -267,21 +349,28 @@ pub fn hexDump(data: []const u16, words_to_show: usize) void {
 
     while (i < words_to_show) : (i += 1) {
         const hex = conv.toHex(u16, data[i], &buf);
+
         writeString(hex, 11, 0); // Cyan
         writeString(" ", 15, 0);
 
-        // New line every 8 words (16 bytes)
-        if ((i + 1) % 8 == 0) writeString("\n", 15, 0);
+        // Start a new line every 8 words (16 bytes).
+        if ((i + 1) % 8 == 0) {
+            writeString("\n", 15, 0);
+        }
     }
 }
 
+// -----------------------------------------------------------------------------
+//  CURSOR ACCESSORS
+// -----------------------------------------------------------------------------
 
-//Make vga.cursor_col and vga.cursor_row read/write from fb when in graphics mode
+/// Return the current cursor column for the active display backend.
 pub fn getCursorCol() usize {
     if (graphics_mode) return fb.cursor_col;
     return cursor_col;
 }
 
+/// Return the current cursor row for the active display backend.
 pub fn getCursorRow() usize {
     if (graphics_mode) return fb.cursor_row;
     return cursor_row;
