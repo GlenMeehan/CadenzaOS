@@ -57,26 +57,26 @@ var rows: u32 = 0;
 //  VGA-COMPATIBLE COLOUR PALETTE
 // -----------------------------------------------------------------------------
 
-/// Mapping from 4-bit VGA colour indices to 24-bit RGB values.
+/// Mapping from 4-bit VGA colour indices to 24-bit RGB values (0xRRGGBB).
 ///
-/// This allows framebuffer text rendering to use the same colour
-/// identifiers as the traditional VGA text renderer.
+/// Entries use conventional VGA RGB components; `packColor()` maps them
+/// into the framebuffer layout reported by the bootloader.
 const palette: [16]u32 = .{
     0x000000, // 0  black
-    0xAA0000, // 1  blue
+    0x0000AA, // 1  blue
     0x00AA00, // 2  green
-    0x00FFFF, // 3  cyan
-    0x0000AA, // 4  red
+    0x00AAAA, // 3  cyan
+    0xAA0000, // 4  red
     0xAA00AA, // 5  magenta
-    0x0055AA, // 6  brown
+    0xAA5500, // 6  brown
     0xAAAAAA, // 7  light grey
     0x555555, // 8  dark grey
-    0xFF5555, // 9  bright blue
+    0x5555FF, // 9  bright blue
     0x55FF55, // 10 bright green
-    0xFFFF55, // 11 bright cyan
-    0x5555FF, // 12 bright red
+    0x55FFFF, // 11 bright cyan
+    0xFF5555, // 12 bright red
     0xFF55FF, // 13 bright magenta
-    0x55FFFF, // 14 yellow
+    0xFFFF55, // 14 yellow
     0xFFFFFF, // 15 white
 };
 
