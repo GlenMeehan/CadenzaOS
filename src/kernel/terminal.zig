@@ -265,8 +265,6 @@ pub fn takeLine() []const u8 {
             shell_task.state = .Ready;
         }
 
-        // Yield the remainder of the current scheduling slice.
-        scheduler.manager.yield();
     }
 }
 
