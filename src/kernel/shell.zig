@@ -1,11 +1,16 @@
 // src/kernel/shell.zig
 //
-// Simple line‑oriented shell for Cadenza OS.
-// - No dynamic allocation beyond a provided allocator
-// - Commands are statically registered in `commands`
-// - Input is provided by the terminal subsystem (`term`)
-// - Commands receive tokenized arguments: [][]const u8
-// - All output goes through VGA text mode
+// Simple line-oriented shell for Cadenza OS.
+//
+// Characteristics:
+//   • No dynamic allocation beyond a supplied allocator
+//   • Commands are statically registered in `commands`
+//   • Input is provided by the terminal subsystem
+//   • Commands receive tokenised arguments ([][]const u8)
+//   • Output is written through kernel console/VGA facilities
+//
+// This module provides command registration, command dispatch,
+// shell state management, and user-facing command implementations.
 
 const std = @import("std");
 const mem = @import("memory.zig");
@@ -37,6 +42,7 @@ const binfmt = @import("binfmt.zig");
 // Task registry
 // --------------------------------
 
+/// Mapping between shell-visible task names and task entry points.
 const TaskRegistryEntry = struct {
     name: []const u8,
     entry: *const fn() callconv(.c) void,
@@ -53,42 +59,61 @@ const Directory = coda_file.Directory;
 const FG = 15;
 const BG = 0;
 
+// Timing information used for command latency measurements.
 var last_command_tick: u64 = 0;
 var current_command_tick: u64 = 0;
 
-// 4KB of memory, aligned to 16 bytes for x86_64 compatibility
+// Temporary stack used by shell task-testing functionality.
+//
+// Must remain 16-byte aligned to satisfy x86_64 ABI requirements.
 var test_task_stack: [4096]u8 align(16) = [_]u8{0} ** 4096;
 
 // -----------------------------------------------------------------------------
 //  GLOBAL SHELL STATE
 // -----------------------------------------------------------------------------
 
+/// Reusable token storage populated by command-line parsing.
 var parse_tokens: [conf.MAX_ARGS][]const u8 = undefined;
 
+/// Filesystem context used by shell commands.
 var g_fs: *CodaFs = undefined;
+
+/// Allocator provided during shell initialisation.
 var g_allocator: std.mem.Allocator = undefined;
 
+/// Current working directory metadata.
 var g_cwd_lba: u64 = 0;
 var g_cwd_blocks: u32 = 0;
 var g_cwd_name: [32]u8 = undefined;
-var g_cwd_name_len: usize = 1; // Start with "/"
 
+/// Length of the current working directory name.
+///
+/// Starts at 1 to represent the root directory "/".
+var g_cwd_name_len: usize = 1;
+
+/// Most recently observed command latency.
 var last_latency: u64 = 0;
 
-
+/// Previously executed shell command.
+///
+/// Used by predictive and behavioural systems such as the Conductor.
 var last_command: conf.CommandID = .UNKNOWN;
 
-var anomaly_detected: bool = false; // The global "Messenger" flag
+/// Global anomaly flag used to communicate unusual system behaviour.
+var anomaly_detected: bool = false;
 
-
-// Dedicated command buffer — reset after every command execution
-var cmd_buf: [64 * 1024]u8 = undefined;  // 64KB per command
+// Dedicated per-command allocation area.
+//
+// Reset after each command so temporary allocations do not accumulate
+// across command executions.
+var cmd_buf: [64 * 1024]u8 = undefined;
 var cmd_fba = std.heap.FixedBufferAllocator.init(&cmd_buf);
 
 // -----------------------------------------------------------------------------
 //  COMMAND REGISTRATION
 // -----------------------------------------------------------------------------
 
+/// Metadata describing a shell command.
 const Command = struct {
     name: []const u8,
     desc: []const u8,
@@ -98,6 +123,7 @@ const Command = struct {
 };
 
 const commands = [_]Command{
+
     // Utility commands
     .{ .name = "help",     .desc = "Show this help message",              .func = cmd_help, .id = .UNKNOWN },
     .{ .name = "keys",     .desc = "Show key and control functions help", .func = cmd_keys, .id = .UNKNOWN },
@@ -108,12 +134,12 @@ const commands = [_]Command{
     // System commands
     .{ .name = "shutdown", .desc = "Power off the machine",               .func = cmd_shutdown, .id = .SHUTDOWN },
     .{ .name = "reboot",   .desc = "Reboot the machine",                  .func = cmd_reboot, .id = .REBOOT },
-    .{ .name = "vitals",   .desc = "Display vitals",                      .func = cmd_vitals,  .id = .VITALS },
+    .{ .name = "vitals",   .desc = "Display vitals",                      .func = cmd_vitals, .id = .VITALS },
     .{ .name = "version",  .desc = "Display system version information",  .func = cmd_version, .id = .VERSION },
-    .{ .name = "uptime",  .desc = "Display time elapsed since last boot",  .func = cmd_uptime, .id = .UPTIME },
-    .{ .name = "spawn", .desc = "Spawn a named task", .func = cmd_spawn, .id = .SPAWN, .needs_arg = true },
+    .{ .name = "uptime",   .desc = "Display time elapsed since last boot", .func = cmd_uptime, .id = .UPTIME },
+    .{ .name = "spawn",    .desc = "Spawn a named task",                  .func = cmd_spawn, .id = .SPAWN, .needs_arg = true },
 
-    // Filesystem / Composer‑tracked commands
+    // Filesystem / Conductor-tracked commands
     .{ .name = "ls",       .desc = "List root directory",                 .func = cmd_ls,     .id = .LS },
     .{ .name = "touch",    .desc = "Create a file",                       .func = cmd_touch,  .id = .TOUCH,  .needs_arg = true },
     .{ .name = "edit",     .desc = "Write data into file",                .func = cmd_edit,   .id = .EDIT,   .needs_arg = true },
@@ -124,9 +150,9 @@ const commands = [_]Command{
     .{ .name = "mkdir",    .desc = "Create a directory",                  .func = cmd_mkdir,  .id = .MKDIR,  .needs_arg = true },
     .{ .name = "cd",       .desc = "Navigate to a folder",                .func = cmd_cd,     .id = .CD,     .needs_arg = true },
     .{ .name = "mv",       .desc = "Move a file",                         .func = cmd_mv,     .id = .MOVE },
-    .{ .name = "df",       .desc = "Display free disk space",                         .func = cmd_df,     .id = .DF },
-    //The Conductor
-    // Policy  control
+    .{ .name = "df",       .desc = "Display free disk space",             .func = cmd_df,     .id = .DF },
+
+    // Conductor / policy management
     .{ .name = "policy",   .desc = "View/set system policy",              .func = cmd_policy, .id = .POLICY },
 };
 
@@ -134,42 +160,66 @@ const commands = [_]Command{
 //  ARGUMENT PARSING
 // -----------------------------------------------------------------------------
 
+/// Split a command line into shell tokens.
+///
+/// Supports:
+///   • space-separated arguments
+///   • quoted arguments containing spaces
+///
+/// Parsed tokens are stored in the shared parse_tokens buffer and
+/// remain valid only until the next parse operation.
 fn parseArgs(line: []const u8) [][]const u8 {
     var count: usize = 0;
     var i: usize = 0;
 
     while (i < line.len) {
-        // Skip spaces
+
+        // Skip leading whitespace before the next token.
         while (i < line.len and line[i] == ' ') : (i += 1) {}
         if (i >= line.len) break;
 
         if (line[i] == '"') {
-            // Quoted token
+
+            // Quoted token: preserve embedded spaces until the
+            // closing quote is reached.
             i += 1;
             const start = i;
 
             while (i < line.len and line[i] != '"') : (i += 1) {}
+
             parse_tokens[count] = line[start..i];
 
-            if (i < line.len and line[i] == '"') i += 1;
+            if (i < line.len and line[i] == '"')
+                i += 1;
+
         } else {
-            // Normal token
+
+            // Unquoted token terminated by whitespace.
             const start = i;
+
             while (i < line.len and line[i] != ' ') : (i += 1) {}
+
             parse_tokens[count] = line[start..i];
         }
 
         count += 1;
+
+        // Stop if the fixed token buffer is exhausted.
         if (count >= parse_tokens.len) break;
     }
 
     return parse_tokens[0..count];
 }
 
+/// Convert a command name into its CommandID.
+///
+/// Returns .UNKNOWN if the command is not registered.
 fn getCmdId(name: []const u8) conf.CommandID {
     for (commands) |c| {
-        if (mem.eqlNoSimd(u8, c.name, name)) return c.id;
+        if (mem.eqlNoSimd(u8, c.name, name))
+            return c.id;
     }
+
     return .UNKNOWN;
 }
 
@@ -177,11 +227,15 @@ fn getCmdId(name: []const u8) conf.CommandID {
 //  PUBLIC ENTRY POINT
 // -----------------------------------------------------------------------------
 
+/// Start the interactive shell.
+///
+/// Binds the filesystem and allocator, initialises shell state,
+/// enables interrupts, and enters the main command-processing loop.
 pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
     g_fs = fs;
     g_allocator = allocator;
 
-    // --- CONDUCTOR INITIALIZATION ---
+    // Connect the Conductor to the live filesystem policy.
     conductor.init(&g_fs.superblock.policy);
 
     g_cwd_lba = fs.superblock.root_dir_extent_start;
@@ -194,14 +248,22 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
     term.setPredictor(shellPredictor);
     last_command = .UNKNOWN;
 
-    // Enable interrupts safely now that hardware/FS state is bound
+    // Enable hardware interrupts once shell, filesystem, and
+    // supporting services are fully initialised.
     asm volatile ("sti");
 
-    // ONE SINGLE CLEAN LOOP
+    // Main shell loop.
     while (true) {
         var prompt_buf: [64]u8 = undefined;
+
         const current_dir = g_cwd_name[0..g_cwd_name_len];
-        const prompt = std.fmt.bufPrint(&prompt_buf, "Cadenza {s}> ", .{current_dir}) catch "Cadenza> ";
+
+        const prompt =
+        std.fmt.bufPrint(
+            &prompt_buf,
+            "Cadenza {s}> ",
+            .{current_dir},
+        ) catch "Cadenza> ";
 
         vga.writeString(prompt, 3, 0);
         vga.updateCursorHardware();
@@ -209,91 +271,141 @@ pub fn run(fs: *CodaFs, allocator: std.mem.Allocator) void {
         term.startNewLine();
         term.refresh();
 
-        // 1. This halts and yields to Task A back-and-forth continuously
-        // until you press Enter!
+        // Block until the terminal subsystem delivers a complete line.
         serial.writeString("SH-1: calling takeLine\n");
         const line = term.takeLine();
         serial.writeString("SH-2: takeLine returned\n");
 
-        // 2. The microsecond Enter is pressed, execute and repeat cleanly
-        //conductor.tick();
         term.commitHistory();
         serial.writeString("SH-3: commitHistory done\n");
+
         execute(line);
+
+        // Release the consumed line buffer before accepting input again.
         term.consumeLine();
     }
 }
 
+/// Parse, validate, and execute a shell command line.
 fn execute(line: []const u8) void {
     serial.writeString("EX-0: execute entered\n");
-    cmd_fba.reset();  // ← reset before every command
-    const current_time = irupts.ticks; //used to monitor rapidity of keystrokes
+
+    // Reset all temporary command allocations before execution.
+    cmd_fba.reset();
+
+    const current_time = irupts.ticks;
     const tokens = parseArgs(line);
-    if (tokens.len == 0) return;
+
+    if (tokens.len == 0)
+        return;
 
     const cmd_name = tokens[0];
     const current_cmd_id = getCmdId(cmd_name);
+
     var found = false;
 
-    // 1. Monitor and respond to command current_tempo
+    // 1. Command tempo monitoring.
+    //
+    // Excessively rapid command submission may indicate automation,
+    // accidental repetition, or unusual operator behaviour.
     const is_too_fast = checkEntropy(current_time);
 
     if (is_too_fast) {
-        // Switch on the LIVE policy, not the compile-time constant
         switch (g_fs.superblock.policy) {
+
             .ADMIN => {
-                vga.writeString("!! SECURITY: Command velocity too high.\n", 0x0C, 0);
-                vga.writeString("System locked for 5 seconds...\n", 0x07, 0);
+                vga.writeString(
+                    "!! SECURITY: Command velocity too high.\n",
+                    0x0C,
+                    0,
+                );
+
+                vga.writeString(
+                    "System locked for 5 seconds...\n",
+                    0x07,
+                    0,
+                );
+
                 irupts.sleep(500);
-                vga.writeString("System unlocked. Proceed with caution.\n", 0x0A, 0);
+
+                vga.writeString(
+                    "System unlocked. Proceed with caution.\n",
+                    0x0A,
+                    0,
+                );
+
                 return;
             },
+
             .DEV => {
-                vga.writeString("Warning: High command velocity detected.\n", 0x0E, 0);
+                vga.writeString(
+                    "Warning: High command velocity detected.\n",
+                    0x0E,
+                    0,
+                );
             },
+
             .GAMING => {
-                // Do nothing. High velocity is the goal.
+                // Intentionally ignored.
+                // High command throughput is expected.
             },
         }
     }
-    // 2. THE LOGIC CHECK (Markov + Surprise Logic)
-    // The syscall now returns 1 if (Surprise > Threshold)
+
+    // 2. Behavioural analysis.
+    //
+    // RECORD_HABIT returns 1 when the observed command transition
+    // exceeds the configured surprise threshold.
     var is_anomalous = false;
+
     if (current_cmd_id != .UNKNOWN) {
-        const result = syscall.call(.RECORD_HABIT, @intFromEnum(last_command), @intFromEnum(current_cmd_id));
+        const result = syscall.call(
+            .RECORD_HABIT,
+            @intFromEnum(last_command),
+                                    @intFromEnum(current_cmd_id),
+        );
+
         is_anomalous = (result == 1);
     }
 
-    // 3. THE POLICY CHECK (Tier 1: Static Safety)
+    // 3. Policy-based safety checks.
     const is_critical = switch (g_fs.superblock.policy) {
         .ADMIN  => (current_cmd_id == .DEL or current_cmd_id == .SHUTDOWN),
-        .DEV    => (current_cmd_id == .SHUTDOWN or current_cmd_id == .DEL), // Added .DEL here for testing
-        .GAMING => (current_cmd_id == .DEL), // Added .DEL here for testing
+        .DEV    => (current_cmd_id == .SHUTDOWN or current_cmd_id == .DEL),
+        .GAMING => (current_cmd_id == .DEL),
     };
-    // FORCE PROMPT FOR DELETE
+
+    // Delete operations always require confirmation.
     const force_prompt = (current_cmd_id == .DEL);
 
     if (is_critical or is_anomalous or force_prompt) {
-        // We tailor the message so you know WHY you are being prompted
-        const msg = if (is_critical)
-        "!! SAFETY: Confirm critical action?"
-        else
-            "Unusual sequence detected. Proceed?";
+
+        // Tailor the confirmation prompt to the reason it was triggered.
+        const msg =
+        if (is_critical)
+            "!! SAFETY: Confirm critical action?"
+            else
+                "Unusual sequence detected. Proceed?";
 
         if (!ui_prompt.confirm(msg)) {
             vga.writeString("Action cancelled.\n", 0x07, 0);
             return;
         }
 
-        // --- REINFORCEMENT ---
+        // Reinforce newly accepted behaviour so repeated use becomes
+        // progressively less surprising.
         if (is_anomalous) {
-            // By calling RECORD_HABIT again, we rapidly increase the score
-            // of this new path, reducing the "Surprise Factor" for next time.
-            _ = syscall.call(.RECORD_HABIT, @intFromEnum(last_command), @intFromEnum(current_cmd_id));
+            _ = syscall.call(
+                .RECORD_HABIT,
+                @intFromEnum(last_command),
+                             @intFromEnum(current_cmd_id),
+            );
+
             vga.writeString("Habit updated.\n", 0x07, 0);
         }
     }
-    // 4. THE EXECUTION LOOP
+
+    // 4. Command dispatch.
     for (commands) |c| {
         if (mem.eqlNoSimd(u8, c.name, cmd_name)) {
             c.func(tokens);
@@ -301,21 +413,28 @@ fn execute(line: []const u8) void {
             break;
         }
     }
-    // 5. POST-EXECUTION UPDATES
+
+    // 5. Post-execution updates.
     if (found and current_cmd_id != .UNKNOWN) {
-        // Important: Update 'last_command' so the NEXT command
-        // can be compared against this one.
+
+        // Record the command so future executions can evaluate
+        // command-to-command transitions.
         last_command = current_cmd_id;
 
-        // Auto-save the habit table if the system is "Optimal"
-        const current_tempo = syscall.call(.GET_TEMPO, 0, 0);
+        // Persist behavioural learning only while the Conductor
+        // considers the system healthy.
+        const current_tempo =
+        syscall.call(.GET_TEMPO, 0, 0);
 
-        if (current_tempo == @intFromEnum(conductor.ConductorState.Optimal)) {
+        if (current_tempo ==
+            @intFromEnum(conductor.ConductorState.Optimal))
+        {
             saveComposer() catch |err| {
                 vga.writeString("saveComposer FAILED: ", 12, 0);
                 vga.writeString(@errorName(err), 12, 0);
             };
         }
+
     } else if (!found) {
         vga.writeString("Unknown command.\n", 0x07, 0);
     }
@@ -325,6 +444,8 @@ fn execute(line: []const u8) void {
 //  UTILITY COMMANDS
 // -----------------------------------------------------------------------------
 
+/// Display the list of registered shell commands and a brief
+/// description of each one.
 fn cmd_help(_: [][]const u8) void {
     vga.writeString("Commands:", FG, BG);
 
@@ -340,6 +461,7 @@ fn cmd_help(_: [][]const u8) void {
     vga.putChar('\n', FG, BG);
 }
 
+/// Display available keyboard navigation and editing shortcuts.
 fn cmd_keys(_: [][]const u8) void {
     vga.writeString("Keyboard shortcuts:", FG, BG);
 
@@ -380,10 +502,12 @@ fn cmd_keys(_: [][]const u8) void {
     vga.putChar('\n', FG, BG);
 }
 
+/// Clear the VGA display.
 fn cmd_clear(_: [][]const u8) void {
     vga.clearScreen(FG, BG);
 }
 
+/// Echo all supplied arguments back to the terminal.
 fn cmd_echo(args: [][]const u8) void {
     var i: usize = 1;
 
@@ -403,6 +527,7 @@ fn cmd_echo(args: [][]const u8) void {
     vga.putChar('\n', FG, BG);
 }
 
+/// Display the current shell command history.
 fn cmd_history(_: [][]const u8) void {
     if (term.history_len == 0) {
         vga.writeString("No history\n", FG, BG);
@@ -410,6 +535,7 @@ fn cmd_history(_: [][]const u8) void {
     }
 
     var i: usize = 0;
+
     while (i < term.history_len) : (i += 1) {
         if (term.getHistoryEntry(i)) |line| {
             vga.writeString(line, FG, BG);
@@ -418,12 +544,15 @@ fn cmd_history(_: [][]const u8) void {
     }
 }
 
-// Not registered, but kept as a simple test command
+// Not registered as a user command.
+// Retained as a simple shell output test utility.
 fn cmd_test(_: [][]const u8) void {
     var i: usize = 0;
+
     while (i < 100) : (i += 1) {
         vga.putChar('#', FG, BG);
     }
+
     vga.putChar('\n', FG, BG);
 }
 
@@ -431,40 +560,57 @@ fn cmd_test(_: [][]const u8) void {
 //  SYSTEM COMMANDS
 // -----------------------------------------------------------------------------
 
+/// Power off the machine.
 fn cmd_shutdown(_: [][]const u8) void {
-
     vga.writeString("Shutting down...\n", FG, BG);
     system.shutdown();
 }
 
+/// Reboot the machine.
 fn cmd_reboot(_: [][]const u8) void {
-
     vga.writeString("Rebooting...\n", FG, BG);
     system.reboot();
 }
 
+/// Display current system telemetry collected by the vitals subsystem.
 fn cmd_vitals(tokens: [][]const u8) void {
     _ = tokens;
 
     var buf: [128]u8 = undefined;
 
-    const line1 = std.fmt.bufPrint(&buf, "Total Disk Cycles: {d}\n", .{vitals.current_vitals.disk_cycles}) catch "Error\n";
+    const line1 =
+    std.fmt.bufPrint(
+        &buf,
+        "Total Disk Cycles: {d}\n",
+        .{vitals.current_vitals.disk_cycles},
+    ) catch "Error\n";
+
     vga.writeString(line1, 15, 0);
 
-    const line2 = std.fmt.bufPrint(&buf, "Last Read Latency: {d} cycles\n", .{vitals.current_vitals.last_read_latency}) catch "Error\n";
+    const line2 =
+    std.fmt.bufPrint(
+        &buf,
+        "Last Read Latency: {d} cycles\n",
+        .{vitals.current_vitals.last_read_latency},
+    ) catch "Error\n";
+
     vga.writeString(line2, 16, 0);
 }
 
+/// Display kernel version and build information.
 fn cmd_version(args: [][]const u8) void {
     _ = args;
 
-    //const std = @import("std");
-    //const config = @import("config");
-
-    const dirty_suffix = if (conf.build.git_dirty) "-dirty" else "";
+    const dirty_suffix =
+    if (conf.build.git_dirty)
+        "-dirty"
+        else
+            "";
 
     var buf: [128]u8 = undefined;
-    const version_str = std.fmt.bufPrint(
+
+    const version_str =
+    std.fmt.bufPrint(
         &buf,
         "Cadenza OS {d}.{d}.{d}+{s}{s}\nBuilt: {s}\n",
         .{
@@ -478,56 +624,60 @@ fn cmd_version(args: [][]const u8) void {
     ) catch return;
 
     vga.writeString(version_str, 11, 0);
+
     vga.writeString("Kernel: Zig 0.16.0\n", 7, 0);
     vga.writeString("Predictive Shell: Phase 1 Context-Aware\n", 10, 0);
 }
-
-
 
 fn cmd_uptime(tokens: [][]const u8) void {
     _ = tokens;
 
     const total_seconds = @as(u32, @intCast(irupts.ticks / 100));
+
     const h = total_seconds / 3600;
     const m = (total_seconds % 3600) / 60;
     const s = total_seconds % 60;
 
-    // Create a buffer for the entire line (e.g., 80 characters)
+    // Build the entire uptime string in a temporary buffer so it can
+    // be written with a single VGA operation.
     var line_buf: [80]u8 = undefined;
     var pos: usize = 0;
 
-    // Helper to "append" strings to our line_buf
+    // Append the fixed prefix.
     const prefix = "Uptime: ";
     @memcpy(line_buf[pos .. pos + prefix.len], prefix);
     pos += prefix.len;
 
     var num_buf: [16]u8 = undefined;
 
-    // Add Hours
+    // Append hours when non-zero.
     if (h > 0) {
         const str = conv.u32ToStr(&num_buf, h);
         @memcpy(line_buf[pos .. pos + str.len], str);
         pos += str.len;
+
         line_buf[pos] = 'h'; pos += 1;
         line_buf[pos] = ' '; pos += 1;
     }
 
-    // Add Minutes
+    // Append minutes when relevant.
     if (m > 0 or h > 0) {
         const str = conv.u32ToStr(&num_buf, m);
         @memcpy(line_buf[pos .. pos + str.len], str);
         pos += str.len;
+
         line_buf[pos] = 'm'; pos += 1;
         line_buf[pos] = ' '; pos += 1;
     }
 
-    // Add Seconds
+    // Always display seconds.
     const s_str = conv.u32ToStr(&num_buf, s);
     @memcpy(line_buf[pos .. pos + s_str.len], s_str);
     pos += s_str.len;
-    line_buf[pos] = 's'; pos += 1;
 
-    // Now write the entire built string in one single VGA call
+    line_buf[pos] = 's';
+    pos += 1;
+
     vga.writeString(line_buf[0..pos], 0x0F, 0);
 }
 
@@ -535,6 +685,7 @@ fn cmd_uptime(tokens: [][]const u8) void {
 //  FILESYSTEM COMMANDS
 // -----------------------------------------------------------------------------
 
+/// List the contents of the current directory or a supplied path.
 fn cmd_ls(args: [][]const u8) void {
     const alloc = cmd_fba.allocator();
 
@@ -542,20 +693,38 @@ fn cmd_ls(args: [][]const u8) void {
     var target_blocks = g_cwd_blocks;
 
     if (args.len > 1) {
-        const result = g_fs.resolvePath(alloc, g_cwd_lba, args[1]) catch |err| {
+
+        // Resolve the requested path relative to the current directory.
+        const result = g_fs.resolvePath(
+            alloc,
+            g_cwd_lba,
+            args[1],
+        ) catch |err| {
             vga.writeString("Error: ", 12, 0);
             vga.writeString(@errorName(err), 12, 0);
             vga.writeString("\n", 12, 0);
             return;
         };
+
         target_lba = result.lba;
         target_blocks = @intCast(result.blocks);
+
         if (!result.is_directory) {
-            vga.writeString("Error: Path is a file, not a directory.\n", 12, 0);
+            vga.writeString(
+                "Error: Path is a file, not a directory.\n",
+                12,
+                0,
+            );
             return;
         }
     }
-    const entries = g_fs.listDir(alloc, target_lba, target_blocks) catch |err| {
+
+    const entries =
+    g_fs.listDir(
+        alloc,
+        target_lba,
+        target_blocks,
+    ) catch |err| {
         vga.writeString("ls failed: ", 12, 0);
         vga.writeString(@errorName(err), 12, 0);
         vga.putChar('\n', 15, 0);
@@ -568,24 +737,40 @@ fn cmd_ls(args: [][]const u8) void {
     }
 
     for (entries) |entry| {
-        const meta = g_fs.readFileMeta(alloc, entry.meta_extent.start_block) catch continue;
+        const meta =
+        g_fs.readFileMeta(
+            alloc,
+            entry.meta_extent.start_block,
+        ) catch continue;
+
         if (meta.file_type == .Directory) {
             vga.writeString("[DIR]  ", 11, 0);
         } else {
             vga.writeString("[FILE] ", 15, 0);
         }
+
         const name = entry.name[0..entry.name_len];
-        const color: u8 = if (meta.file_type == .Directory) 11 else 15;
+        const color: u8 =
+        if (meta.file_type == .Directory)
+            11
+            else
+                15;
+
         for (name) |c| {
             vga.putChar(c, color, 0);
         }
+
+        // Directory names are suffixed with '/' to distinguish them
+        // from regular files in listings.
         if (meta.file_type == .Directory) {
             vga.putChar('/', 11, 0);
         }
+
         vga.putChar('\n', 15, 0);
     }
 }
 
+/// Create an empty file at the specified path.
 fn cmd_touch(args: [][]const u8) void {
     if (args.len < 2) {
         vga.writeString("Usage: touch <path>\n", 0x07, 0);
@@ -593,31 +778,55 @@ fn cmd_touch(args: [][]const u8) void {
     }
 
     const full_path = args[1];
-    const last_slash_idx = std.mem.lastIndexOfScalar(u8, full_path, '/');
+    const last_slash_idx =
+    std.mem.lastIndexOfScalar(u8, full_path, '/');
 
     var parent_lba: u64 = g_cwd_lba;
     var parent_blocks: u64 = g_cwd_blocks;
     var filename: []const u8 = full_path;
 
     if (last_slash_idx) |idx| {
-        const dir_part = if (idx == 0) "/" else full_path[0..idx];
+
+        // Split the supplied path into parent directory and filename.
+        const dir_part =
+        if (idx == 0)
+            "/"
+            else
+                full_path[0..idx];
+
         filename = full_path[idx + 1 ..];
 
-        const result = g_fs.resolvePath(cmd_fba.allocator(), g_cwd_lba, dir_part) catch {
-            vga.writeString("Error: Parent directory not found.\n", 0x0C, 0);
+        const result =
+        g_fs.resolvePath(
+            cmd_fba.allocator(),
+                         g_cwd_lba,
+                         dir_part,
+        ) catch {
+            vga.writeString(
+                "Error: Parent directory not found.\n",
+                0x0C,
+                0,
+            );
             return;
         };
+
         parent_lba = result.lba;
         parent_blocks = @intCast(result.blocks);
     }
 
-    g_fs.createFile(cmd_fba.allocator(), parent_lba, parent_blocks, filename) catch |err| {
+    g_fs.createFile(
+        cmd_fba.allocator(),
+                    parent_lba,
+                    parent_blocks,
+                    filename,
+    ) catch |err| {
         vga.writeString("Failed to create file: ", 0x0C, 0);
         vga.writeString(@errorName(err), 0x0C, 0);
         vga.writeString("\n", 0x07, 0);
     };
 }
 
+/// Display metadata for a file or directory.
 fn cmd_stat(args: [][]const u8) void {
     if (args.len < 2) {
         vga.writeString("Usage: stat <filename>\n", FG, BG);
@@ -639,7 +848,14 @@ fn cmd_stat(args: [][]const u8) void {
     };
 
     var name_line: [64]u8 = undefined;
-    const name_full = std.fmt.bufPrint(&name_line, "File: {s}", .{filename}) catch "File: [name error]";
+
+    const name_full =
+    std.fmt.bufPrint(
+        &name_line,
+        "File: {s}",
+        .{filename},
+    ) catch "File: [name error]";
+
     vga.writeString(name_full, FG, BG);
 
     if (meta.file_type == .File) {
@@ -649,7 +865,11 @@ fn cmd_stat(args: [][]const u8) void {
     }
 
     var size_num_buf: [16]u8 = undefined;
-    const size_str = conv.u32ToStr(&size_num_buf, @intCast(meta.size_bytes));
+    const size_str =
+    conv.u32ToStr(
+        &size_num_buf,
+        @intCast(meta.size_bytes),
+    );
 
     var size_line: [64]u8 = undefined;
     @memset(&size_line, 0);
@@ -658,16 +878,26 @@ fn cmd_stat(args: [][]const u8) void {
     const suffix = " bytes";
 
     var cursor: usize = 0;
+
     @memcpy(size_line[cursor..label.len], label);
     cursor += label.len;
-    @memcpy(size_line[cursor .. cursor + size_str.len], size_str);
+
+    @memcpy(
+        size_line[cursor .. cursor + size_str.len],
+        size_str,
+    );
     cursor += size_str.len;
-    @memcpy(size_line[cursor .. cursor + suffix.len], suffix);
+
+    @memcpy(
+        size_line[cursor .. cursor + suffix.len],
+        suffix,
+    );
     cursor += suffix.len;
 
     vga.writeString(size_line[0..cursor], FG, BG);
 }
 
+/// Display the contents of a regular file.
 fn cmd_cat(args: [][]const u8) void {
     if (args.len < 2) {
         vga.writeString("Usage: cat <filename>\n", FG, BG);
@@ -678,18 +908,34 @@ fn cmd_cat(args: [][]const u8) void {
 
     const filename = args[1];
 
-    const entry = g_fs.findFile(alloc, g_cwd_lba, filename) catch {
+    const entry = g_fs.findFile(
+        alloc,
+        g_cwd_lba,
+        filename,
+    ) catch {
         vga.writeString("Error: File not found\n", FG, BG);
         return;
     };
 
-    const meta = g_fs.readFileMeta(alloc, entry.meta_extent.start_block) catch {
-        vga.writeString("Error: Could not read metadata\n", FG, BG);
+    const meta =
+    g_fs.readFileMeta(
+        alloc,
+        entry.meta_extent.start_block,
+    ) catch {
+        vga.writeString(
+            "Error: Could not read metadata\n",
+            FG,
+            BG,
+        );
         return;
     };
 
     if (meta.file_type == .Directory) {
-        vga.writeString("Error: Cannot 'cat' a directory.\n", FG, BG);
+        vga.writeString(
+            "Error: Cannot 'cat' a directory.\n",
+            FG,
+            BG,
+        );
         return;
     }
 
@@ -702,27 +948,53 @@ fn cmd_cat(args: [][]const u8) void {
 
     var bytes_remaining = meta.size_bytes;
 
+    // Walk each file extent and stream its contents directly
+    // to the terminal.
     for (meta.extents[0..meta.extent_count]) |extent| {
         if (bytes_remaining == 0) break;
 
         var block_idx: u64 = 0;
-        while (block_idx < extent.block_count and bytes_remaining > 0) : (block_idx += 1) {
-            const current_lba = extent.start_block + block_idx;
 
-            g_fs.device.readBlocks(g_fs.device.ctx, current_lba, buf) catch {
-                vga.writeString("\nError: Disk read failure\n", FG, BG);
-                return;
-            };
+        while (block_idx < extent.block_count and
+            bytes_remaining > 0)
+            : (block_idx += 1)
+            {
+                const current_lba =
+                extent.start_block + block_idx;
 
-            const chunk_size = if (bytes_remaining > conf.BLOCK_SIZE) @as(usize, conf.BLOCK_SIZE) else @as(usize, @intCast(bytes_remaining));
-            vga.writeRaw(buf[0..chunk_size], FG, BG);
-            bytes_remaining -= chunk_size;
-        }
+                g_fs.device.readBlocks(
+                    g_fs.device.ctx,
+                    current_lba,
+                    buf,
+                ) catch {
+                    vga.writeString(
+                        "\nError: Disk read failure\n",
+                        FG,
+                        BG,
+                    );
+                    return;
+                };
+
+                // Only display valid file data from the final block.
+                const chunk_size =
+                if (bytes_remaining > conf.BLOCK_SIZE)
+                    @as(usize, conf.BLOCK_SIZE)
+                    else
+                        @as(usize, @intCast(bytes_remaining));
+
+                vga.writeRaw(buf[0..chunk_size], FG, BG);
+
+                bytes_remaining -= chunk_size;
+            }
     }
 
     vga.writeString("\n", FG, BG);
 }
 
+/// Delete a file from the current directory.
+///
+/// Confirmation and policy checks are handled by the shell
+/// execution layer before this command is invoked.
 fn cmd_del(args: [][]const u8) void {
     if (args.len < 2) {
         vga.writeString("Usage: del <filename>\n", 15, 0);
@@ -731,24 +1003,42 @@ fn cmd_del(args: [][]const u8) void {
 
     const filename = args[1];
 
-    // Note: The prompt logic usually lives here or inside a wrapper.
-    // If you have a 'confirmAction' function, ensure it's still being called.
-
-    g_fs.deleteFile(g_allocator, g_cwd_lba, filename) catch |err| {
+    g_fs.deleteFile(
+        g_allocator,
+        g_cwd_lba,
+        filename,
+    ) catch |err| {
         if (err == error.FileNotFound) {
-            vga.writeString("Error: File not found.\n", 12, 0);
+            vga.writeString(
+                "Error: File not found.\n",
+                12,
+                0,
+            );
         } else {
-            vga.writeString("Error: Could not delete file.\n", 12, 0);
+            vga.writeString(
+                "Error: Could not delete file.\n",
+                12,
+                0,
+            );
         }
         return;
     };
 
-    vga.writeString("File deleted successfully.\n", 10, 0);
+    vga.writeString(
+        "File deleted successfully.\n",
+        10,
+        0,
+    );
 }
 
+/// Rename an entry in the current directory.
 fn cmd_rename(args: [][]const u8) void {
     if (args.len < 3) {
-        vga.writeString("Usage: rename <old_name> <new_name>\n", 15, 0);
+        vga.writeString(
+            "Usage: rename <old_name> <new_name>\n",
+            15,
+            0,
+        );
         return;
     }
 
@@ -757,62 +1047,131 @@ fn cmd_rename(args: [][]const u8) void {
     const old_name = args[1];
     const new_name = args[2];
 
-    const entries = g_fs.listDir(alloc, g_cwd_lba, g_cwd_blocks) catch {
-        vga.writeString("Error: Could not read directory.\n", 12, 0);
+    const entries =
+    g_fs.listDir(
+        alloc,
+        g_cwd_lba,
+        g_cwd_blocks,
+    ) catch {
+        vga.writeString(
+            "Error: Could not read directory.\n",
+            12,
+            0,
+        );
         return;
     };
 
     var found = false;
+
     for (entries) |*e| {
-        if (std.mem.eql(u8, e.name[0..e.name_len], old_name)) {
+        if (std.mem.eql(
+            u8,
+            e.name[0..e.name_len],
+            old_name,
+        )) {
             if (new_name.len > 64) {
-                vga.writeString("Error: New name too long.\n", 12, 0);
+                vga.writeString(
+                    "Error: New name too long.\n",
+                    12,
+                    0,
+                );
                 return;
             }
+
             @memset(e.name[0..], 0);
-            @memcpy(e.name[0..new_name.len], new_name);
+            @memcpy(
+                e.name[0..new_name.len],
+                new_name,
+            );
+
             e.name_len = @intCast(new_name.len);
+
             found = true;
             break;
         }
     }
 
     if (!found) {
-        vga.writeString("Error: File not found.\n", 12, 0);
+        vga.writeString(
+            "Error: File not found.\n",
+            12,
+            0,
+        );
         return;
     }
 
-    g_fs.saveDirectoryEntries(alloc, g_cwd_lba, entries) catch {
-        vga.writeString("Error: Failed to sync changes to disk.\n", 12, 0);
+    // Persist the updated directory entries.
+    g_fs.saveDirectoryEntries(
+        alloc,
+        g_cwd_lba,
+        entries,
+    ) catch {
+        vga.writeString(
+            "Error: Failed to sync changes to disk.\n",
+            12,
+            0,
+        );
         return;
     };
 
-    vga.writeString("Successfully renamed file.\n", 10, 0);
+    vga.writeString(
+        "Successfully renamed file.\n",
+        10,
+        0,
+    );
 }
 
+/// Create a new directory in the current working directory.
 fn cmd_mkdir(args: [][]const u8) void {
     if (args.len < 2) {
-        vga.writeString("Usage: mkdir <dirname>\n", 15, 0);
+        vga.writeString(
+            "Usage: mkdir <dirname>\n",
+            15,
+            0,
+        );
         return;
     }
 
     const dir_name = args[1];
 
-g_fs.createEntry(cmd_fba.allocator(), g_cwd_lba, g_cwd_blocks, dir_name, .Directory) catch |err| {
+    g_fs.createEntry(
+        cmd_fba.allocator(),
+                     g_cwd_lba,
+                     g_cwd_blocks,
+                     dir_name,
+                     .Directory,
+    ) catch |err| {
         if (err == error.AlreadyExists) {
-            vga.writeString("Error: Name already taken.\n", 12, 0);
+            vga.writeString(
+                "Error: Name already taken.\n",
+                12,
+                0,
+            );
         } else {
-            vga.writeString("Error: Could not create directory.\n", 12, 0);
+            vga.writeString(
+                "Error: Could not create directory.\n",
+                12,
+                0,
+            );
         }
         return;
     };
 
-    vga.writeString("Directory created successfully.\n", 10, 0);
+    vga.writeString(
+        "Directory created successfully.\n",
+        10,
+        0,
+    );
 }
 
+/// Change the current working directory.
 fn cmd_cd(args: [][]const u8) void {
     if (args.len < 2) {
-        vga.writeString("Usage: cd <directory>\n", 14, 0);
+        vga.writeString(
+            "Usage: cd <directory>\n",
+            14,
+            0,
+        );
         return;
     }
 
@@ -820,11 +1179,24 @@ fn cmd_cd(args: [][]const u8) void {
 
     const path_str = args[1];
 
-    const result = g_fs.resolvePath(alloc, g_cwd_lba, path_str) catch |err| {
+    const result =
+    g_fs.resolvePath(
+        alloc,
+        g_cwd_lba,
+        path_str,
+    ) catch |err| {
         if (err == error.PathNotFound) {
-            vga.writeString("Error: Directory not found.\n", 12, 0);
+            vga.writeString(
+                "Error: Directory not found.\n",
+                12,
+                0,
+            );
         } else {
-            vga.writeString("Error: Invalid path.\n", 12, 0);
+            vga.writeString(
+                "Error: Invalid path.\n",
+                12,
+                0,
+            );
         }
         return;
     };
@@ -833,35 +1205,87 @@ fn cmd_cd(args: [][]const u8) void {
         g_cwd_lba = result.lba;
         g_cwd_blocks = @intCast(result.blocks);
 
+        // Update the prompt path displayed to the user.
         if (path_str[0] == '/') {
-            const copy_len = if (path_str.len > 30) 30 else path_str.len;
-            @memcpy(g_cwd_name[0..copy_len], path_str[0..copy_len]);
+
+            // Absolute path.
+            const copy_len =
+            if (path_str.len > 30)
+                30
+                else
+                    path_str.len;
+
+            @memcpy(
+                g_cwd_name[0..copy_len],
+                path_str[0..copy_len],
+            );
+
             g_cwd_name_len = copy_len;
-        } else if (std.mem.eql(u8, path_str, ".") or std.mem.eql(u8, path_str, "..")) {
-            // no change to prompt string
+
+        } else if (
+            std.mem.eql(u8, path_str, ".") or
+            std.mem.eql(u8, path_str, "..")
+        ) {
+
+            // Prompt reconstruction for "." and ".." is handled elsewhere.
         } else {
+
+            // Relative path beneath the current prompt location.
             if (g_cwd_name_len == 1 and g_cwd_name[0] == '/') {
-                const copy_len = if (path_str.len > 29) 29 else path_str.len;
-                @memcpy(g_cwd_name[1 .. 1 + copy_len], path_str[0..copy_len]);
+
+                const copy_len =
+                if (path_str.len > 29)
+                    29
+                    else
+                        path_str.len;
+
+                @memcpy(
+                    g_cwd_name[1 .. 1 + copy_len],
+                    path_str[0..copy_len],
+                );
+
                 g_cwd_name_len = 1 + copy_len;
+
             } else {
                 if (g_cwd_name_len + path_str.len + 1 < 31) {
                     g_cwd_name[g_cwd_name_len] = '/';
-                    @memcpy(g_cwd_name[g_cwd_name_len + 1 .. g_cwd_name_len + 1 + path_str.len], path_str);
+
+                    @memcpy(
+                        g_cwd_name[
+                            g_cwd_name_len + 1 ..
+                            g_cwd_name_len + 1 + path_str.len
+                        ],
+                        path_str,
+                    );
+
                     g_cwd_name_len += (1 + path_str.len);
                 }
             }
         }
 
-        vga.writeString("Changed directory.\n", 10, 0);
+        vga.writeString(
+            "Changed directory.\n",
+            10,
+            0,
+        );
+
     } else {
-        vga.writeString("Error: Target is a file, not a directory.\n", 12, 0);
+        vga.writeString(
+            "Error: Target is a file, not a directory.\n",
+            12,
+            0,
+        );
     }
 }
 
+/// Move a directory entry from one directory to another.
 fn cmd_mv(args: [][]const u8) void {
     if (args.len < 3) {
-        vga.writeString("Usage: mv <source_path> <dest_dir>\n", 15, 0);
+        vga.writeString(
+            "Usage: mv <source_path> <dest_dir>\n",
+            15,
+            0,
+        );
         return;
     }
 
@@ -873,53 +1297,135 @@ fn cmd_mv(args: [][]const u8) void {
     var src_dir_path: []const u8 = ".";
     var src_filename: []const u8 = src_path;
 
+    // Split the source path into parent directory and filename.
     if (std.mem.lastIndexOfScalar(u8, src_path, '/')) |idx| {
         src_dir_path = src_path[0..idx];
         src_filename = src_path[idx + 1 ..];
-        if (src_dir_path.len == 0) src_dir_path = "/";
+
+        if (src_dir_path.len == 0)
+            src_dir_path = "/";
     }
 
-    const src_parent = g_fs.resolvePath(alloc, g_cwd_lba, src_dir_path) catch {
-        vga.writeString("Error: Source directory not found.\n", 12, 0);
+    const src_parent =
+    g_fs.resolvePath(
+        alloc,
+        g_cwd_lba,
+        src_dir_path,
+    ) catch {
+        vga.writeString(
+            "Error: Source directory not found.\n",
+            12,
+            0,
+        );
         return;
     };
 
-    const entry_to_move = g_fs.findAndRemoveEntry(
+    // Remove the entry from its current directory before inserting
+    // it into the destination.
+    const entry_to_move =
+    g_fs.findAndRemoveEntry(
         alloc,
         src_parent.lba,
         @intCast(src_parent.blocks),
-                                                  src_filename,
+                            src_filename,
     ) catch |err| {
-        vga.writeString("Error: Could not find source file: ", 12, 0);
-        vga.writeString(@errorName(err), 12, 0);
+        vga.writeString(
+            "Error: Could not find source file: ",
+            12,
+            0,
+        );
+
+        vga.writeString(
+            @errorName(err),
+                        12,
+                        0,
+        );
+
         vga.putChar('\n', 15, 0);
         return;
     };
 
-    const dest_resolve = g_fs.resolvePath(alloc, g_cwd_lba, dest_path) catch |err| {
-        _ = g_fs.insertEntry(alloc, src_parent.lba, entry_to_move) catch {};
-        vga.writeString("Error: Dest resolution failed: ", 12, 0);
-        vga.writeString(@errorName(err), 12, 0);
+    const dest_resolve =
+    g_fs.resolvePath(
+        alloc,
+        g_cwd_lba,
+        dest_path,
+    ) catch |err| {
+
+        // Best-effort rollback.
+        _ = g_fs.insertEntry(
+            alloc,
+            src_parent.lba,
+            entry_to_move,
+        ) catch {};
+
+        vga.writeString(
+            "Error: Dest resolution failed: ",
+            12,
+            0,
+        );
+
+        vga.writeString(
+            @errorName(err),
+                        12,
+                        0,
+        );
+
         vga.putChar('\n', 15, 0);
         return;
     };
 
     if (dest_resolve.is_directory) {
+
         g_fs.insertEntry(
             alloc,
             dest_resolve.lba,
             entry_to_move,
         ) catch |err| {
-            _ = g_fs.insertEntry(alloc, src_parent.lba, entry_to_move) catch {};
-            vga.writeString("Insert failed: ", 12, 0);
-            vga.writeString(@errorName(err), 12, 0);
+
+            // Best-effort rollback if insertion fails.
+            _ = g_fs.insertEntry(
+                alloc,
+                src_parent.lba,
+                entry_to_move,
+            ) catch {};
+
+            vga.writeString(
+                "Insert failed: ",
+                12,
+                0,
+            );
+
+            vga.writeString(
+                @errorName(err),
+                            12,
+                            0,
+            );
+
             vga.putChar('\n', 15, 0);
             return;
         };
-        vga.writeString("Move successful!\n", 10, 0);
+
+        vga.writeString(
+            "Move successful!\n",
+            10,
+            0,
+        );
+
     } else {
-        _ = g_fs.insertEntry(alloc, src_parent.lba, entry_to_move) catch {};
-        vga.writeString("Error: Target is a file.\n", 12, 0);
+
+        // Restore the source entry if the destination is not a directory.
+        _ = g_fs.insertEntry(
+            alloc,
+            src_parent.lba,
+            entry_to_move,
+        ) catch {};
+
+        vga.writeString(
+            "Error: Target is a file.\n",
+            12,
+            0,
+        );
     }
 }
 

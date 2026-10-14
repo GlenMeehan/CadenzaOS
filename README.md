@@ -123,66 +123,127 @@ For the program format (header layout, entry point, argument convention) see src
 
 🏗 Project structure
 CadenzaOS/
-├── src/
-│   ├── boot/
-│   │   └── boot.asm              # Stage 1 — MBR bootloader
-│   ├── stage2/
-│   │   └── stage2.asm            # Stage 2 — long mode transition, VESA mode init
-│   └── kernel/
-│       ├── kernel.zig            # kmain — boot sequence and hardware init
-│       ├── config.zig            # Version, disk layout, system policy
-│       ├── apic.zig              # Local APIC & I/O APIC setup & redirection table
-│       ├── pic.zig               # Legacy 8259 PIC controller fallback
-│       ├── idt.zig               # Interrupt Descriptor Table (IDT) configuration
-│       ├── tss.zig               # Task State Segment and IST interrupt stack
-│       ├── irupts.zig            # High-level IRQ interrupt handlers
-│       ├── scheduler.zig         # Preemptive task scheduler + syscall dispatch
-│       ├── binfmt.zig            # Program header format and validation
-│       ├── shell.zig             # Interactive shell and command dispatch
-│       ├── terminal.zig          # Line editor with ghost-text prediction
-│       ├── conductor.zig         # Behavioural state machine
-│       ├── security.zig          # Anomaly detection & velocity monitoring
-│       ├── memory.zig            # Address translation (physToVirt/virtToPhys)
-│       ├── page_allocator.zig    # Virtual page management
-│       ├── frame_allocator.zig   # Physical frame allocator (bitmap)
-│       ├── E820.zig              # BIOS memory map parsing
-│       ├── boot_info.zig         # BootInfo structure (passed from stage2)
-│       ├── framebuffer.zig       # VESA framebuffer renderer
-│       ├── vga.zig               # VGA text mode driver
-│       ├── console.zig           # Unified console output interface
-│       ├── vitals.zig            # Kernel uptime & telemetry system
-│       ├── inputs/
-│       │   ├── keyboard.zig      # PS/2 keyboard event processing
-│       │   └── key_event.zig     # Key code abstraction & ring buffer
-│       ├── drivers/
-│       │   ├── ata.zig           # ATA PIO disk driver
-│       │   ├── mouse.zig         # PS/2 mouse driver & packet processing
-│       │   └── serial.zig        # COM1 serial output
-│       ├── interrupts/
-│       │   └── irq_stubs.asm     # Assembly ISR / IRQ entry points
-│       ├── ui/
-│       │   └── prompt.zig        # Shell prompt renderer
-│       └── fs/
-│           ├── coda_fs.zig       # CodaFS filesystem implementation
-│           ├── coda_file.zig     # File and directory entry types
-│           ├── coda_sm.zig       # Space manager (extent allocator)
-│           ├── ata_block_device.zig # ATA block storage layer
-│           ├── block_device.zig  # Block device abstraction
-│           ├── binary_loader.zig # Installs the staged program into CodaFS
-│           └── ramdisk.zig       # RAM disk (write-through to ATA)
-├── userland/
-│   └── prog1/                    # Demo program (source + linker script)
-├── tests/
-│   └── smoke.sh                  # Headless QEMU boot test
-├── .github/workflows/smoke.yml   # CI: build + boot test on every push
-├── linker.ld                     # Kernel linker script
-├── build.sh                      # Build and run script
-├── DEPENDENCIES.md
-├── ROADMAP.md
-├── PRINCIPLES.md
-├── GOVERNANCE.md
+├── build
+│   ├── apps
+│   │   ├── prog1.bin
+│   │   └── prog1.elf
+│   ├── arch_util.o
+│   ├── boot.bin
+│   ├── disk.img
+│   ├── irq_stubs.o
+│   ├── iso_root
+│   │   └── disk.img
+│   ├── kernel.bin
+│   ├── kernel.elf
+│   ├── kernel_info.inc
+│   ├── kernel.o
+│   ├── os.iso
+│   ├── stage2.bin
+│   └── version.zig
+├── build.sh
+├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
-└── CODE_OF_CONDUCT.md
+├── DEPENDENCIES.md
+├── docs
+│   ├── availableinstd.odt
+│   ├── bitmapsteps.odt
+│   ├── FSDeignPrinciples.odt
+│   ├── LAYOUT.md
+│   └── nextsteps.odt
+├── .gitignore
+├── GOVERNANCE.md
+├── kernel.o
+├── LICENSE
+├── linker.ld
+├── NOTICE
+├── PRINCIPLES.md
+├── qemu.log
+├── ram_dump.bin
+├── README.md
+├── ROADMAP.md
+├── screenshot.png
+├── screenshot_real.png
+├── serial.log
+├── smoke-serial.log
+├── src
+│   ├── boot
+│   │   └── boot.asm
+│   ├── kernel
+│   │   ├── apic.zig
+│   │   ├── arch_utils.s
+│   │   ├── assets
+│   │   │   └── Splash.rgb
+│   │   ├── binfmt.zig
+│   │   ├── bitmap.zig
+│   │   ├── boot_info.zig
+│   │   ├── conductor.zig
+│   │   ├── config.zig
+│   │   ├── console.zig
+│   │   ├── convert.zig
+│   │   ├── debug.zig
+│   │   ├── drivers
+│   │   │   ├── ata.zig
+│   │   │   ├── mouse.zig
+│   │   │   └── serial.zig
+│   │   ├── E820Store.zig
+│   │   ├── e820_test.zig
+│   │   ├── E820.zig
+│   │   ├── font8x16.bin
+│   │   ├── font.zig
+│   │   ├── frame_allocator.zig
+│   │   ├── framebuffer.zig
+│   │   ├── fs
+│   │   │   ├── ata_block_device.zig
+│   │   │   ├── binary_loader.zig
+│   │   │   ├── block_device.zig
+│   │   │   ├── coda_file.zig
+│   │   │   ├── coda_fs.zig
+│   │   │   ├── coda_sm.zig
+│   │   │   └── ramdisk.zig
+│   │   ├── .gitignore
+│   │   ├── globals.zig
+│   │   ├── idt.zig
+│   │   ├── inputs
+│   │   │   ├── keyboard.zig
+│   │   │   └── key_event.zig
+│   │   ├── interrupts
+│   │   │   └── irq_stubs.asm
+│   │   ├── irupts.zig
+│   │   ├── kernel.zig
+│   │   ├── logo.zig
+│   │   ├── memory.zig
+│   │   ├── page_allocator.zig
+│   │   ├── panic.zig
+│   │   ├── pic.zig
+│   │   ├── port_io.zig
+│   │   ├── scheduler.zig
+│   │   ├── security.zig
+│   │   ├── shell.zig
+│   │   ├── splash.zig
+│   │   ├── syscall.zig
+│   │   ├── system.zig
+│   │   ├── task.zig
+│   │   ├── terminal.zig
+│   │   ├── tests.zig
+│   │   ├── tss.zig
+│   │   ├── ui
+│   │   │   └── prompt.zig
+│   │   ├── version.zig
+│   │   ├── vga.zig
+│   │   └── vitals.zig
+│   └── stage2
+│       └── stage2.asm
+├── stage2.bin
+├── stage2.dis
+├── stage2.disasm
+├── stage2_from_img.bin
+├── stage2.lst
+├── tests
+│   └── smoke.sh
+├── userland
+│   └── prog1
+│       ├── linker.ld
+│       └── prog1.zig
 <!-- TODO: check this tree against `git ls-files` for anything missing -->
 🗺 Roadmap
 

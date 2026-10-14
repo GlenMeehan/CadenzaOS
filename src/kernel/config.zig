@@ -226,7 +226,7 @@ pub var kernel_allocator: std.mem.Allocator = undefined;
 pub const Version = struct {
     pub const major: u32 = 0;
     pub const minor: u32 = 4;
-    pub const patch: u32 = 6;   //Update commentary splash.zig - vitals.zig  shell.zig to be done later.
+    pub const patch: u32 = 7;   //Update commentary shell.zig fro rows 1 - 1430, to be completed later
 };
 
 /// Build metadata generated at build time.
