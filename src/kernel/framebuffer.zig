@@ -7,6 +7,7 @@
 // mirrors vga.zig so higher-level kernel code can switch between
 // text-mode and graphics-mode output without modification.
 //
+const std = @import("std");
 const font = @import("font.zig");
 const serial = @import("drivers/serial.zig");
 
@@ -286,7 +287,7 @@ pub fn clearScreen(fg: u8, bg: u8) void {
     } else {
 
         // Non-black clears must be performed pixel by pixel.
-        const color = palette[bg & 0x0F];
+        const color = paletteColor(bg);
 
         var y: u32 = 0;
         while (y < fb_height) : (y += 1) {
@@ -520,4 +521,19 @@ pub fn paletteColor(idx: u8) u32 {
                      @truncate((hex >> 8) & 0xFF),
                      @truncate(hex & 0xFF),
     );
+}
+
+
+test "clearScreen packs palette colors for framebuffer channel positions" {
+    var pixels: [12]u8 = .{0} ** 12;
+
+    // A two-pixel-wide, two-row 24-bit framebuffer with red and blue swapped.
+    init(@intFromPtr(&pixels), 6, 2, 2, 24, 0, 8, 16);
+    clearScreen(0, 4);
+
+    const expected = [_]u8{
+        0xAA, 0x00, 0x00, 0xAA, 0x00, 0x00,
+        0xAA, 0x00, 0x00, 0xAA, 0x00, 0x00,
+    };
+    try std.testing.expectEqualSlices(u8, &expected, &pixels);
 }
