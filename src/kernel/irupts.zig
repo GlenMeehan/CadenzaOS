@@ -91,12 +91,6 @@ pub export fn irq0_handler() callconv(.c) void {
         }
     }
 
-    // Allow the scheduler to perform a preemptive context switch
-    // if preemption is currently enabled.
-    if (scheduler.manager.yield_enabled) {
-        scheduler.manager.yield();
-    }
-
     // Acknowledge interrupt completion.
     //
     // APIC-based systems signal EOI through the local APIC,
