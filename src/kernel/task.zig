@@ -45,7 +45,6 @@ pub fn taskA_main() callconv(.c) void {
 
         sleep(500);
 
-        scheduler.manager.yield();
     }
 }
 
