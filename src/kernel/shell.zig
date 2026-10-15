@@ -1429,6 +1429,7 @@ fn cmd_mv(args: [][]const u8) void {
     }
 }
 
+/// Append text to a file, creating the file if it does not already exist.
 fn cmd_edit(args: [][]const u8) void {
     if (args.len < 3) {
         vga.writeString("Usage: edit <filename> <text>\n", 15, 0);
@@ -1439,85 +1440,178 @@ fn cmd_edit(args: [][]const u8) void {
 
     const filename = args[1];
 
+    // Reconstruct the text payload from all arguments following
+    // the filename, preserving spaces between arguments.
     var text_buf: [conf.TERMINAL_LINE_SIZE]u8 align(16) = undefined;
     var current_pos: usize = 0;
+
     for (args[2..], 0..) |arg, i| {
         if (i > 0 and current_pos < text_buf.len) {
             text_buf[current_pos] = ' ';
             current_pos += 1;
         }
+
         const space_left = text_buf.len - current_pos;
-        const copy_len = if (arg.len > space_left) space_left else arg.len;
-        @memcpy(text_buf[current_pos .. current_pos + copy_len], arg[0..copy_len]);
+        const copy_len =
+        if (arg.len > space_left)
+            space_left
+            else
+                arg.len;
+
+        @memcpy(
+            text_buf[current_pos .. current_pos + copy_len],
+            arg[0..copy_len],
+        );
+
         current_pos += copy_len;
     }
+
     const final_text = text_buf[0..current_pos];
 
     var meta_lba: u64 = 0;
 
-    // Use arena for read operations only
+    // Attempt to open the target file. If it does not exist,
+    // create it before continuing.
     if (g_fs.findFile(alloc, g_cwd_lba, filename)) |entry| {
         meta_lba = entry.meta_extent.start_block;
     } else |_| {
-        // Use g_allocator for write operations
-        g_fs.createFile(cmd_fba.allocator(), g_cwd_lba, g_cwd_blocks, filename) catch {
-            vga.writeString("Error: Could not create file\n", 12, 0);
+
+        g_fs.createFile(
+            cmd_fba.allocator(),
+                        g_cwd_lba,
+                        g_cwd_blocks,
+                        filename,
+        ) catch {
+            vga.writeString(
+                "Error: Could not create file\n",
+                12,
+                0,
+            );
             return;
         };
-        const new_entry = g_fs.findFile(alloc, g_cwd_lba, filename) catch {
-            vga.writeString("Error: File created but not found\n", 12, 0);
+
+        const new_entry =
+        g_fs.findFile(
+            alloc,
+            g_cwd_lba,
+            filename,
+        ) catch {
+            vga.writeString(
+                "Error: File created but not found\n",
+                12,
+                0,
+            );
             return;
         };
+
         meta_lba = new_entry.meta_extent.start_block;
     }
 
-    var meta = g_fs.readFileMeta(alloc, meta_lba) catch {
-        vga.writeString("Error: Could not read metadata\n", 12, 0);
+    var meta = g_fs.readFileMeta(
+        alloc,
+        meta_lba,
+    ) catch {
+        vga.writeString(
+            "Error: Could not read metadata\n",
+            12,
+            0,
+        );
         return;
     };
 
     const old_size = meta.size_bytes;
     const total_new_size = old_size + final_text.len;
-    const total_blocks_needed = (total_new_size + conf.BLOCK_SIZE - 1) / conf.BLOCK_SIZE;
 
+    const total_blocks_needed =
+    (total_new_size + conf.BLOCK_SIZE - 1) /
+    conf.BLOCK_SIZE;
+
+    // Grow the file until enough blocks exist to hold the
+    // appended data.
     while (meta.extent_count < total_blocks_needed) {
-        // Use g_allocator for write operations
         g_fs.addBlockToFile(g_allocator, &meta) catch |err| {
             if (err == error.FileAtMaximumSize) {
-                vga.writeString("Warning: File capped at 4KB.\n", 14, 0);
+                vga.writeString(
+                    "Warning: File capped at 4KB.\n",
+                    14,
+                    0,
+                );
                 break;
             }
-            vga.writeString("Error: Disk full.\n", 12, 0);
+
+            vga.writeString(
+                "Error: Disk full.\n",
+                12,
+                0,
+            );
             return;
         };
     }
 
-    const block_buf = alloc.alloc(u8, conf.BLOCK_SIZE) catch return;
+    const block_buf =
+    alloc.alloc(u8, conf.BLOCK_SIZE) catch return;
 
     var bytes_to_append = final_text.len;
     var write_offset: usize = old_size;
 
+    // Append data block-by-block, preserving existing contents
+    // already present in partially filled blocks.
     while (bytes_to_append > 0) {
-        const block_idx = write_offset / conf.BLOCK_SIZE;
-        const offset_in_block = write_offset % conf.BLOCK_SIZE;
-        const target_lba = getLbaForBlock(meta, block_idx);
+        const block_idx =
+        write_offset / conf.BLOCK_SIZE;
 
-        g_fs.device.readBlocks(g_fs.device.ctx, target_lba, block_buf) catch {
-            vga.writeString("Error: Read failed\n", 12, 0);
+        const offset_in_block =
+        write_offset % conf.BLOCK_SIZE;
+
+        const target_lba =
+        getLbaForBlock(meta, block_idx);
+
+        g_fs.device.readBlocks(
+            g_fs.device.ctx,
+            target_lba,
+            block_buf,
+        ) catch {
+            vga.writeString(
+                "Error: Read failed\n",
+                12,
+                0,
+            );
             return;
         };
 
-        const space_in_block = conf.BLOCK_SIZE - offset_in_block;
-        const copy_size = if (bytes_to_append > space_in_block) space_in_block else bytes_to_append;
-        const source_start = final_text.len - bytes_to_append;
+        const space_in_block =
+        conf.BLOCK_SIZE - offset_in_block;
+
+        const copy_size =
+        if (bytes_to_append > space_in_block)
+            space_in_block
+            else
+                bytes_to_append;
+
+        const source_start =
+        final_text.len - bytes_to_append;
 
         @memcpy(
-            block_buf[offset_in_block .. offset_in_block + copy_size],
-            final_text[source_start .. source_start + copy_size],
+            block_buf[
+                offset_in_block ..
+                offset_in_block + copy_size
+            ],
+            final_text[
+                source_start ..
+                source_start + copy_size
+            ],
         );
 
-        g_fs.device.writeBlocks(g_fs.device.ctx, target_lba, block_buf) catch {
-            vga.writeString("Error: Write failed\n", 12, 0);
+        g_fs.device.writeBlocks(
+            g_fs.device.ctx,
+            target_lba,
+            block_buf,
+        ) catch {
+            vga.writeString(
+                "Error: Write failed\n",
+                12,
+                0,
+            );
             return;
         };
 
@@ -1525,52 +1619,89 @@ fn cmd_edit(args: [][]const u8) void {
         bytes_to_append -= copy_size;
     }
 
+    // Persist the updated logical file size.
     meta.size_bytes = @intCast(total_new_size);
-    g_fs.writeBlockStruct(meta_lba, &meta, @sizeOf(coda_file.FileMeta)) catch {
-        vga.writeString("Error: Metadata sync failed\n", 12, 0);
+
+    g_fs.writeBlockStruct(
+        meta_lba,
+        &meta,
+        @sizeOf(coda_file.FileMeta),
+    ) catch {
+        vga.writeString(
+            "Error: Metadata sync failed\n",
+            12,
+            0,
+        );
         return;
     };
 
-    vga.writeString("Success: Data appended to Coda FS.\n", 10, 0);
+    vga.writeString(
+        "Success: Data appended to Coda FS.\n",
+        10,
+        0,
+    );
 }
 
-//Display free disk space
+/// Display filesystem capacity and usage statistics.
 fn cmd_df(args: [][]const u8) void {
     _ = args;
+
     const total = g_fs.superblock.total_blocks;
-    const free = g_fs.space_manager.getFreeBlockCount();
-    const used = total - free;
+    const free  = g_fs.space_manager.getFreeBlockCount();
+    const used  = total - free;
 
     var output_buf: [256]u8 = undefined;
     var pos: usize = 0;
     var n_buf: [21]u8 = undefined;
 
-    // 1. Copy Total
+    // Total blocks.
     const s_total = conv.u64ToStr(&n_buf, total);
-    @memcpy(output_buf[pos .. pos + 14], "CodaFS: Total ");
+
+    @memcpy(
+        output_buf[pos .. pos + 14],
+        "CodaFS: Total ",
+    );
     pos += 14;
-    @memcpy(output_buf[pos .. pos + s_total.len], s_total);
+
+    @memcpy(
+        output_buf[pos .. pos + s_total.len],
+        s_total,
+    );
     pos += s_total.len;
 
-    // 2. Copy Used
+    // Used blocks.
     const s_used = conv.u64ToStr(&n_buf, used);
-    @memcpy(output_buf[pos .. pos + 8], " | Used ");
+
+    @memcpy(
+        output_buf[pos .. pos + 8],
+        " | Used ",
+    );
     pos += 8;
-    @memcpy(output_buf[pos .. pos + s_used.len], s_used);
+
+    @memcpy(
+        output_buf[pos .. pos + s_used.len],
+        s_used,
+    );
     pos += s_used.len;
 
-    // 3. Copy Free
+    // Free blocks.
     const s_free = conv.u64ToStr(&n_buf, free);
-    @memcpy(output_buf[pos .. pos + 8], " | Free ");
+
+    @memcpy(
+        output_buf[pos .. pos + 8],
+        " | Free ",
+    );
     pos += 8;
-    @memcpy(output_buf[pos .. pos + s_free.len], s_free);
+
+    @memcpy(
+        output_buf[pos .. pos + s_free.len],
+        s_free,
+    );
     pos += s_free.len;
 
-    // 4. Add Newline
     output_buf[pos] = '\n';
     pos += 1;
 
-    // 5. Final print
     vga.writeString(output_buf[0..pos], 0x0F, 0);
 }
 
@@ -1578,52 +1709,68 @@ fn cmd_df(args: [][]const u8) void {
 //  POLICY / COMPOSER COMMANDS
 // -----------------------------------------------------------------------------
 
+/// View or modify the active filesystem policy.
+///
+/// Policy changes are applied immediately and persisted to disk.
 fn cmd_policy(args: [][]const u8) void {
-    // 1. Handle the "Read Only" case
+
+    // Read-only mode: display the currently active policy.
     if (args.len < 2) {
         vga.writeString("Current Policy: ", 15, 0);
+
         switch (g_fs.superblock.policy) {
             .ADMIN  => vga.writeString("Admin\n", 14, 0),
             .DEV    => vga.writeString("Dev\n", 10, 0),
             .GAMING => vga.writeString("Gaming\n", 13, 0),
         }
-        return; // Exit here; nothing changed, so no sync needed.
+
+        return;
     }
 
     const new_policy = args[1];
     var changed = false;
 
-    // 2. Update the memory state
+    // Update the in-memory policy state.
     if (std.mem.eql(u8, new_policy, "admin")) {
         g_fs.superblock.policy = .ADMIN;
         vga.writeString("Policy switched to Admin\n", 14, 0);
         changed = true;
+
     } else if (std.mem.eql(u8, new_policy, "dev")) {
         g_fs.superblock.policy = .DEV;
         vga.writeString("Policy switched to Dev\n", 10, 0);
         changed = true;
+
     } else if (std.mem.eql(u8, new_policy, "gaming")) {
         g_fs.superblock.policy = .GAMING;
         vga.writeString("Policy switched to Gaming\n", 13, 0);
         changed = true;
+
     } else {
-        vga.writeString("Unknown policy. Use: admin, dev, or gaming\n", 12, 0);
+        vga.writeString(
+            "Unknown policy. Use: admin, dev, or gaming\n",
+            12,
+            0,
+        );
         return;
     }
 
-    // 3. Persist BOTH the habit data and the Filesystem Superblock
     if (changed) {
-        saveComposer() catch {}; // Saves the "Software" state (Markov habits)
 
-        // Critical: Saves the "Hardware" state (The Policy at LBA conf.SB_LBA)
-        g_fs.syncSuperblock() catch { // No |err| needed if we don't use it
+        // Persist behavioural learning state.
+        saveComposer() catch {};
+
+        // Persist the updated filesystem policy stored in the superblock.
+        g_fs.syncSuperblock() catch {
             vga.writeString("Error: Sync failed\n", 0x0C, 0);
         };
     }
 }
 
+/// Spawn either a built-in task or a program loaded from the filesystem.
 fn cmd_spawn(args: [][]const u8) void {
-        serial.writeString("SPAWN-0: cmd_spawn entered\n");
+    serial.writeString("SPAWN-0: cmd_spawn entered\n");
+
     if (args.len < 2) {
         vga.writeString("Usage: spawn <taskname>\n", 15, 0);
         return;
@@ -1631,121 +1778,230 @@ fn cmd_spawn(args: [][]const u8) void {
 
     const task_name = args[1];
 
-    // 1. Search the static compile-time task registry first
+    // First check the compile-time task registry for built-in tasks.
     for (task_registry) |entry| {
         if (std.mem.eql(u8, entry.name, task_name)) {
+
             asm volatile ("cli");
+
             var success: u8 = 1;
-            _ = scheduler.manager.registerDynamicTask(entry.entry, null, 0, &.{}) catch {
+
+            _ = scheduler.manager.registerDynamicTask(
+                entry.entry,
+                null,
+                0,
+                &.{},
+            ) catch {
                 success = 0;
             };
+
             asm volatile ("sti");
 
             if (success == 0) {
-                vga.writeString("Error: Could not spawn task\n", 12, 0);
+                vga.writeString(
+                    "Error: Could not spawn task\n",
+                    12,
+                    0,
+                );
                 return;
             }
 
-            vga.writeString("Spawned static task: ", 10, 0);
+            vga.writeString(
+                "Spawned static task: ",
+                10,
+                0,
+            );
+
             vga.writeString(task_name, 10, 0);
             vga.putChar('\n', 10, 0);
+
             return;
         }
     }
 
-    // 2. Fallback: Use the shell's cleanly injected file system and allocator pointers
+    // Fallback path: load a program image from the filesystem.
     var path_buf: [70]u8 = undefined;
+
     if (task_name.len > 64) {
         vga.writeString("Error: Name too long\n", 12, 0);
         return;
     }
-    const path = std.fmt.bufPrint(&path_buf, "/{s}", .{task_name}) catch return;
 
-    // Use the file-scope globals that were populated by shell.run()
-    // NOTE: allocator is strictly used here for temporary tracking and metadata checks, NOT for program code storage.
+    const path =
+    std.fmt.bufPrint(
+        &path_buf,
+        "/{s}",
+        .{task_name},
+    ) catch return;
+
     const fs = g_fs;
     const allocator = cmd_fba.allocator();
 
-    // Clear interrupts so the scheduler cannot context switch mid-allocation/mid-read
+    // Prevent task switches while program memory is being allocated
+    // and populated.
     asm volatile ("cli");
+
     serial.writeString("SPAWN-B: findFile ok\n");
-    // Check if the file exists on disk by looking for its directory record
-    if (fs.findFile(allocator, fs.superblock.root_dir_extent_start, task_name)) |entry| {
+
+    // Locate the executable file.
+    if (fs.findFile(
+        allocator,
+        fs.superblock.root_dir_extent_start,
+        task_name,
+    )) |entry| {
+
         serial.writeString("SPAWN-B: findFile ok\n");
-        const real_meta = fs.readFileMeta(allocator, entry.meta_extent.start_block) catch |meta_err| {
+
+        const real_meta =
+        fs.readFileMeta(
+            allocator,
+            entry.meta_extent.start_block,
+        ) catch |meta_err| {
             vga.writeString("readFileMeta failed: ", 12, 0);
             vga.writeString(@errorName(meta_err), 12, 0);
             vga.putChar('\n', 12, 0);
+
             asm volatile ("sti");
             return;
         };
+
         serial.writeString("SPAWN-C: readFileMeta ok\n");
+
         const file_size = real_meta.size_bytes;
+
         if (file_size < @sizeOf(binfmt.BinHeader)) {
-            vga.writeString("Error: file too small to be a program\n", 12, 0);
+            vga.writeString(
+                "Error: file too small to be a program\n",
+                12,
+                0,
+            );
+
             asm volatile ("sti");
             return;
         }
-        // 3. Physical Frame Allocation — round up to whole 4 KiB pages
-        const frames_needed = (file_size + bitmap.PAGE_SIZE - 1) / bitmap.PAGE_SIZE;
-        const frame1 = bitmap.allocContiguous(frames_needed) orelse {
-            vga.writeString("Error: Out of contiguous physical memory for task frames\n", 12, 0);
+
+        // Allocate physically contiguous storage for the program image.
+        const frames_needed =
+        (file_size + bitmap.PAGE_SIZE - 1) /
+        bitmap.PAGE_SIZE;
+
+        const frame1 =
+        bitmap.allocContiguous(frames_needed) orelse {
+            vga.writeString(
+                "Error: Out of contiguous physical memory for task frames\n",
+                12,
+                0,
+            );
+
             asm volatile ("sti");
             return;
         };
+
         serial.writeString("SPAWN-D: allocContiguous ok\n");
-        // 4. Construct a secure slice across our dedicated physical memory blocks
+
         const prog_ptr_phys: [*]u8 = @ptrFromInt(frame1);
         const prog_buf = prog_ptr_phys[0..file_size];
-        const code_virt = memory.physToVirt(frame1);
-        const code_mem_slice = (@as([*]u8, @ptrFromInt(code_virt)))[0 .. frames_needed * bitmap.PAGE_SIZE];
 
-        // 5. Stream the machine code from disk extents straight into our persistent RAM buffer
+        const code_virt = memory.physToVirt(frame1);
+
+        const code_mem_slice =
+        (@as([*]u8, @ptrFromInt(code_virt)))[
+            0 .. frames_needed * bitmap.PAGE_SIZE
+        ];
+
+        // Load the executable image directly into the allocated memory.
         _ = fs.readFile(allocator, path, prog_buf) catch {
-            vga.writeString("Error: Failed to read binary from disk\n", 12, 0);
+            vga.writeString(
+                "Error: Failed to read binary from disk\n",
+                12,
+                0,
+            );
+
             bitmap.freeContiguous(frame1, frames_needed);
+
             asm volatile ("sti");
             return;
         };
+
         serial.writeString("SPAWN-E: readFile ok\n");
-        // 6. Validate the header, then jump to base + entry_offset
+
+        // Validate the executable header before execution.
         const hdr = binfmt.parse(prog_buf) catch |e| {
-            vga.writeString("Error: bad program header: ", 12, 0);
+            vga.writeString(
+                "Error: bad program header: ",
+                12,
+                0,
+            );
+
             vga.writeString(@errorName(e), 12, 0);
             vga.putChar('\n', 12, 0);
+
             bitmap.freeContiguous(frame1, frames_needed);
+
             asm volatile ("sti");
             return;
         };
-        const entry_fn: *const fn () callconv(.c) void =
-        @ptrFromInt(@intFromPtr(prog_buf.ptr) + hdr.entry_offset);
-        // 7. Hand the execution address over to your preemptive scheduler engine
-            serial.writeString("SPAWN-F: calling registerDynamicTask\n");
-            _ = scheduler.manager.registerDynamicTask(entry_fn, code_mem_slice, frame1, args[1..]) catch |e| {
-                vga.writeString("Error: spawn rejected: ", 12, 0);
-                vga.writeString(@errorName(e), 12, 0);
-                vga.putChar('\n', 12, 0);
-                bitmap.freeContiguous(frame1, frames_needed);
-                asm volatile ("sti");
-                return;
-            };
 
-        vga.writeString("Spawned dynamic disk task: ", 10, 0);
+        // Convert entry_offset into an executable function pointer.
+        const entry_fn: *const fn () callconv(.c) void =
+        @ptrFromInt(
+            @intFromPtr(prog_buf.ptr) +
+            hdr.entry_offset,
+        );
+
+        // Hand the program over to the scheduler.
+        serial.writeString(
+            "SPAWN-F: calling registerDynamicTask\n",
+        );
+
+        _ = scheduler.manager.registerDynamicTask(
+            entry_fn,
+            code_mem_slice,
+            frame1,
+            args[1..],
+        ) catch |e| {
+
+            vga.writeString(
+                "Error: spawn rejected: ",
+                12,
+                0,
+            );
+
+            vga.writeString(@errorName(e), 12, 0);
+            vga.putChar('\n', 12, 0);
+
+            bitmap.freeContiguous(frame1, frames_needed);
+
+            asm volatile ("sti");
+            return;
+        };
+
+        vga.writeString(
+            "Spawned dynamic disk task: ",
+            10,
+            0,
+        );
+
         vga.writeString(task_name, 10, 0);
         vga.writeString("\n", 10, 0);
 
-        // Re-enable interrupts right before returning success
         asm volatile ("sti");
         return;
+
     } else |find_err| {
-        // Debug output for finding errors on disk tracking partitions
+
         vga.writeString("findFile error: ", 14, 0);
         vga.writeString(@errorName(find_err), 14, 0);
         vga.putChar('\n', 14, 0);
 
-        // Re-enable interrupts on failure path too!
         asm volatile ("sti");
-        vga.writeString("Error: Unknown task or file '", 12, 0);
+
+        vga.writeString(
+            "Error: Unknown task or file '",
+            12,
+            0,
+        );
+
         vga.writeString(task_name, 12, 0);
         vga.writeString("'\n", 12, 0);
     }
@@ -1755,29 +2011,43 @@ fn cmd_spawn(args: [][]const u8) void {
 //  COMPOSER / PREDICTION HELPERS
 // -----------------------------------------------------------------------------
 
+/// Translate a logical file block index into its backing disk LBA.
+///
+/// Walks the file's extent list and returns the physical block
+/// corresponding to the requested logical block.
 fn getLbaForBlock(meta: coda_file.FileMeta, block_index: u64) u64 {
     var blocks_seen: u64 = 0;
+
     for (meta.extents[0..meta.extent_count]) |extent| {
         if (block_index < blocks_seen + extent.block_count) {
             const offset_in_extent = block_index - blocks_seen;
             return extent.start_block + offset_in_extent;
         }
+
         blocks_seen += extent.block_count;
     }
+
     return 0;
 }
 
+/// Display simple context-sensitive command suggestions.
 fn showSuggestion(tokens: [][]const u8) void {
     if (tokens.len == 0) return;
+
     const cmd = tokens[0];
 
     var buffer: [80]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
+
     const allocator = fba.allocator();
 
     const suggestion =
     if (std.mem.eql(u8, cmd, "mkdir") and tokens.len > 1)
-        std.fmt.allocPrint(allocator, " [Heuristic: try 'cd {s}']\n", .{tokens[1]}) catch " [Heuristic: try cd]\n"
+        std.fmt.allocPrint(
+            allocator,
+            " [Heuristic: try 'cd {s}']\n",
+            .{tokens[1]},
+        ) catch " [Heuristic: try cd]\n"
         else if (std.mem.eql(u8, cmd, "ls"))
             " [Heuristic: use 'stat' for latency]\n"
             else
@@ -1786,8 +2056,11 @@ fn showSuggestion(tokens: [][]const u8) void {
     vga.writeString(suggestion, 10, 0);
 }
 
+/// Predict the most likely next command based on the previously
+/// executed command and the learned transition table.
 pub fn predictNextCommand() []const u8 {
     const prev_idx = @intFromEnum(last_command);
+
     var best_weight: u16 = 0;
     var best_id_val: u8 = 0;
 
@@ -1798,9 +2071,12 @@ pub fn predictNextCommand() []const u8 {
         }
     }
 
-    if (best_weight == 0) return "help";
+    // Fall back to a safe default when no command history exists.
+    if (best_weight == 0)
+        return "help";
 
-    const best_id = @as(conf.CommandID, @enumFromInt(best_id_val));
+    const best_id =
+    @as(conf.CommandID, @enumFromInt(best_id_val));
 
     for (commands) |c| {
         if (c.id == best_id and c.id != .UNKNOWN) {
@@ -1811,18 +2087,22 @@ pub fn predictNextCommand() []const u8 {
     return "help";
 }
 
-// Predictor plugged into terminal.zig
+// Predictor callback registered with terminal.zig.
 fn shellPredictor(input: []const u8) []const u8 {
     const table_size = conductor.transition_table.len;
     const prev_idx = @intFromEnum(last_command);
-    if (prev_idx >= table_size) return "";
 
-    // 1. EMPTY INPUT CASE (The "Proactive" suggestion)
+    if (prev_idx >= table_size)
+        return "";
+
+    // Empty-input mode.
+    //
+    // Suggest the most likely next command based purely on
+    // previously learned command transitions.
     if (input.len == 0) {
         var top_score: u16 = 0;
         var top_idx: usize = 0;
 
-        // Find the most likely transition in the Markov table
         for (conductor.transition_table[prev_idx], 0..) |score, i| {
             if (score > top_score) {
                 top_score = score;
@@ -1830,7 +2110,7 @@ fn shellPredictor(input: []const u8) []const u8 {
             }
         }
 
-        // Only suggest if the habit is established (e.g., 5+ times)
+        // Only surface well-established habits.
         if (top_score > 5) {
             for (commands) |c| {
                 if (@intFromEnum(c.id) == top_idx) {
@@ -1838,33 +2118,49 @@ fn shellPredictor(input: []const u8) []const u8 {
                 }
             }
         }
+
         return "";
     }
 
-    // 2. TYPING CASE (The "Ghost Text" suggestion)
-    const is_admin = (g_fs.superblock.policy == .ADMIN);
+    // Typing mode.
+    //
+    // Provide ghost-text completion using a combination of
+    // prefix matching and learned command habits.
+    const is_admin =
+    (g_fs.superblock.policy == .ADMIN);
+
     var best_score: i32 = -1;
     var best_match: ?[]const u8 = null;
 
     for (commands) |c| {
-        // PERF: Skip immediately if the first letter doesn't match
-        if (c.name.len <= input.len or c.name[0] != input[0]) continue;
+
+        // Fast reject for obvious non-matches.
+        if (c.name.len <= input.len or
+            c.name[0] != input[0])
+            continue;
 
         if (std.mem.startsWith(u8, c.name, input)) {
             const tidx = @intFromEnum(c.id);
+
             var score: i32 = 0;
 
             if (tidx < table_size) {
-                score = @intCast(conductor.transition_table[prev_idx][tidx]);
+                score = @intCast(
+                    conductor.transition_table[prev_idx][tidx],
+                );
             }
 
-            // Multiply habits to make them beat alphabetical order
+            // Weight behavioural history heavily so learned habits
+            // outrank simple alphabetical matches.
             var effective_score = score * 10;
 
-            // Fast Admin Boost
+            // ADMIN mode favours diagnostics and policy-management
+            // commands when scores are otherwise close.
             if (is_admin) {
                 if (c.name[0] == 'v' or c.name[0] == 'p') {
-                    if (std.mem.eql(u8, c.name, "vitals") or std.mem.eql(u8, c.name, "policy")) {
+                    if (std.mem.eql(u8, c.name, "vitals") or
+                        std.mem.eql(u8, c.name, "policy"))
+                    {
                         effective_score += 1000;
                     }
                 }
@@ -1877,12 +2173,19 @@ fn shellPredictor(input: []const u8) []const u8 {
         }
     }
 
-    if (best_match) |bm| return bm[input.len..];
+    if (best_match) |bm|
+        return bm[input.len..];
+
     return "";
 }
 
+/// Return the strongest learned transition originating from `prev`.
+///
+/// A minimum threshold is applied so weak or incidental command usage
+/// does not produce predictions.
 fn getHighestTransition(prev: conf.CommandID) conf.CommandID {
     const prev_idx = @intFromEnum(prev);
+
     var best_id: conf.CommandID = .UNKNOWN;
     var max_val: u16 = 0;
 
@@ -1898,51 +2201,136 @@ fn getHighestTransition(prev: conf.CommandID) conf.CommandID {
     return best_id;
 }
 
+/// Resolve a CommandID back to its shell command name.
 fn getNameFromId(id: conf.CommandID) ?[]const u8 {
     for (commands) |cmd| {
-        if (cmd.id == id) return cmd.name;
+        if (cmd.id == id)
+            return cmd.name;
     }
+
     return null;
 }
 
+/// Persist the Conductor's transition table to /sys/composer.dat.
+///
+/// The file is created automatically on first use if the required
+/// directory structure does not already exist.
 fn saveComposer() !void {
-// Create a local 4KB buffer on the stack for file system tracking
-    //var a: [20]u8 = undefined;
-    //vga.writeString(conv.toHex(usize, g_fs.superblock.root_dir_extent_blocks , &a), 14, 0);
+
+    // Temporary allocator used for filesystem metadata operations.
     var scratch_buffer: [8192]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&scratch_buffer);
+
     const alloc = fba.allocator();
 
     const root_lba = g_fs.superblock.root_dir_extent_start;
-    const sys_entry = g_fs.findFile(alloc, root_lba, "sys") catch |err| blk: {
+
+    const sys_entry =
+    g_fs.findFile(alloc, root_lba, "sys") catch |err| blk: {
         if (err == error.FileNotFound) {
-            try g_fs.createEntry(alloc, root_lba, 1, "sys", .Directory);
-            break :blk try g_fs.findFile(alloc, root_lba, "sys");
+            try g_fs.createEntry(
+                alloc,
+                root_lba,
+                1,
+                "sys",
+                .Directory,
+            );
+
+            break :blk try g_fs.findFile(
+                alloc,
+                root_lba,
+                "sys",
+            );
         }
+
         return err;
     };
-    const sys_meta = try g_fs.readFileMeta(alloc, sys_entry.meta_extent.start_block);
-    if (sys_meta.file_type != .Directory) return error.NotADirectory;
+
+    const sys_meta =
+    try g_fs.readFileMeta(
+        alloc,
+        sys_entry.meta_extent.start_block,
+    );
+
+    if (sys_meta.file_type != .Directory)
+        return error.NotADirectory;
+
     const sys_meta_lba = sys_entry.meta_extent.start_block;
-    const composer_entry = g_fs.findFile(alloc, sys_meta_lba, "composer.dat") catch |err| blk: {
+
+    const composer_entry =
+    g_fs.findFile(
+        alloc,
+        sys_meta_lba,
+        "composer.dat",
+    ) catch |err| blk: {
+
         if (err == error.FileNotFound) {
-            try g_fs.createFile(alloc, sys_meta_lba, 4, "composer.dat");
-            const ce = try g_fs.findFile(alloc, sys_meta_lba, "composer.dat");
-            var cm = try g_fs.readFileMeta(alloc, ce.meta_extent.start_block);
+
+            try g_fs.createFile(
+                alloc,
+                sys_meta_lba,
+                4,
+                "composer.dat",
+            );
+
+            const ce =
+            try g_fs.findFile(
+                alloc,
+                sys_meta_lba,
+                "composer.dat",
+            );
+
+            var cm =
+            try g_fs.readFileMeta(
+                alloc,
+                ce.meta_extent.start_block,
+            );
+
+            // Reserve space for the transition table.
             while (cm.extent_count < 4) {
                 try g_fs.addBlockToFile(alloc, &cm);
             }
-            try g_fs.writeBlockStruct(ce.meta_extent.start_block, &cm, @sizeOf(coda_file.FileMeta));
-            break :blk try g_fs.findFile(alloc, sys_meta_lba, "composer.dat");
+
+            try g_fs.writeBlockStruct(
+                ce.meta_extent.start_block,
+                &cm,
+                @sizeOf(coda_file.FileMeta),
+            );
+
+            break :blk try g_fs.findFile(
+                alloc,
+                sys_meta_lba,
+                "composer.dat",
+            );
         }
+
         return err;
     };
-    var composer_meta = try g_fs.readFileMeta(alloc, composer_entry.meta_extent.start_block);
-    const data_lba = composer_meta.extents[0].start_block;
-    const bytes = std.mem.sliceAsBytes(&conductor.transition_table);
-    try g_fs.device.writeBlocks(g_fs.device.ctx, data_lba, bytes);
+
+    var composer_meta =
+    try g_fs.readFileMeta(
+        alloc,
+        composer_entry.meta_extent.start_block,
+    );
+
+    const data_lba =
+    composer_meta.extents[0].start_block;
+
+    const bytes =
+    std.mem.sliceAsBytes(
+        &conductor.transition_table,
+    );
+
+    // Write the learned transition data directly to disk.
+    try g_fs.device.writeBlocks(
+        g_fs.device.ctx,
+        data_lba,
+        bytes,
+    );
+
     composer_meta.size_bytes = bytes.len;
     composer_meta.extents[0].block_count = 4;
+
     try g_fs.writeBlockStruct(
         composer_entry.meta_extent.start_block,
         &composer_meta,
@@ -1950,23 +2338,45 @@ fn saveComposer() !void {
     );
 }
 
+/// Restore the Conductor transition table from /sys/composer.dat.
+///
+/// Missing files are treated as "no learned history".
 fn loadComposer() void {
-    const path_res = g_fs.resolvePath(
+    const path_res =
+    g_fs.resolvePath(
         g_allocator,
         g_fs.superblock.root_dir_extent_start,
         "/sys/composer.dat",
     ) catch return;
 
-    const meta = g_fs.readFileMeta(g_allocator, path_res.lba) catch return;
-    const data_lba = meta.extents[0].start_block;
+    const meta =
+    g_fs.readFileMeta(
+        g_allocator,
+        path_res.lba,
+    ) catch return;
 
-    const bytes = std.mem.sliceAsBytes(&conductor.transition_table);
+    const data_lba =
+    meta.extents[0].start_block;
 
-    g_fs.device.readBlocks(g_fs.device.ctx, data_lba, bytes) catch return;
+    const bytes =
+    std.mem.sliceAsBytes(
+        &conductor.transition_table,
+    );
+
+    g_fs.device.readBlocks(
+        g_fs.device.ctx,
+        data_lba,
+        bytes,
+    ) catch return;
 }
 
-/// Increases the probability weight between two commands.
-fn rewardTransition(prev: conf.CommandID, curr: conf.CommandID) void {
+/// Reinforce an observed command transition.
+///
+/// Transition weights are capped to prevent unbounded growth.
+fn rewardTransition(
+    prev: conf.CommandID,
+    curr: conf.CommandID,
+) void {
     const p = @intFromEnum(prev);
     const c = @intFromEnum(curr);
 
@@ -1975,44 +2385,76 @@ fn rewardTransition(prev: conf.CommandID, curr: conf.CommandID) void {
     }
 }
 
-
-//Prompt when unusual sequences are detected
+// Prompt when unusual command sequences are detected.
 fn challengeUser(cmd_name: []const u8) bool {
-    vga.writeString("\n[!] STABILITY WARNING: ", 0x0E, 0); // Yellow/Gold
+    vga.writeString(
+        "\n[!] STABILITY WARNING: ",
+        0x0E,
+        0,
+    );
+
     vga.writeString(cmd_name, 0x0F, 0);
-    vga.writeString(" is unusual for this persona.\n", 0x0E, 0);
-    vga.writeString("Allow execution? (y/n): ", 0x07, 0);
+
+    vga.writeString(
+        " is unusual for this persona.\n",
+        0x0E,
+        0,
+    );
+
+    vga.writeString(
+        "Allow execution? (y/n): ",
+                    0x07,
+                    0,
+    );
 
     while (true) {
         const key = keyboard.getChar();
+
         if (key == 'y' or key == 'Y') {
-            vga.writeString("Confirmed.\n", 0x0A, 0); // Green
+            vga.writeString(
+                "Confirmed.\n",
+                0x0A,
+                0,
+            );
             return true;
         }
+
         if (key == 'n' or key == 'N') {
-            vga.writeString("Blocked.\n", 0x0C, 0); // Red
+            vga.writeString(
+                "Blocked.\n",
+                0x0C,
+                0,
+            );
             return false;
         }
     }
 }
-//Time stamp the last command so that command temp can be monitored
-//This enables policies to be adapptive, e.g. GAMING accepts faster, repetitive key bashing
-//Admin will iterpret that as an attack
-
+// Monitor command timing to detect unusually rapid sequences.
+//
+// This allows policy-driven behaviour to adapt to operator tempo.
+//
+// Examples:
+//   • GAMING mode tolerates rapid, repetitive command entry.
+//   • ADMIN mode treats unusually high command velocity as
+//     potentially suspicious behaviour.
 fn checkEntropy(current_tick: u64) bool {
-    // 1. Calculate the delta (time passed since last command)
+
+    // Calculate the elapsed time since the previous command.
     const delta = current_tick - last_command_tick;
 
-    // 2. Update the global variable for the NEXT command
+    // Record the timestamp for the next invocation.
     last_command_tick = current_tick;
 
-    // 3. Safety: If this is the first command after boot, delta will be huge.
-    // We only care about delta if last_command_tick was already set.
-    if (delta == current_tick) return false;
+    // Ignore the first command after boot. In that case the previous
+    // timestamp was effectively zero, making delta meaningless.
+    if (delta == current_tick)
+        return false;
 
-    // 4. The Threshold:
-    // If delta is less than 15 ticks, the user is typing too fast.
-    // Increase this number (e.g., to 30) if it's still too sensitive.
+    // Commands arriving within this threshold are considered
+    // unusually rapid.
+    //
+    // This value is intentionally heuristic and may be tuned as the
+    // shell interaction model evolves.
     if (delta < 25) {
         return true;
     }
@@ -2024,9 +2466,13 @@ fn checkEntropy(current_tick: u64) bool {
 // DEBUG HELPER FUNCTIONS
 // ------------------------------------------
 
+/// Halt the system indefinitely.
+///
+/// Intended as a simple kernel breakpoint during debugging.
 pub fn pause() void {
-    // Disable interrupts so the timer can't kick us out,
-    // then put the CPU into a permanent halt state.
+
+    // Disable interrupts so timer interrupts and task scheduling
+    // cannot resume execution.
     while (true) {
         asm volatile (
             \\cli
