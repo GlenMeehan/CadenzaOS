@@ -8,7 +8,6 @@
 //
 const std = @import("std");
 const config = @import("config.zig");
-const scheduler = @import("scheduler.zig");
 const vga_mod = @import("vga.zig");
 const fb = @import("framebuffer.zig");
 const font = @import("font.zig");
@@ -45,7 +44,6 @@ pub fn taskA_main() callconv(.c) void {
 
         sleep(500);
 
-        scheduler.manager.yield();
     }
 }
 

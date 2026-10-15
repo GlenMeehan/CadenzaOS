@@ -418,14 +418,6 @@ pub const Scheduler = struct {
         return 0;
     }
 
-    /// Cooperative scheduler yield.
-    ///
-    /// Currently disabled because task switching is performed entirely
-    /// through timer-driven preemption.
-    pub fn yield(self: *Scheduler) void {
-        _ = self;
-    }
-
     /// Timer-preemption entry point invoked by the IRQ0 assembly stub.
     ///
     /// Receives the interrupted task context, performs scheduling
