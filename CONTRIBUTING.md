@@ -75,7 +75,7 @@ https://ziglang.org/download/
 - `dev` — active development target. Submit all Pull Requests here.
 
 The Project Lead merges `dev` into `main` when a set of features is stable
-and tested. If you are working on a larger feature, create a feature branch
+and tested, using a merge commit (not squash). If you are working on a larger feature, create a feature branch
 from `dev`:
 
 ```bash
@@ -142,6 +142,8 @@ git commit -s -m "your commit message"
 ```
 
 PRs containing unsigned commits will be asked to resubmit before merging.
+
+AI-assisted contributions are welcome if disclosed in the pull request. The person submitting is responsible for the change and signs off under the DCO, and it should be tested, or say clearly that it wasn’t.
 
 ---
 
