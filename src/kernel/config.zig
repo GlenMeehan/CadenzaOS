@@ -36,7 +36,7 @@ pub const PARTITION_START_LBA: u64 = 4096;
 /// Raw staging area for the embedded prog1 image (read by installEmbeddedApps,
 /// written by build.sh). Must sit after the kernel image and before the partition.
 pub const APP_LBA_START: u64 = 3700;
-pub const APP_MAX_SECTORS: u64 = 48;
+pub const APP_MAX_SECTORS: u64 = 256;
 
 comptime {
     if (APP_LBA_START + APP_MAX_SECTORS > PARTITION_START_LBA)
@@ -226,7 +226,7 @@ pub var kernel_allocator: std.mem.Allocator = undefined;
 pub const Version = struct {
     pub const major: u32 = 0;
     pub const minor: u32 = 4;
-    pub const patch: u32 = 8;   //Update commentary shell.zig fro rows 1 - 1430, to be completed later
+    pub const patch: u32 = 8;
 };
 
 /// Build metadata generated at build time.
