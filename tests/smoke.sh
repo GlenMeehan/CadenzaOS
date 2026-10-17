@@ -116,6 +116,8 @@ sleep 1                   # let the shell settle at its prompt
 
 type_line "spawn prog1 hello"
 check "spawn passes arguments" "arg: hello" "$CMD_TIMEOUT"
+type_line "spawn hello"
+check "second program installed and runs" "Hello from hello!" "$CMD_TIMEOUT"
 
 type_line "touch smokef"
 sleep 2
