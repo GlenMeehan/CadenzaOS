@@ -3,13 +3,13 @@
 # Cadenza OS build script.
 #
 # Assumes a GNU/Linux toolchain: stat -c %s is GNU syntax (BSD uses stat -f),
-# and the script relies on readelf, objcopy, as, ld and nasm.
+# and the script relies on readelf, objcopy, as, ld, nasm and truncate.
 #
 # Usage:
 #   ./build.sh         full build (asks whether to preserve the filesystem), then runs QEMU
+#   ./build.sh ci      non-interactive build on a fresh image; does not launch QEMU
 #   ./build.sh run     launch QEMU on the existing disk image
 #   ./build.sh clean   remove the disk image
-#   ./build.sh ci       ci smoke test
 set -e
 
 # --- Configuration ---
@@ -27,12 +27,16 @@ IMG="$BUILD/disk.img"
 KERNEL_LBA=16        # kernel written here
 PARTITION_LBA=4096   # CodaFS partition starts here (PARTITION_START_LBA in config.zig)
 
-# APP_LBA_START lives in config.zig and is also used by binary_loader.zig,
-# so read it from there instead of keeping a second copy.
+# APP_LBA_START and APP_MAX_SECTORS live in config.zig and are also used by
+# binary_loader.zig, so read them from there instead of keeping second copies.
 # (POSIX sed, so this works without GNU grep.)
-APP_LBA=$(sed -n 's/.*APP_LBA_START: u64 = \([0-9][0-9]*\).*/\1/p' "$SRC/kernel/config.zig" | head -n 1)
-if [ -z "$APP_LBA" ]; then
-    echo "❌ ERROR: could not read APP_LBA_START from config.zig"
+read_config() {
+    sed -n "s/.*$1: u64 = \([0-9][0-9]*\).*/\1/p" "$SRC/kernel/config.zig" | head -n 1
+}
+APP_LBA=$(read_config APP_LBA_START)
+APP_MAX_SECTORS=$(read_config APP_MAX_SECTORS)
+if [ -z "$APP_LBA" ] || [ -z "$APP_MAX_SECTORS" ]; then
+    echo "❌ ERROR: could not read APP_LBA_START / APP_MAX_SECTORS from config.zig"
     exit 1
 fi
 
@@ -57,11 +61,10 @@ if [ "$1" == "clean" ]; then
     exit 0
 fi
 
-# CI mode: always start from a fresh image, never ask questions
+# --- 1. Clean Phase ---
+# CI mode: always start from a fresh image, never ask questions.
 if [ "$1" == "ci" ]; then rm -f "$IMG"; fi
 
-# --- 1. Clean Phase ---
-# Since we are not in 'run' mode, we perform a full rebuild.
 # Check if an existing disk image is present and ask the user whether to
 # preserve the filesystem or start fresh.
 PRESERVE_FS=false
@@ -106,11 +109,11 @@ else
 fi
 
 # --- Generate version.zig ---
-cat > "$SRC/kernel/version.zig" <<EOF
+cat > "$SRC/kernel/version.zig" <<VEOF
 pub const git_hash: []const u8 = "$GIT_HASH";
 pub const git_dirty: bool = $GIT_DIRTY_BOOL;
 pub const build_ts: []const u8 = "$BUILD_TS";
-EOF
+VEOF
 
 echo "[2/6] Compiling kernel..."
 $ZIG build-obj "$SRC/kernel/kernel.zig" \
@@ -180,31 +183,44 @@ dd if="$BUILD/stage2.bin" of="$IMG" bs=512 seek=1 conv=notrunc status=none
 dd if="$BUILD/kernel.bin" of="$IMG" bs=512 seek=$KERNEL_LBA conv=notrunc status=none
 
 # -------------------------------------------------------------------------
-#  USERLAND: build prog1 from source, then stage it into the disk image
+#  USERLAND: build every program in userland/*/, pack them into one bundle,
+#  and stage the bundle into the disk image.
+#
+#  Each program lives in userland/<name>/ and needs <name>.zig and linker.ld.
 # -------------------------------------------------------------------------
 APPS_DIR="$BUILD/apps"
+rm -rf "$APPS_DIR"
 mkdir -p "$APPS_DIR"
 
-echo "[prog1] Building userland program..."
-$ZIG build-exe "$ROOT/userland/prog1/prog1.zig" \
-    -target x86_64-freestanding \
-    -O ReleaseSmall \
-    -fstrip \
-    -T "$ROOT/userland/prog1/linker.ld" \
-    --name "prog1.elf"
+for dir in "$ROOT"/userland/*/; do
+    [ -d "$dir" ] || continue
+    dir="${dir%/}"
+    name=$(basename "$dir")
 
-# build-exe leaves the ELF in the current directory, as env.sh did
-mv prog1.elf "$APPS_DIR/prog1.elf"
-$ZIG objcopy -O binary "$APPS_DIR/prog1.elf" "$APPS_DIR/prog1.bin"
+    echo "[$name] Building userland program..."
+    $ZIG build-exe "$dir/$name.zig" \
+        -target x86_64-freestanding \
+        -O ReleaseSmall \
+        -fstrip \
+        -T "$dir/linker.ld" \
+        --name "$name.elf"
 
-# Sanity check: the program header magic must be present ("CDZP")
-if [ "$(head -c 4 "$APPS_DIR/prog1.bin")" != "CDZP" ]; then
-    echo "❌ ERROR: prog1.bin has no valid header (linker script or header block broken)"
-    exit 1
-fi
+    # build-exe leaves the ELF in the current directory, as env.sh did
+    mv "$name.elf" "$APPS_DIR/$name.elf"
+    $ZIG objcopy -O binary "$APPS_DIR/$name.elf" "$APPS_DIR/$name.bin"
 
-echo "📦 Staging prog1.bin into disk image at LBA $APP_LBA..."
-dd if="$APPS_DIR/prog1.bin" of="$IMG" bs=512 seek=$APP_LBA conv=notrunc status=none
+    # Sanity check: the program header magic must be present ("CDZP")
+    if [ "$(head -c 4 "$APPS_DIR/$name.bin")" != "CDZP" ]; then
+        echo "❌ ERROR: $name.bin has no valid header (linker script or header block broken)"
+        exit 1
+    fi
+done
+
+echo "[bundle] Packing programs..."
+bash "$ROOT/tools/pack.sh" "$BUILD/bundle.bin" "$APP_MAX_SECTORS" "$APPS_DIR"/*.bin
+
+echo "📦 Staging bundle into disk image at LBA $APP_LBA..."
+dd if="$BUILD/bundle.bin" of="$IMG" bs=512 seek=$APP_LBA conv=notrunc status=none
 # -------------------------------------------------------------------------
 
 echo "✅ Build & Update complete."

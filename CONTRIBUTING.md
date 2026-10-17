@@ -152,8 +152,11 @@ AI-assisted contributions are welcome if disclosed in the pull request. The pers
 CadenzaOS is written in Zig. Follow these conventions:
 
 - **Formatting:** Run `zig fmt` on any Zig files you modify before committing.
-- **Naming:** `snake_case` for variables and functions, `PascalCase` for
-  types and structs — consistent with the existing codebase.
+- **Naming:** `camelCase` for functions, `snake_case` for variables and
+  fields, `PascalCase` for types and structs, and `SCREAMING_SNAKE_CASE` for
+  constants, following Zig's standard style. Some older code uses
+  `snake_case` for functions; leave existing names alone (symbols called
+  from assembly must keep their names), and use the style above for new code.
 - **Comments:** Explain *why*, not *what*. The code shows what; comments
   should explain reasoning, constraints, and non-obvious decisions.
 - **Error handling:** Never silently swallow errors with bare `catch {}` in
