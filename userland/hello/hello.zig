@@ -101,29 +101,14 @@ fn cstrLen(s: [*:0]const u8) usize {
 }
 
 export fn _start(argc: u64, argv: [*]const [*:0]const u8) callconv(.c) void {
-    // Offset 0: this program's own instance number (shared across all
-    // running copies of prog1). Single atomic increment, nothing else touches it.
-    const instance = incrementScratchByte(0, 1);
-
     printString("Hello from hello!\n", COLOUR);
-    _ = incrementScratchByte(1, 1);
 
-    printString("This is instance #", COLOUR);
-    const digit: u64 = '0' + (instance % 10);
-    printChar(digit, COLOUR);
-    _ = incrementScratchByte(1, 1);
-
-    printString("Total lines printed so far: ", COLOUR);
-    const total = incrementScratchByte(1, 1);
-    const total_digit: u64 = '0' + (total % 10);
-    printChar(total_digit, COLOUR);
-
-    // Print any command-line arguments (argv[0] is the program name, so start at 1)
-    var i: u64 = 1;
+    var i: u64 = 1; // argv[0] is the program name
     while (i < argc) : (i += 1) {
-        printString("\narg: ", COLOUR);
+        printString("arg: ", COLOUR);
         const a = argv[i];
         printString(a[0..cstrLen(a)], COLOUR);
+        printString("\n", COLOUR);
     }
 
     exitTask();
