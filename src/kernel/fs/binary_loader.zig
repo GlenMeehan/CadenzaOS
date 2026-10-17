@@ -79,8 +79,16 @@ fn installOne(
     const hdr = binfmt.parse(staging_buf[0..size]) catch return error.InvalidProgramImage;
 
     // 4. Allocate filesystem space: one metadata block and the payload.
+    //    If anything fails before the directory entry exists, give both extents back.
+    var linked = false;
     const meta_extent = try fs.space_manager.allocate(1);
+    errdefer if (!linked) {
+        fs.space_manager.free(allocator, meta_extent) catch {};
+    };
     const data_extent = try fs.space_manager.allocate(sectors);
+    errdefer if (!linked) {
+        fs.space_manager.free(allocator, data_extent) catch {};
+    };
 
     // 5. File metadata uses the true program size from the program header.
     var meta = FileMeta{
@@ -112,6 +120,14 @@ fn installOne(
     @memcpy(entry.name[0..name.len], name);
 
     try fs.insertEntry(allocator, root, entry);
+
+    try fs.space_manager.flushToDisk(
+        allocator,
+        fs.superblock.sm_start_block,
+        fs.superblock.sm_block_count,
+    );
+    try fs.insertEntry(allocator, root, entry);
+    linked = true;
 
     try fs.space_manager.flushToDisk(
         allocator,
