@@ -320,52 +320,46 @@ pub const CodaFs = struct {
     /// Removes the DirEntry from the parent directory block.
     /// Does NOT recursively delete children — caller must enforce safety.
     pub fn deleteFile(fs: *CodaFs, allocator: std.mem.Allocator, dir_lba: u64, name: []const u8) !void {
-        // 1. Locate the entry to obtain its metadata address
+        // 1. Locate the entry and read its metadata
         const entry = try fs.findFile(allocator, dir_lba, name);
+        const meta = try fs.readFileMeta(allocator, entry.meta_extent.start_block);
 
-        // 2. Read metadata
-        var meta = try fs.readFileMeta(allocator, entry.meta_extent.start_block);
+        // 2. Remove the directory entry first, scanning every block of the directory
+        const is_root = (dir_lba == fs.superblock.root_dir_extent_start);
+        var dir_meta: FileMeta = undefined;
+        if (!is_root) dir_meta = try fs.readFileMeta(allocator, dir_lba);
+        const total_blocks: u64 = if (is_root) fs.superblock.root_dir_extent_blocks else dir_meta.extent_count;
+        const entries_per_block = fs.device.block_size / @sizeOf(DirEntry);
 
-        // 3. Free all data extents
+        const dir_buf = try allocator.alloc(u8, fs.device.block_size);
+        defer allocator.free(dir_buf);
+
+        var removed = false;
+        var b: u32 = 0;
+        while (b < total_blocks and !removed) : (b += 1) {
+            const lba = if (is_root) dir_lba + b else dir_meta.extents[b].start_block;
+            try fs.device.readBlocks(fs.device.ctx, lba, dir_buf);
+            const entries = @as([*]DirEntry, @ptrCast(@alignCast(dir_buf.ptr)))[0..entries_per_block];
+            for (entries) |*e| {
+                if (e.name_len == name.len and std.mem.eql(u8, e.name[0..name.len], name)) {
+                    @memset(std.mem.asBytes(e), 0);
+                    try fs.device.writeBlocks(fs.device.ctx, lba, dir_buf);
+                    removed = true;
+                    break;
+                }
+            }
+        }
+        if (!removed) return error.FileNotFound;
+
+        // 3. Only now give the file's blocks back to the space manager
         for (meta.extents[0..meta.extent_count]) |extent| {
             try fs.space_manager.free(allocator, extent);
         }
-
-        // 4. Free the metadata block itself
         try fs.space_manager.free(allocator, Extent{
             .start_block = entry.meta_extent.start_block,
             .block_count = 1,
         });
 
-        // 5. Remove entry from the directory block
-        const dir_buf = try allocator.alloc(u8, fs.device.block_size);
-        defer allocator.free(dir_buf);
-
-        // For subdirectories, dir_lba is the metadata LBA —
-        // resolve the actual data block LBA from the first extent
-        const is_root = (dir_lba == fs.superblock.root_dir_extent_start);
-        const data_lba = if (is_root) dir_lba else blk: {
-            const dir_meta = try fs.readFileMeta(allocator, dir_lba);
-            break :blk dir_meta.extents[0].start_block;
-        };
-
-        try fs.device.readBlocks(fs.device.ctx, data_lba, dir_buf);
-
-        const entries = @as([*]DirEntry, @ptrCast(@alignCast(dir_buf.ptr)))[0 .. fs.device.block_size / @sizeOf(DirEntry)];
-
-        var found = false;
-        for (entries) |*e| {
-            if (e.name_len == name.len and std.mem.eql(u8, e.name[0..name.len], name)) {
-                @memset(std.mem.asBytes(e), 0);
-                found = true;
-                break;
-            }
-        }
-
-        if (!found) return error.FileNotFound;
-
-        // 6. Persist directory changes and SpaceManager state
-        try fs.device.writeBlocks(fs.device.ctx, data_lba, dir_buf);
         try fs.space_manager.flushToDisk(allocator, fs.superblock.sm_start_block, fs.superblock.sm_block_count);
     }
 
