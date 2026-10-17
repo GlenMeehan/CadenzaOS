@@ -26,8 +26,14 @@ Everything between the end of the kernel and sector 3700, and between 3748 and 4
 
 Rules that keep the regions apart:
 
-- `build.sh` stops the build if the kernel is longer than `APP_LBA_START - KERNEL_LBA`
-  (3,684 sectors). Without this guard, the staging area would overwrite the end of the kernel.
+### The app staging area
+
+`build.sh` builds every program under `userland/` and packs them into one bundle
+(`tools/pack.sh`, format in `src/kernel/bundlefmt.zig`), written raw at `APP_LBA_START`.
+Sector 0 holds a header and a table of up to 12 programs; each program follows on its own
+sector boundary. On boot, `installEmbeddedApps` copies every program that is not already in
+CodaFS into the root directory under its bundle name. Existing files are not overwritten, so
+answer **n** to the "Preserve filesystem?" prompt to refresh a program you changed.
 - `config.zig` fails to compile if `APP_LBA_START + APP_MAX_SECTORS` passes `PARTITION_START_LBA`.
 - Nothing checks that stage 2 fits in sectors 1 to 15. It uses 3 today, so there is plenty of room, but a guard like the kernel one would be cheap.
 
