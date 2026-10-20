@@ -1,7 +1,12 @@
 // userland/kbecho/kbecho.zig
 //
 // Keyboard read test for the read (6) and yield (7) syscalls.
-// Built up in stages. Stage 1: print a banner and exit.
+//
+// Reads typed characters until Enter, echoing them as they arrive, then
+// prints the finished line and exits. Used by tests/smoke.sh.
+//
+// Programs have no .bss (the linker script forbids it), so every buffer
+// here lives on the stack.
 
 const LINE_MAX = 64;
 
