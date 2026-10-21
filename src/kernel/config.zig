@@ -43,6 +43,12 @@ comptime {
         @compileError("app staging area overlaps the CodaFS partition");
 }
 
+/// Print one line to serial for every task switch. Off by default: the
+/// trace is written from the timer interrupt, so it can land in the middle
+/// of a program's own output and split lines (this broke the CI smoke test).
+/// Turn it on when debugging the scheduler.
+pub const debug_sched_trace = false;
+
 /// Logical block address of the filesystem superblock.
 ///
 /// This is relative to the start of the filesystem partition, not

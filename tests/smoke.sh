@@ -128,6 +128,13 @@ press y
 press ret
 check "del removes the file" "File deleted successfully" "$CMD_TIMEOUT"
 
+# A foreground program that reads the keyboard through the read and yield
+# syscalls: wait until it announces itself, type a word, expect it back.
+type_line "spawn kbecho"
+check "read-test program started" "kbecho ready" "$CMD_TIMEOUT"
+type_line "abc"
+check "read syscall delivers typed input" "got: abc" "$CMD_TIMEOUT"
+
 type_line "spawn prog1 again"
 check "system still runs programs after del" "arg: again" "$CMD_TIMEOUT"
 

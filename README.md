@@ -15,7 +15,8 @@ CadenzaOS is an early research project. Please read this before you try it.
 QEMU: boots to the shell. Every push is built from a clean checkout and booted headless in QEMU by CI, which checks that the shell prompt appears.
 Real hardware: it boots on a Dell OptiPlex 3020 (legacy BIOS) but does not yet reach the shell. Text rendering and panic output on that machine are garbled, and we have not yet pinned down whether the cause is the rendering path or the data reaching it. Serial output hardware for debugging is on order. Until this is resolved, treat QEMU as the supported way to run CadenzaOS. <!-- TODO: confirm this still matches the current state of the OptiPlex -->
 No memory protection: programs run in ring 0 in the kernel's address space. The behavioural-security features observe and flag, but they cannot yet contain a misbehaving program, and a buggy or hostile program can overwrite kernel memory. Privilege separation is Phase 8. <!-- TODO: check "observe and flag" matches what the Conductor and Composer actually do -->
-Small syscall surface: there is no keyboard-input syscall yet, so programs can print but not read.
+Small syscall surface: programs can exit, print text or a character, use a shared scratch page, read keyboard input without blocking, and yield the CPU. There is no file or process API yet.
+
 ✨ What makes CadenzaOS different
 
 Most operating systems treat security as something you add on top: antivirus software, firewalls, sandboxes. CadenzaOS aims to treat it as something built in from the ground up:
@@ -57,16 +58,18 @@ Anomaly detection — statistically unusual command sequences prompt confirmatio
 Real-time uptime display (MM:SS) and disk usage reporting via kernel vitals monitor
 Multitasking & programs
 Preemptive multitasking via APIC / IRQ0 timer with full InterruptContext save/restore
-Dynamic task spawning (spawn <program> [args...]) and clean task exit, with the task's memory and scheduler slot reclaimed on exit
+Dynamic task spawning (spawn <program> [args...]) and clean task exit, with the task's memory and scheduler slot reclaimed on exit. A disk program runs in the foreground: the shell waits until it exits, so the program receives the keyboard input.
 External programs: flat binaries built separately, stored in CodaFS, and loaded as tasks at runtime. Each begins with a 16-byte header (magic, version, entry offset, image size) that the kernel validates before running anything
 Command-line arguments: up to 8 arguments / 512 bytes, passed as argc in rdi and argv in rsi
 Syscall interface (int $0x80, number in rax):
 0: EXIT
-1: PRINT_STRING (pointer + length + colour)
+1: PRINT_STRING (pointer + length + colour; the whole buffer must lie inside the calling task's own memory, otherwise nothing is printed)
 2: GET_SCRATCH_BYTE (persistent cross-spawn scratch page)
 3: SET_SCRATCH_BYTE
 4: PRINT_CHAR
 5: INCREMENT_SCRATCH_BYTE (atomic read-modify-write)
+6: READ (buffer pointer + capacity; returns the number of bytes stored in rax, 0 if no key is waiting, or all ones if the buffer is rejected; never blocks)
+7: YIELD (give up the rest of the time slice)
 🛠 Building
 Requirements
 
