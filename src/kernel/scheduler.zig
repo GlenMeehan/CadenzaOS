@@ -619,6 +619,9 @@ pub const Scheduler = struct {
         manager.tasks[next_idx].?.state = .Running;
 
         // Scheduler trace output for task-switch debugging.
+        // it writes to the serial stream from the timer interrupt, which can
+        // land in the middle of a program's own output.
+        if (config.debug_sched_trace) {
         var dbuf: [16]u8 = undefined;
         var dbuf2: [16]u8 = undefined;
         var dbuf3: [16]u8 = undefined;
@@ -639,7 +642,7 @@ pub const Scheduler = struct {
         ) catch "SW: fmt error\n";
 
         serial.writeString(msg);
-
+        }
         // Return the saved context of the task that should resume.
         return manager.tasks[next_idx].?.stack_ptr;
     }
