@@ -122,6 +122,18 @@ check "second program installed and runs" "Hello from hello!" "$CMD_TIMEOUT"
 type_line "touch smokef"
 sleep 2
 
+# check_absent <description> <pattern> <byte-offset>
+# Passes if the pattern does NOT appear in the log after the given offset.
+# Take the offset with: mark=$(stat -c %s "$LOG")
+check_absent() {
+    if tail -c +"$(( $3 + 1 ))" "$LOG" | grep -aq -- "$2"; then
+        fail "$1 ('$2' found after the marker)"
+    else
+        echo "PASS: $1"
+    fi
+}
+
+
 type_line "del smokef"
 check "del asks for confirmation" "SAFETY" "$CMD_TIMEOUT"
 press y
@@ -157,5 +169,13 @@ type_line "mv f4 d"
 check "mv finds a file in the second directory block" "Move successful!" "$CMD_TIMEOUT"
 type_line "ls d"
 check "moved file is listed in the new directory" "\[FILE\] f4" "$CMD_TIMEOUT"
+
+# A move, not a copy: the root listing must no longer contain f4. Only the
+# output after the marker counts (the "ls d" output above also shows f4).
+mark=$(stat -c %s "$LOG")
+type_line "ls"
+check "root listing shows the remaining files" "\[FILE\] f3" "$CMD_TIMEOUT"
+sleep 2
+check_absent "moved file is gone from the root" "\[FILE\] f4" "$mark"
 
 finish
