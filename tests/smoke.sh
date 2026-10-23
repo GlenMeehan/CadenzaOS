@@ -138,4 +138,24 @@ check "read syscall delivers typed input" "got: abc" "$CMD_TIMEOUT"
 type_line "spawn prog1 again"
 check "system still runs programs after del" "arg: again" "$CMD_TIMEOUT"
 
+# Directory entries beyond the first block. The root directory holds about
+# five entries per block and prog1, hello and kbecho already use three, so
+# by f4 the entries are in the second block. mv with a relative name used
+# to search only the first block and report FileNotFound.
+# NOTE: needs a fresh image (./build.sh ci), because it creates "d".
+type_line "mkdir d"
+check "mkdir creates a directory" "Directory created successfully" "$CMD_TIMEOUT"
+type_line "touch f1"
+sleep 2
+type_line "touch f2"
+sleep 2
+type_line "touch f3"
+sleep 2
+type_line "touch f4"
+sleep 2
+type_line "mv f4 d"
+check "mv finds a file in the second directory block" "Move successful!" "$CMD_TIMEOUT"
+type_line "ls d"
+check "moved file is listed in the new directory" "\[FILE\] f4" "$CMD_TIMEOUT"
+
 finish
