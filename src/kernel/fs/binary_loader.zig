@@ -120,13 +120,6 @@ fn installOne(
     @memcpy(entry.name[0..name.len], name);
 
     try fs.insertEntry(allocator, root, entry);
-
-    try fs.space_manager.flushToDisk(
-        allocator,
-        fs.superblock.sm_start_block,
-        fs.superblock.sm_block_count,
-    );
-    try fs.insertEntry(allocator, root, entry);
     linked = true;
 
     try fs.space_manager.flushToDisk(
