@@ -136,8 +136,10 @@ check_absent() {
 
 type_line "del smokef"
 check "del asks for confirmation" "SAFETY" "$CMD_TIMEOUT"
+
+# Answer the prompt with a bare y, as a user would. Adding Enter here would
+# hide a stray y being left in the input queue.
 press y
-press ret
 check "del removes the file" "File deleted successfully" "$CMD_TIMEOUT"
 
 # A foreground program that reads the keyboard through the read and yield
