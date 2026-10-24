@@ -61,6 +61,29 @@ check() {
     esac
 }
 
+# check_absent <description> <pattern> <byte-offset>
+# Passes if the pattern does NOT appear in the log after the given offset.
+# Take the offset with: mark=$(stat -c %s "$LOG")
+check_absent() {
+    if tail -c +"$(( $3 + 1 ))" "$LOG" | grep -aq -- "$2"; then
+        fail "$1 ('$2' found after the marker)"
+    else
+        echo "PASS: $1"
+    fi
+}
+
+# check_count <description> <pattern> <expected> <byte-offset>
+# Counts log lines matching the pattern after the offset and compares.
+check_count() {
+    local n
+    n=$(tail -c +"$(( $4 + 1 ))" "$LOG" | grep -ac -- "$2")
+    if [ "$n" -eq "$3" ]; then
+        echo "PASS: $1"
+    else
+        fail "$1 (found $n, expected $3)"
+    fi
+}
+
 press() {
     echo "sendkey $1" >&3
     sleep 0.2
@@ -112,7 +135,17 @@ exec 3<>/dev/tcp/127.0.0.1/"$MONPORT"
 cat <&3 >/dev/null &      # drain monitor output so QEMU never blocks writing to us
 DPID=$!
 
+
 sleep 1                   # let the shell settle at its prompt
+
+# Each installed program must appear exactly once in the root directory.
+mark=$(stat -c %s "$LOG")
+type_line "ls"
+check "ls lists the installed programs" "\[FILE\] prog1" "$CMD_TIMEOUT"
+sleep 1
+check_count "hello is installed once" "\[FILE\] hello" 1 "$mark"
+check_count "kbecho is installed once" "\[FILE\] kbecho" 1 "$mark"
+check_count "prog1 is installed once" "\[FILE\] prog1" 1 "$mark"
 
 type_line "spawn prog1 hello"
 check "spawn passes arguments" "arg: hello" "$CMD_TIMEOUT"
@@ -122,16 +155,6 @@ check "second program installed and runs" "Hello from hello!" "$CMD_TIMEOUT"
 type_line "touch smokef"
 sleep 2
 
-# check_absent <description> <pattern> <byte-offset>
-# Passes if the pattern does NOT appear in the log after the given offset.
-# Take the offset with: mark=$(stat -c %s "$LOG")
-check_absent() {
-    if tail -c +"$(( $3 + 1 ))" "$LOG" | grep -aq -- "$2"; then
-        fail "$1 ('$2' found after the marker)"
-    else
-        echo "PASS: $1"
-    fi
-}
 
 
 type_line "del smokef"
