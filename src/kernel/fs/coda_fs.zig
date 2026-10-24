@@ -548,31 +548,42 @@ pub const CodaFs = struct {
     }
 
     /// Locate and remove a DirEntry from a directory.
-    /// Zeroes the entry in-place and returns a copy of the removed DirEntry.
-    /// Used internally by deleteFile and rename operations.
-    /// Works for both root and subdirectories.
+    ///
+    /// Scans every block of the directory, finds the entry by name, marks
+    /// the slot free (name_len = 0) and returns a copy of the removed entry.
+    /// The file's data and metadata blocks are not touched.
+    ///
+    /// Works for both root and subdirectories. The block count is read from
+    /// the directory itself; `dir_blocks` is ignored and kept only so that
+    /// existing callers still compile. Currently used by `mv`.
     pub fn findAndRemoveEntry(fs: *CodaFs, allocator: std.mem.Allocator, dir_lba: u64, dir_blocks: u64, name: []const u8) !DirEntry {
-        var data_lba = dir_lba;
-        if (dir_lba != fs.superblock.root_dir_extent_start) {
-            const meta = try fs.readFileMeta(allocator, dir_lba);
-            data_lba = meta.extents[0].start_block;
-        }
+        // The block count is read from the directory itself, never trusted
+        // from the caller (resolvePath reports 1 for "." and relative paths).
+        _ = dir_blocks;
 
-        const dir_size = dir_blocks * fs.device.block_size;
-        const buf = try allocator.alloc(u8, dir_size);
+        const is_root = (dir_lba == fs.superblock.root_dir_extent_start);
+        var dir_meta: FileMeta = undefined;
+        if (!is_root) dir_meta = try fs.readFileMeta(allocator, dir_lba);
+        const total_blocks: u64 = if (is_root) fs.superblock.root_dir_extent_blocks else dir_meta.extent_count;
+        const entries_per_block = fs.device.block_size / @sizeOf(DirEntry);
+
+        const buf = try allocator.alloc(u8, fs.device.block_size);
         defer allocator.free(buf);
 
-        try fs.device.readBlocks(fs.device.ctx, data_lba, buf);
+        // Scan every block of the directory, one block at a time.
+        var b: u32 = 0;
+        while (b < total_blocks) : (b += 1) {
+            const lba = if (is_root) dir_lba + b else dir_meta.extents[b].start_block;
+            try fs.device.readBlocks(fs.device.ctx, lba, buf);
 
-        const entry_count = dir_size / @sizeOf(DirEntry);
-        const entries = @as([*]DirEntry, @ptrCast(@alignCast(buf.ptr)))[0..entry_count];
-
-        for (entries) |*entry| {
-            if (entry.name_len > 0 and std.mem.eql(u8, entry.name[0..entry.name_len], name)) {
-                const copy = entry.*;
-                entry.name_len = 0;
-                try fs.device.writeBlocks(fs.device.ctx, data_lba, buf);
-                return copy;
+            const entries = @as([*]DirEntry, @ptrCast(@alignCast(buf.ptr)))[0..entries_per_block];
+            for (entries) |*entry| {
+                if (entry.name_len > 0 and std.mem.eql(u8, entry.name[0..entry.name_len], name)) {
+                    const copy = entry.*;
+                    entry.name_len = 0;
+                    try fs.device.writeBlocks(fs.device.ctx, lba, buf);
+                    return copy;
+                }
             }
         }
 
