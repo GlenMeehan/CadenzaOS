@@ -61,4 +61,4 @@ Programs can now read the keyboard, and a number of filesystem and input bugs ar
 ## Thanks
 Thanks to @Haxxyyyy for the palette and `yield()` pull requests, their first contributions.
 
-**Full changelog:** https://github.com/GlenMeehan/CadenzaOS/compare/v0.4.7...v0.6.05.0
+**Full changelog:** https://github.com/GlenMeehan/CadenzaOS/compare/v0.4.7...v0.6.0
