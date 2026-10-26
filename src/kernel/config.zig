@@ -231,7 +231,7 @@ pub var kernel_allocator: std.mem.Allocator = undefined;
 /// Kernel semantic version information.
 pub const Version = struct {
     pub const major: u32 = 0;
-    pub const minor: u32 = 5;
+    pub const minor: u32 = 6;
     pub const patch: u32 = 0;
 };
 
