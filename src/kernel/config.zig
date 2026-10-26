@@ -36,12 +36,18 @@ pub const PARTITION_START_LBA: u64 = 4096;
 /// Raw staging area for the embedded prog1 image (read by installEmbeddedApps,
 /// written by build.sh). Must sit after the kernel image and before the partition.
 pub const APP_LBA_START: u64 = 3700;
-pub const APP_MAX_SECTORS: u64 = 48;
+pub const APP_MAX_SECTORS: u64 = 256;
 
 comptime {
     if (APP_LBA_START + APP_MAX_SECTORS > PARTITION_START_LBA)
         @compileError("app staging area overlaps the CodaFS partition");
 }
+
+/// Print one line to serial for every task switch. Off by default: the
+/// trace is written from the timer interrupt, so it can land in the middle
+/// of a program's own output and split lines (this broke the CI smoke test).
+/// Turn it on when debugging the scheduler.
+pub const debug_sched_trace = false;
 
 /// Logical block address of the filesystem superblock.
 ///
@@ -225,8 +231,8 @@ pub var kernel_allocator: std.mem.Allocator = undefined;
 /// Kernel semantic version information.
 pub const Version = struct {
     pub const major: u32 = 0;
-    pub const minor: u32 = 4;
-    pub const patch: u32 = 7;   //Update commentary shell.zig fro rows 1 - 1430, to be completed later
+    pub const minor: u32 = 6;
+    pub const patch: u32 = 0;
 };
 
 /// Build metadata generated at build time.

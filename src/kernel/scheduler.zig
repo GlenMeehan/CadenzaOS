@@ -16,6 +16,7 @@ const memory = @import("memory.zig");
 const vga = @import("vga.zig");
 const conv = @import("convert.zig");
 const serial = @import("drivers/serial.zig");
+const keyboard = @import("inputs/keyboard.zig");
 
 /// Physical scratch page used by the binary loader and task-launch
 /// infrastructure.
@@ -110,6 +111,69 @@ pub const Task = struct {
     /// Physical location of the loaded executable image.
     code_phys: usize = 0,
 };
+
+/// Resolve a task-supplied address range into a kernel-virtual slice.
+///
+/// The whole range [addr, addr + len) must lie inside memory owned by
+/// the task, otherwise null is returned. `len` must be non-zero; callers
+/// handle the empty case themselves.
+///
+/// Accepted forms, checked in this order:
+///   1. Physical address inside the loaded code image
+///   2. Higher-half virtual address inside the loaded code image
+///   3. Bare offset into the loaded code image (programs are linked at 0)
+///   4. Higher-half virtual address inside the task stack, below the
+///      reserved interrupt-context save area
+///
+/// Tasks with no loaded code image are kernel-created tasks. They keep
+/// the legacy behaviour (address treated as physical) because they are
+/// trusted and their pointers are not described by a code region.
+/// TODO: tighten this once kernel tasks stop using syscalls.
+pub fn resolveUserRange(task: *const Task, addr: usize, len: usize) ?[]u8 {
+    if (len == 0) return null;
+
+    // Reject ranges that wrap around the address space.
+    const end = std.math.add(usize, addr, len) catch return null;
+
+    if (task.code_mem) |code| {
+        if (task.code_phys != 0) {
+            if (addr >= task.code_phys and end <= task.code_phys + code.len) {
+                const off = addr - task.code_phys;
+                return code.ptr[off .. off + len];
+            }
+        }
+
+        const virt_base = @intFromPtr(code.ptr);
+
+        if (addr >= virt_base and end <= virt_base + code.len) {
+            const off = addr - virt_base;
+            return code.ptr[off .. off + len];
+        }
+
+        if (end <= code.len) {
+            return code.ptr[addr..end];
+        }
+    }
+
+    if (task.stack_mem) |stack| {
+        const base = @intFromPtr(stack.ptr);
+        const save_area =
+            (base + stack.len - @sizeOf(InterruptContext))
+            & ~@as(usize, 15);
+
+        if (addr >= base and end <= save_area) {
+            const off = addr - base;
+            return stack.ptr[off .. off + len];
+        }
+    }
+
+    if (task.code_mem == null) {
+        const virt = memory.physToVirt(addr);
+        return @as([*]u8, @ptrFromInt(virt))[0..len];
+    }
+
+    return null;
+}
 
 pub const Scheduler = struct {
 
@@ -374,6 +438,19 @@ pub const Scheduler = struct {
         return null;
     }
 
+    /// Report whether the task with the given id still exists and has
+    /// not terminated.
+    ///
+    /// Dead tasks count as not alive even before the cleanup pass in
+    /// preempt_handler has released their slot.
+    pub fn isAlive(self: *Scheduler, id: usize) bool {
+        if (self.findTaskById(id)) |t| {
+            return t.state != .Dead;
+        }
+
+        return false;
+    }
+
     /// Select the next task to execute.
     ///
     /// The scheduler uses a simple round-robin policy, cycling through
@@ -542,6 +619,9 @@ pub const Scheduler = struct {
         manager.tasks[next_idx].?.state = .Running;
 
         // Scheduler trace output for task-switch debugging.
+        // it writes to the serial stream from the timer interrupt, which can
+        // land in the middle of a program's own output.
+        if (config.debug_sched_trace) {
         var dbuf: [16]u8 = undefined;
         var dbuf2: [16]u8 = undefined;
         var dbuf3: [16]u8 = undefined;
@@ -562,7 +642,7 @@ pub const Scheduler = struct {
         ) catch "SW: fmt error\n";
 
         serial.writeString(msg);
-
+        }
         // Return the saved context of the task that should resume.
         return manager.tasks[next_idx].?.stack_ptr;
     }
@@ -616,63 +696,26 @@ pub const Scheduler = struct {
             // Outputs a string to the kernel display subsystem.
             //
             1 => {
-                const phys_ptr = blk: {
-                    if (manager.tasks[manager.current_task_idx]) |t| {
+                const len: usize = ctx.rsi;
 
-                        // If the pointer already references the task's
-                        // loaded code region, use it directly.
-                        if (t.code_phys != 0) {
-                            const code_end =
-                            t.code_phys + (2 * bm.PAGE_SIZE);
+                // Nothing to print for an empty buffer.
+                if (len == 0) return stack_ptr;
 
-                            if (ctx.rdi >= t.code_phys and
-                                ctx.rdi < code_end)
-                            {
-                                break :blk ctx.rdi;
-                            }
-                        }
-
-                        // Validate pointers that reference task-stack
-                        // memory through the higher-half mapping.
-                        if (t.stack_mem) |stack_slice| {
-                            const kernel_offset: u64 =
-                            0xFFFFFF8000000000;
-
-                            if (ctx.rdi >= kernel_offset) {
-                                const stack_phys =
-                                memory.virtToPhys(
-                                    @intFromPtr(stack_slice.ptr)
-                                );
-
-                                const stack_end =
-                                stack_phys + stack_slice.len;
-
-                                const rdi_phys =
-                                memory.virtToPhys(ctx.rdi);
-
-                                if (rdi_phys >= stack_phys and
-                                    rdi_phys < stack_end)
-                                {
-                                    break :blk rdi_phys;
-                                }
-                            }
-                        }
-
-                        // Fallback interpretation:
-                        // treat the caller value as an offset into the
-                        // loaded code image.
-                        if (t.code_phys != 0) {
-                            break :blk t.code_phys + ctx.rdi;
+                // Bounds-check the whole range [rdi, rdi + len) against
+                // the calling task's own memory. A bad range is dropped
+                // and nothing is printed. rax is deliberately left
+                // untouched: the user-side wrapper does not declare it
+                // as an output, so changing it would corrupt the caller.
+                const buf: []u8 = blk: {
+                    if (manager.tasks[manager.current_task_idx]) |*t| {
+                        if (resolveUserRange(t, ctx.rdi, len)) |b| {
+                            break :blk b;
                         }
                     }
 
-                    break :blk ctx.rdi;
+                    serial.writeString("SYS1: rejected bad buffer\n");
+                    return stack_ptr;
                 };
-
-                const virt_ptr = memory.physToVirt(phys_ptr);
-                const ptr: [*]const u8 = @ptrFromInt(virt_ptr);
-
-                const len: usize = ctx.rsi;
 
                 const colour: u8 =
                 if (ctx.rdx == 0)
@@ -683,7 +726,7 @@ pub const Scheduler = struct {
                 const fg: u8 = colour & 0x0F;
                 const bg: u8 = (colour >> 4) & 0x0F;
 
-                vga.writeString(ptr[0..len], fg, bg);
+                vga.writeString(buf, fg, bg);
 
                 return stack_ptr;
             },
@@ -799,6 +842,68 @@ pub const Scheduler = struct {
                 }
 
                 return stack_ptr;
+            },
+
+            // -----------------------------------------------------------------
+            //  SYSCALL 6 - READ
+            // -----------------------------------------------------------------
+            //
+            // Non-blocking read from the keyboard queue.
+            //
+            // Parameters:
+            //   rdi = destination buffer address
+            //   rsi = buffer capacity in bytes
+            //
+            // Returns:
+            //   rax = number of bytes stored (0 if no input is waiting),
+            //         or 0xFFFFFFFFFFFFFFFF if the buffer is not valid
+            //
+            // A program that wants to wait for input loops on read and
+            // yield (syscall 7). Blocking inside an interrupt gate would
+            // need wait queues, which the scheduler does not have yet.
+            //
+            6 => {
+                const len: usize = ctx.rsi;
+
+                if (len == 0) {
+                    ctx.rax = 0;
+                    return stack_ptr;
+                }
+
+                const buf: []u8 = blk: {
+                    if (manager.tasks[manager.current_task_idx]) |*t| {
+                        if (resolveUserRange(t, ctx.rdi, len)) |b| {
+                            break :blk b;
+                        }
+                    }
+
+                    ctx.rax = std.math.maxInt(u64);
+                    return stack_ptr;
+                };
+
+                var n: usize = 0;
+
+                while (n < buf.len) {
+                    const ch = keyboard.readChar() orelse break;
+                    buf[n] = ch;
+                    n += 1;
+                }
+
+                ctx.rax = @as(u64, n);
+
+                return stack_ptr;
+            },
+
+            // -----------------------------------------------------------------
+            //  SYSCALL 7 - YIELD
+            // -----------------------------------------------------------------
+            //
+            // Give up the rest of the time slice. This is exactly what a
+            // timer tick does, so the task's context is saved and the next
+            // runnable task is chosen by preempt_handler.
+            //
+            7 => {
+                return Scheduler.preempt_handler(stack_ptr);
             },
 
             // Unknown syscall.

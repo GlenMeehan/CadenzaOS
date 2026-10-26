@@ -866,29 +866,6 @@ pub export fn kmain() noreturn {
 
     // vga.writeString("\n🔍 Verifying prog1.bin read...", 10, 6);
 
-    // Allocate a test buffer large enough to hold the file.
-    const test_buf = allocator.alloc(u8, 4236) catch |err| {
-        @panic(@errorName(err));
-    };
-    defer allocator.free(test_buf);
-
-    // Read a known embedded application from the filesystem.
-    const bytes_read = fs_global.readFile(allocator, "/prog1", test_buf) catch |err| {
-        vga.writeString("\n❌ Read failed: ", 12, 7);
-        vga.writeString(@errorName(err), 12, 7);
-        @panic(@errorName(err));
-    };
-
-    // The successful read is currently used only as a validation check.
-    _ = bytes_read;
-
-    // vga.writeString("\n✅ Read successful!", 10, 8);
-
-    // Touch the buffer to make its use explicit during validation.
-    for (test_buf[0..4]) |_| {
-        // Intentionally empty.
-    }
-
     // pause();
 
     // Remove the startup splash screen and transition to normal UI.

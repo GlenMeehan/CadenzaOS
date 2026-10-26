@@ -1767,6 +1767,25 @@ fn cmd_policy(args: [][]const u8) void {
     }
 }
 
+/// Block the shell until the given task has terminated.
+///
+/// Interrupts are masked while the task state is checked, then "sti; hlt"
+/// re-enables them and halts in one step. The instruction after sti runs
+/// before any pending interrupt is taken, so a wakeup cannot slip in
+/// between the check and the halt.
+fn waitForForegroundTask(id: usize) void {
+    while (true) {
+        asm volatile ("cli");
+
+        if (!scheduler.manager.isAlive(id)) {
+            asm volatile ("sti");
+            return;
+        }
+
+        asm volatile ("sti; hlt");
+    }
+}
+
 /// Spawn either a built-in task or a program loaded from the filesystem.
 fn cmd_spawn(args: [][]const u8) void {
     serial.writeString("SPAWN-0: cmd_spawn entered\n");
@@ -1954,7 +1973,7 @@ fn cmd_spawn(args: [][]const u8) void {
             "SPAWN-F: calling registerDynamicTask\n",
         );
 
-        _ = scheduler.manager.registerDynamicTask(
+        const slot = scheduler.manager.registerDynamicTask(
             entry_fn,
             code_mem_slice,
             frame1,
@@ -1985,7 +2004,15 @@ fn cmd_spawn(args: [][]const u8) void {
         vga.writeString(task_name, 10, 0);
         vga.writeString("\n", 10, 0);
 
+        // Remember the id while interrupts are still masked.
+        const task_id = scheduler.manager.tasks[slot].?.id;
+
         asm volatile ("sti");
+
+        // Run the program in the foreground: the shell does not read the
+        // keyboard or print a prompt until the program has exited, so the
+        // program receives every keystroke through the read syscall.
+        waitForForegroundTask(task_id);
         return;
 
     } else |find_err| {

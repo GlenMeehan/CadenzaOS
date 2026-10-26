@@ -33,7 +33,7 @@ Everything still runs in ring 0 with no memory protection.
 3. Process isolation
  Per-process page tables — each process gets its own address space
  Ring 3 user mode — stop running everything at ring 0
- Minimal syscall gate (int 0x80 or syscall/sysret) with a small, deliberate surface. Currently implemented (ring 0): exit, print string, print char, scratch byte get/set/increment. Still to add: read (keyboard input), yield, and validation of every pointer a program passes in
+ Minimal syscall gate (int 0x80 or syscall/sysret) with a small, deliberate surface. Currently implemented (ring 0): exit, print string, print char, scratch byte get/set/increment, non-blocking read (keyboard input) and yield. Every pointer a program passes in (print string, read) is bounds-checked against the task's own memory. Still to add: a blocking read (needs wait queues) and per-task keyboard ownership
  Fault isolation — a crashing user process should not take down the kernel
  Detect stack overflow with guard pages or canaries, instead of silent corruption
 4. Predictive shell + filesystem telemetry

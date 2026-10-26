@@ -17,3 +17,4 @@ qemu.log
 *.lst
 *.kate-swp
 smoke-serial.log
+src/kernel/version.zig
