@@ -31,7 +31,8 @@ only demonstrates this is not treated as a vulnerability.
 ## Reporting a vulnerability
 
 Please report privately, not in a public issue or pull request: open the
-**Security** tab of this repository and choose **Report a vulnerability**.
+**Security and quality** tab of this repository, go to **Advisories**, and
+choose **Report a vulnerability**.
 
 Include the version or commit, how you ran it (QEMU or real hardware), the
 steps to reproduce, and what you think the impact is.
