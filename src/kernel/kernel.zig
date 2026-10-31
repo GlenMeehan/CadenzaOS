@@ -240,10 +240,17 @@ export fn kernel_entry() void {
 /// interrupt setup, storage discovery, filesystem mounting, and
 /// task-system startup.
 pub export fn kmain() noreturn {
+    asm volatile (
+        \\movw $0x3f8, %%dx
+        \\movb $0x58, %%al
+        \\outb %%al, %%dx
+        ::: .{ .rax = true, .rdx = true, .memory = true }
+    );
 
     // Initialise serial output first so all subsequent diagnostic
     // messages are available regardless of video state.
     serial.init();
+    serial.writeString("DBG-M1\n"); // DEBUG-MARKER
 
     const boot_info = boot_info_mod.get();
 
@@ -270,6 +277,7 @@ pub export fn kmain() noreturn {
         // Display the graphical startup splash screen.
         serial.writeString("CP2: splash.init done\n");
         splash.init();
+        serial.writeString("DBG-M2\n"); // DEBUG-MARKER
 
         // ---------------------------------------------------------------------
         //  FRAMEBUFFER DIAGNOSTICS (RETAINED FOR HARDWARE DEBUGGING)
@@ -354,9 +362,11 @@ pub export fn kmain() noreturn {
 
     // Initialise exception and interrupt infrastructure early.
     idt.init();
+    serial.writeString("DBG-M3\n"); // DEBUG-MARKER
 
     // Initialise the Task State Segment.
     tss.init();
+    serial.writeString("DBG-M4\n"); // DEBUG-MARKER
 
     splash.updateProgress(20, "Disk / File System Restore or Init...");
     splash.delay_crude(10_000_000);

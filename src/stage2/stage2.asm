@@ -32,7 +32,8 @@ KERNEL_LOAD_PHYS  equ 0x00100000      ; Physical load address: 1 MiB boundary
 
 EARLY_STACK_TOP   equ 0x70000         ; Temporary stack top before entering long mode
 KERNEL_STACK_TOP  equ 0xC0000         ; Dedicated Kernel stack physical boundary
-KERNEL_PHYS_ENTRY equ KERNEL_LOAD_PHYS + (KERNEL_ENTRY - KERNEL_OFFSET)
+;KERNEL_PHYS_ENTRY equ KERNEL_LOAD_PHYS + (KERNEL_ENTRY - KERNEL_OFFSET)
+;KERNEL_PHYS_ENTRY equ (KERNEL_ENTRY - KERNEL_OFFSET)   ; 0x15EC70
 
 ; Page Table Locations (4 KiB aligned per table)
 PML4_ADDR         equ 0x1000          ; Page Map Level 4 Table Base
@@ -374,14 +375,47 @@ start2:
 
     ; Enable A20 Address Line via Fast A20 Gate (System Control Port A)
     in  al, 0x92
-    or  al, 2
+    or  al, 0x02
+    and al, 0xFE
     out 0x92, al
+
+    ; A20 test: low alias 0x0000:0x0700, high alias 0xFFFF:0x0710 (phys 0x100700)
+    push ds
+    push es
+    xor ax, ax
+    mov ds, ax
+    mov ax, 0xFFFF
+    mov es, ax
+
+    mov bl, [0x0700]              ; save low byte
+    mov bh, [es:0x0710]           ; save high-alias byte
+
+    mov byte [0x0700], 0x00
+    mov byte [es:0x0710], 0xFF
+    cmp byte [0x0700], 0xFF       ; equal = wraparound = A20 OFF
+    je .a20_off
+    mov cl, 'O'                   ; A20 on
+    jmp .a20_restore
+.a20_off:
+    mov cl, 'A'                   ; A20 off
+.a20_restore:
+    mov [es:0x0710], bh           ; restore high alias first
+    mov [0x0700], bl              ; restore low last, so it wins if aliased
+
+    pop es
+    pop ds
+
+    mov al, cl
+    call serial_putchar16         ; same routine as the S/A/1/3 markers
+
+
 
     ; Copy GDT to fixed target location (0x0500)
     mov si, gdt_start
     mov di, gdt_base
     mov cx, gdt_end - gdt_start
     rep movsb
+
 
     ; Build GDTR frame directly on current stack frame
     push dword 0x0500                 ; GDT Base Pointer Address
@@ -571,13 +605,8 @@ pm_entry:
     mov [edi + 0 * 8], eax
     mov dword [edi + 0 * 8 + 4], 0
 
-    ; Kernel High-Half Mapping: PML4[510] -> PDPT_KERNEL_ADDR
+    ; Kernel High-Half: KERNEL_OFFSET (0xFFFFFF8000000000) is PML4 index 511
     mov eax, PDPT_KERNEL_ADDR | 0x03
-    mov [edi + 510 * 8], eax
-    mov dword [edi + 510 * 8 + 4], 0
-
-    ; Recursive/Higher Reference Link: PML4[511] -> PDPT_ADDR
-    mov eax, PDPT_ADDR | 0x03
     mov [edi + 511 * 8], eax
     mov dword [edi + 511 * 8 + 4], 0
 
@@ -732,6 +761,7 @@ long_mode_entry:
     mov al, 'T'
     call serial_putchar64
 
+
     ; Establish System V ABI Aligned Stack Frame (16-byte boundary)
     mov rax, 0xFFFFFF8000080000
     and rax, -16
@@ -757,9 +787,111 @@ long_mode_entry:
     ; Pass pointer to Boot Info Structure as 1st Argument (RDI) via System V ABI
     mov rdi, BOOT_INFO_ADDR
 
+    mov eax, [0x100000]
+    cmp eax, 0xe5894855
+    jne .bad
+    mov al, 'Y'
+    jmp .out
+.bad:
+    mov al, 'N'
+.out:
+    call serial_putchar64
+
     mov al, 'K'
     call serial_putchar64
+
+    ; ------------------------------------------------------------------
+    ; Build a 64-bit IDT at 0x6000 (32 vectors x 16 bytes = 512 bytes)
+    ; Every vector points to fault_handler so any exception prints '!'
+    ; ------------------------------------------------------------------
+    lea rsi, [rel fault_handler]      ; 64-bit handler address
+    mov rdi, 0x6000                   ; IDT base
+    mov ecx, 32                       ; number of vectors
+
+.idt_fill:
+    mov rax, rsi
+    mov [rdi + 0], ax                 ; offset bits 15:0
+    mov word [rdi + 2], 0x18          ; code selector (64-bit code segment)
+    mov byte [rdi + 4], 0             ; IST = 0 (use current stack)
+    mov byte [rdi + 5], 0x8E          ; present, DPL 0, 64-bit interrupt gate
+    shr rax, 16
+    mov [rdi + 6], ax                 ; offset bits 31:16
+    shr rax, 16
+    mov [rdi + 8], eax                ; offset bits 63:32
+    mov dword [rdi + 12], 0           ; reserved
+    add rdi, 16                       ; next 16-byte entry
+    dec ecx
+    jnz .idt_fill
+
+    ; IDTR: 6 bytes in long mode (16-bit limit + 64-bit base)
+    mov word [0x6200], 32 * 16 - 1    ; limit = 511
+    mov qword [0x6202], 0x6000        ; base
+    lidt [0x6200]
+
+
+;halt_loop:
+    ;cli
+    ;hlt
+    ;jmp halt_loop
+
+    ; Zero kernel BSS before handing over control (QEMU zeroes RAM; hardware does not)
+    mov edi, BSS_PHYS
+    mov ecx, BSS_SIZE_DWORDS
+    xor eax, eax
+    rep stosd
+
 
     ; Transfer Execution Control to Kernel Entry Point
     mov rax, KERNEL_ENTRY
     jmp rax
+
+; ------------------------------------------------------------------
+; Print RDI as 16 hex digits over serial. Preserves RDI.
+; ------------------------------------------------------------------
+print_hex64:
+    mov ecx, 16
+.nibble:
+    rol rdi, 4                        ; bring the top nibble into the low bits
+    mov al, dil
+    and al, 0x0F
+    cmp al, 10
+    jb  .digit
+    add al, 'A' - 10
+    jmp .emit
+.digit:
+    add al, '0'
+.emit:
+    call serial_putchar64
+    dec ecx
+    jnz .nibble
+    ret
+
+; ------------------------------------------------------------------
+; Exception handler: prints '!', vector, [rsp], [rsp+8], and CR2
+; ------------------------------------------------------------------
+fault_handler:
+    mov al, '!'
+    call serial_putchar64
+
+    movzx rdi, byte [0x6300]          ; vector number, written by the stub
+    call print_hex64
+    mov al, ' '
+    call serial_putchar64
+
+    mov rdi, [rsp]                    ; error code, or RIP if the vector has none
+    call print_hex64
+    mov al, ' '
+    call serial_putchar64
+
+    mov rdi, [rsp + 8]                ; RIP, or CS if the vector has no error code
+    call print_hex64
+    mov al, ' '
+    call serial_putchar64
+
+    mov rdi, cr2                      ; faulting linear address (page faults only)
+    call print_hex64
+
+.halt:
+    cli
+    hlt
+    jmp .halt

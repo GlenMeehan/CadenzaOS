@@ -135,6 +135,13 @@ KERNEL_SIZE=$(stat -c %s "$BUILD/kernel.bin")
 KERNEL_SECTORS=$(( (KERNEL_SIZE + 511) / 512 ))
 echo "KERNEL_SECTORS equ $KERNEL_SECTORS" > "$BUILD/kernel_info.inc"
 echo "KERNEL_ENTRY equ $ENTRY_POINT" >> "$BUILD/kernel_info.inc"
+FIRST_LOAD=$(readelf -W -l "$BUILD/kernel.elf" | awk '/^ *LOAD/{print; exit}')
+LOAD_VIRT=$(echo "$FIRST_LOAD" | awk '{print $3}')
+LOAD_PHYS=$(echo "$FIRST_LOAD" | awk '{print $4}')
+ENTRY_PHYS=$(( ENTRY_POINT - LOAD_VIRT + LOAD_PHYS ))
+
+echo "KERNEL_LOAD_PHYS equ $LOAD_PHYS" >> "$BUILD/kernel_info.inc"
+printf 'KERNEL_PHYS_ENTRY equ 0x%x\n' "$ENTRY_PHYS" >> "$BUILD/kernel_info.inc"
 
 # The kernel starts at KERNEL_LBA and must not run into the app staging area,
 # which in turn sits below the CodaFS partition.

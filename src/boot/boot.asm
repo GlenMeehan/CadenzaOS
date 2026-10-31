@@ -67,7 +67,7 @@ start:
     ; --------------------------------------------------------------------------
     ; 4. Execution Transfer
     ; --------------------------------------------------------------------------
-    jmp 0x7E00      ; Transfer control to Stage 2 load location
+    jmp 0x0000:0x7E00      ; Transfer control to Stage 2 load location, far jump: sets CS:IP explicitly
 
 ; ------------------------------------------------------------------------------
 ; Error Handlers & Infinite Loop
