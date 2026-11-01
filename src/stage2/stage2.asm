@@ -379,6 +379,16 @@ start2:
     and al, 0xFE
     out 0x92, al
 
+.a20_settle:
+    loop .a20_settle
+
+    in  al, 0x92
+    test al, 0x02
+    jnz .a20_gate_ok
+    mov al, 'X'                   ; port 0x92 refused the A20 bit
+    call serial_putchar16
+.a20_gate_ok:
+
     ; A20 test: low alias 0x0000:0x0700, high alias 0xFFFF:0x0710 (phys 0x100700)
     push ds
     push es
@@ -407,8 +417,6 @@ start2:
 
     mov al, cl
     call serial_putchar16         ; same routine as the S/A/1/3 markers
-
-
 
     ; Copy GDT to fixed target location (0x0500)
     mov si, gdt_start

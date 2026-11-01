@@ -229,7 +229,19 @@ pub const std_options: std.Options = .{
 /// Performs minimal setup before transferring control to kmain().
 /// This function never returns.
 export fn kernel_entry() void {
+    asm volatile (
+        \\movw $0x3f8, %%dx
+        \\movb $0x45, %%al
+        \\outb %%al, %%dx
+        ::: .{ .rax = true, .rdx = true, .memory = true }
+    );
     vga.clearScreen(0, 0);
+    asm volatile (
+        \\movw $0x3f8, %%dx
+        \\movb $0x46, %%al
+        \\outb %%al, %%dx
+        ::: .{ .rax = true, .rdx = true, .memory = true }
+    );
     kmain();
     unreachable;
 }
