@@ -72,6 +72,8 @@ dap_lba_low:
     dd 16                             ; Start LBA (LBA 16 = Kernel start position)
 dap_lba_high:
     dd 0                              ; Upper 32 bits of LBA
+copy_dst:
+    dd 0x00100000       ; running destination for the kernel copy
 
 boot_drive:        db 0x80            ; Saved drive ID passed from Stage 1
 sectors_remaining: dw KERNEL_SECTORS  ; Track count of unread kernel sectors
@@ -120,6 +122,21 @@ serial_putchar16:
     pop dx
     ret
 
+check_kernel16:
+    push esi
+    push eax
+    mov esi, 0x00100000
+    a32 mov eax, [fs:esi]
+    cmp eax, 0xe5894855
+    mov al, 'Y'
+    je .pr
+    mov al, 'N'
+.pr:
+    call serial_putchar16
+    pop eax
+    pop esi
+    ret
+
 ; ==============================================================================
 ; REAL MODE ENTRY POINT
 ; ==============================================================================
@@ -131,7 +148,7 @@ start2:
     mov ah, 0x0E
     mov al, 'A'
     int 0x10                          ; VGA Video Output
-    mov al, 'A'
+    ;mov al, 'A'
     call serial_putchar16
 
     ; Save drive ID provided by Stage 1/BIOS
@@ -200,8 +217,17 @@ start2:
     mov [dap_sector_count], ax
 
     ; Keep bounce buffer constant at 0x10000 (0x1000:0x0000)
-    mov word [dap_buffer_seg], 0x1000
     mov word [dap_buffer_off], 0x0000
+    mov word [dap_buffer_seg], 0x1000
+
+
+    ; --- CRITICAL FIX: Zero the high LBA dword ---
+    mov byte  [kernel_dap + 1], 0
+    mov dword [dap_lba_high], 0
+    mov word  [dap_buffer_off], 0x0000
+    mov word  [dap_buffer_seg], 0x1000
+    mov word  [dap_sector_count], ax
+
 
     ; Extended Read via BIOS (INT 13h, AH=42h)
     lea si, [kernel_dap]
@@ -209,6 +235,9 @@ start2:
     mov ah, 0x42
     int 0x13
     jc .disk_read_failed
+    xor ax, ax
+    mov fs, ax                                ; BIOS may have left a non-zero FS base
+    mov edi, [copy_dst]               ; BIOS may have clobbered the upper half of EDI
 
     ; Copy chunk from low bounce buffer (0x10000) to High RAM via FS override
     movzx ecx, word [dap_sector_count]
@@ -226,8 +255,23 @@ start2:
     add esi, 4
     add edi, 4
     loop .copy_chunk
+    mov [copy_dst], edi
 
     pop ds                            ; Restore DS
+
+    mov esi, 0x00100000
+    a32 mov eax, [fs:esi]
+    cmp eax, 0xe5894855
+    jne .first_n
+    mov al, 'y'
+    jmp .first_out
+.first_n:
+    mov al, 'n'
+.first_out:
+    call serial_putchar16
+
+    mov al, '.'                       ; one dot per 16 KiB chunk
+    call serial_putchar16
 
     ; Update tracking metrics for next chunk iteration
     movzx eax, word [dap_sector_count]
@@ -263,7 +307,7 @@ start2:
     mov ah, 0x0E
     mov al, 'B'                       ; BSS zeroed status
     int 0x10
-
+    call check_kernel16
 ; ==============================================================================
 ; E820 MEMORY MAP DETECTION
 ; ==============================================================================
@@ -296,7 +340,7 @@ start2:
     mov ah, 0x0E
     mov al, 'M'                       ; Memory Map success status
     int 0x10
-
+    call check_kernel16
 ; ==============================================================================
 ; GRAPHICS INITIALIZATION (VESA VBE OR VGA TEXT)
 ; ==============================================================================
@@ -365,7 +409,7 @@ start2:
     mov al, 'G'                       ; VGA Selected
 %endif
     int 0x10
-
+call check_kernel16
 ; ==============================================================================
 ; PRE-PROTECTED MODE SETUP (A20 LINE & GDT INSTALL)
 ; ==============================================================================
@@ -417,6 +461,8 @@ start2:
 
     mov al, cl
     call serial_putchar16         ; same routine as the S/A/1/3 markers
+
+    call check_kernel16
 
     ; Copy GDT to fixed target location (0x0500)
     mov si, gdt_start
@@ -486,6 +532,7 @@ pm_entry:
     mov es, ax
     mov ss, ax
     mov esp, EARLY_STACK_TOP
+    call check_kernel32
 
 %if GRAPHICS_MODE_SEL == 0
     ; Print 'PM!' directly to Video Memory (0xB8000) in legacy VGA mode
@@ -725,6 +772,28 @@ print_far_ptr:
     hlt
     jmp .hang
 
+check_kernel32:
+    push eax
+    push edx
+    mov eax, [0x00100000]
+    cmp eax, 0xe5894855
+    mov al, 'P'                       ; mov does not change the flags
+    je .have_char
+    mov al, 'Q'
+.have_char:
+    mov ah, al                        ; keep the character safe while we poll
+    mov dx, 0x3FD                     ; line status register
+.wait_tx:
+    in  al, dx
+    test al, 0x20                     ; transmit holding register empty?
+    jz .wait_tx
+    mov al, ah
+    mov dx, 0x3F8
+    out dx, al
+    pop edx
+    pop eax
+    ret
+
 ; ==============================================================================
 ; LONG MODE EXECUTION ENVIRONMENT (64-BIT NATIVE)
 ; ==============================================================================
@@ -794,6 +863,14 @@ long_mode_entry:
 
     ; Pass pointer to Boot Info Structure as 1st Argument (RDI) via System V ABI
     mov rdi, BOOT_INFO_ADDR
+
+    ; Dump first 4 bytes at 0x100000 before validation
+    push rdi
+    mov rdi, [0x100000]
+    call print_hex64
+    mov al, '\n'
+    call serial_putchar64
+    pop rdi
 
     mov eax, [0x100000]
     cmp eax, 0xe5894855
