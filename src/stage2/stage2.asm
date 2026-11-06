@@ -208,6 +208,8 @@ start2:
     mov ah, 0x42
     int 0x13
     jc .disk_read_failed
+    xor ax, ax
+    mov fs, ax                        ; BIOS may leave a non-zero FS base after int 13h
 
     ; Copy chunk from low bounce buffer (0x10000) to High RAM via FS override
     movzx ecx, word [dap_sector_count]
@@ -247,20 +249,6 @@ start2:
 .disk_read_ok:
     mov ah, 0x0E
     mov al, 'R'                       ; Read OK status
-    int 0x10
-
-    ; Zero out Kernel BSS Region
-    mov edi, BSS_PHYS
-    mov ecx, BSS_SIZE_DWORDS
-    xor eax, eax
-
-.zero_bss_loop:
-    a32 mov [fs:edi], eax
-    add edi, 4
-    loop .zero_bss_loop
-
-    mov ah, 0x0E
-    mov al, 'B'                       ; BSS zeroed status
     int 0x10
 
 ; ==============================================================================
@@ -753,6 +741,14 @@ long_mode_entry:
     mov word [rdi + 0x12], 0x0F36     ; Print '6'
     mov word [rdi + 0x14], 0x0F34     ; Print '4'
 %endif
+
+    ; Zero kernel BSS (QEMU zeroes RAM; real hardware does not).
+    ; Done before RDI is loaded below, because rep stosd uses EDI.
+    cld
+    mov edi, BSS_PHYS
+    mov ecx, BSS_SIZE_DWORDS
+    xor eax, eax
+    rep stosd
 
     ; Pass pointer to Boot Info Structure as 1st Argument (RDI) via System V ABI
     mov rdi, BOOT_INFO_ADDR
