@@ -559,13 +559,8 @@ pm_entry:
     mov [edi + 0 * 8], eax
     mov dword [edi + 0 * 8 + 4], 0
 
-    ; Kernel High-Half Mapping: PML4[510] -> PDPT_KERNEL_ADDR
+    ; Kernel High-Half: KERNEL_OFFSET (0xFFFFFF8000000000) is PML4 index 511
     mov eax, PDPT_KERNEL_ADDR | 0x03
-    mov [edi + 510 * 8], eax
-    mov dword [edi + 510 * 8 + 4], 0
-
-    ; Recursive/Higher Reference Link: PML4[511] -> PDPT_ADDR
-    mov eax, PDPT_ADDR | 0x03
     mov [edi + 511 * 8], eax
     mov dword [edi + 511 * 8 + 4], 0
 
