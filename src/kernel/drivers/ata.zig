@@ -241,6 +241,7 @@ pub const AtaDevice = struct {
 /// `start_lba`       — first sector of the partition
 /// `size_in_sectors` — total sector count of the partition
 pub fn initializePartitionTable(start_lba: u32, size_in_sectors: u32) void {
+    dbgProbe();
     var buffer: [conf.BLOCK_SIZE]u8 align(8) = undefined;
 
     AtaDevice.readBlocks(null, 0, &buffer) catch {
@@ -320,4 +321,41 @@ fn wait_drq() DeviceError!void {
 fn io_delay() void {
     var i: u8 = 0;
     while (i < 4) : (i += 1) _ = port.inb(ATA_STATUS);
+}
+
+fn dbgSerial(c: u8) void {
+    while ((port.inb(0x3FD) & 0x20) == 0) {}
+    port.outb(0x3F8, c);
+}
+
+fn dbgStr(s: []const u8) void {
+    for (s) |c| dbgSerial(c);
+}
+
+fn dbgHex8(v: u8) void {
+    const digits = "0123456789ABCDEF";
+    dbgSerial(digits[v >> 4]);
+    dbgSerial(digits[v & 0x0F]);
+}
+
+/// Print the status register for primary/secondary, master/slave.
+fn dbgProbe() void {
+    const bases = [_]u16{ 0x1F0, 0x170 };
+    const sels = [_]u8{ 0xA0, 0xB0 };
+    dbgStr("ATAPROBE");
+    for (bases) |b| {
+        for (sels) |s| {
+            port.outb(b + 6, s);
+            _ = port.inb(b + 7);
+            _ = port.inb(b + 7);
+            _ = port.inb(b + 7);
+            _ = port.inb(b + 7);
+            dbgSerial(' ');
+            dbgHex8(@as(u8, @truncate(b >> 4)));
+            dbgSerial(if (s == 0xA0) 'M' else 'S');
+            dbgSerial('=');
+            dbgHex8(port.inb(b + 7));
+        }
+    }
+    dbgSerial('\n');
 }
