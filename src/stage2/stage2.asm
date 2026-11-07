@@ -362,7 +362,8 @@ start2:
 
     ; Enable A20 Address Line via Fast A20 Gate (System Control Port A)
     in  al, 0x92
-    or  al, 2
+    or  al, 0x02
+    and al, 0xFE                      ; never write bit 0: it is the fast-reset line
     out 0x92, al
 
     ; Copy GDT to fixed target location (0x0500)
