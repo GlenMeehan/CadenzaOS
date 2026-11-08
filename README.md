@@ -14,7 +14,6 @@ CadenzaOS is an early research project. Please read this before you try it.
 
 QEMU: boots to the shell. Every push is built from a clean checkout and booted headless in QEMU by CI, which checks that the shell prompt appears.
 Real hardware: it boots to the shell on one tested machine, a Dell OptiPlex 3020 (legacy BIOS, SATA controller set to ATA/IDE mode in the BIOS). AHCI mode and UEFI are not supported. Keyboard input is currently doubled on that machine. It has not been tested on any other hardware, so treat QEMU as the supported way to run CadenzaOS. See docs/REAL_HARDWARE.md for how to run it on a real machine.
-
 No memory protection: programs run in ring 0 in the kernel's address space. The behavioural-security features observe and flag, but they cannot yet contain a misbehaving program, and a buggy or hostile program can overwrite kernel memory. Privilege separation is Phase 8. <!-- TODO: check "observe and flag" matches what the Conductor and Composer actually do -->
 Small syscall surface: programs can exit, print text or a character, use a shared scratch page, read keyboard input without blocking, and yield the CPU. There is no file or process API yet.
 
