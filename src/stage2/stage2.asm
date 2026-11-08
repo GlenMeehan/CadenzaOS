@@ -208,6 +208,8 @@ start2:
     mov ah, 0x42
     int 0x13
     jc .disk_read_failed
+    xor ax, ax
+    mov fs, ax                        ; BIOS may leave a non-zero FS base after int 13h
 
     ; Copy chunk from low bounce buffer (0x10000) to High RAM via FS override
     movzx ecx, word [dap_sector_count]
@@ -247,20 +249,6 @@ start2:
 .disk_read_ok:
     mov ah, 0x0E
     mov al, 'R'                       ; Read OK status
-    int 0x10
-
-    ; Zero out Kernel BSS Region
-    mov edi, BSS_PHYS
-    mov ecx, BSS_SIZE_DWORDS
-    xor eax, eax
-
-.zero_bss_loop:
-    a32 mov [fs:edi], eax
-    add edi, 4
-    loop .zero_bss_loop
-
-    mov ah, 0x0E
-    mov al, 'B'                       ; BSS zeroed status
     int 0x10
 
 ; ==============================================================================
@@ -374,7 +362,8 @@ start2:
 
     ; Enable A20 Address Line via Fast A20 Gate (System Control Port A)
     in  al, 0x92
-    or  al, 2
+    or  al, 0x02
+    and al, 0xFE                      ; never write bit 0: it is the fast-reset line
     out 0x92, al
 
     ; Copy GDT to fixed target location (0x0500)
@@ -571,13 +560,8 @@ pm_entry:
     mov [edi + 0 * 8], eax
     mov dword [edi + 0 * 8 + 4], 0
 
-    ; Kernel High-Half Mapping: PML4[510] -> PDPT_KERNEL_ADDR
+    ; Kernel High-Half: KERNEL_OFFSET (0xFFFFFF8000000000) is PML4 index 511
     mov eax, PDPT_KERNEL_ADDR | 0x03
-    mov [edi + 510 * 8], eax
-    mov dword [edi + 510 * 8 + 4], 0
-
-    ; Recursive/Higher Reference Link: PML4[511] -> PDPT_ADDR
-    mov eax, PDPT_ADDR | 0x03
     mov [edi + 511 * 8], eax
     mov dword [edi + 511 * 8 + 4], 0
 
@@ -753,6 +737,14 @@ long_mode_entry:
     mov word [rdi + 0x12], 0x0F36     ; Print '6'
     mov word [rdi + 0x14], 0x0F34     ; Print '4'
 %endif
+
+    ; Zero kernel BSS (QEMU zeroes RAM; real hardware does not).
+    ; Done before RDI is loaded below, because rep stosd uses EDI.
+    cld
+    mov edi, BSS_PHYS
+    mov ecx, BSS_SIZE_DWORDS
+    xor eax, eax
+    rep stosd
 
     ; Pass pointer to Boot Info Structure as 1st Argument (RDI) via System V ABI
     mov rdi, BOOT_INFO_ADDR

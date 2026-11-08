@@ -228,10 +228,20 @@ echo "✅ Build & Update complete."
 # CI mode: stop here, don't launch QEMU (the smoke test does that)
 if [ "$1" == "ci" ]; then exit 0; fi
 
+# Optional: emulate a particular CPU, for example
+#   QEMU_CPU=Haswell ./build.sh
+# (the Dell OptiPlex 3020 has a 4th-generation Core, "Haswell", processor).
+# Left unset, QEMU uses its default CPU, the same one the CI smoke test uses.
+QEMU_CPU_ARGS=()
+if [ -n "${QEMU_CPU:-}" ]; then
+    QEMU_CPU_ARGS=(-cpu "$QEMU_CPU")
+fi
+
 # Launch QEMU automatically after build
 qemu-system-x86_64 \
       -drive format=raw,file=$IMG,cache=directsync,snapshot=off \
       -m 1024 -monitor stdio -no-reboot -no-shutdown -vga std \
+      ${QEMU_CPU_ARGS[@]+"${QEMU_CPU_ARGS[@]}"} \
       -d int,cpu_reset -D qemu.log \
       -serial file:serial.log
 

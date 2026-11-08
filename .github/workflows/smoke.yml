@@ -2,6 +2,9 @@ name: smoke
 
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
 jobs:
   boot:
     runs-on: ubuntu-24.04

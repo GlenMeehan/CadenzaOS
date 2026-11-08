@@ -78,34 +78,32 @@ fn markUsed(page_index: usize) void {
 /// converted into FREE bitmap entries, leaving reserved regions intact.
 pub fn init(regions: []const Region) void {
 
-    // 1. Count the total number of usable pages.
-    var total: usize = 0;
+    // Highest page index the fixed bitmap can represent.
+    const capacity_pages: usize = bitmap.len * 8;
 
-    for (regions) |r| {
-        total += r.length / PAGE_SIZE;
-    }
+    // One past the highest page index that ends up managed.
+    var managed_end: usize = 0;
 
-    total_pages = total;
-
-    // 2. Verify that the fixed bitmap is large enough to represent
-    //    all discovered pages.
-    const needed_bytes = computeBitmapSize(total_pages);
-
-    if (needed_bytes > bitmap.len) {
-        @panic("Bitmap storage too small for available memory");
-    }
-
-    // 3. Mark every page belonging to a usable memory region as free.
     for (regions) |r| {
         const start_page = r.base / PAGE_SIZE;
-        const page_count = r.length / PAGE_SIZE;
+        const full_end   = start_page + r.length / PAGE_SIZE;
 
-        var i: usize = 0;
+        // Memory beyond what the bitmap can describe is left unmanaged.
+        if (start_page >= capacity_pages) continue;
 
-        while (i < page_count) : (i += 1) {
-            markFree(start_page + i);
+        const end_page = @min(full_end, capacity_pages);
+
+        var page = start_page;
+        while (page < end_page) : (page += 1) {
+            markFree(page);
         }
+
+        if (end_page > managed_end) managed_end = end_page;
     }
+
+    // total_pages is the bound used by the allocation loops, which walk
+    // absolute page indexes, so it must be the highest managed index.
+    total_pages = managed_end;
 }
 
 // -----------------------------------------------------------------------------

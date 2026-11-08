@@ -574,13 +574,12 @@ pub export fn kmain() noreturn {
     //  PHYSICAL FRAME ALLOCATOR INITIALISATION
     // -------------------------------------------------------------------------
 
-    serial.writeString("CP3: bitmap init done\n");
-
     splash.updateProgress(50, "Mapping APIC hardware...");
 
     // Build the physical-frame bitmap using the usable memory regions
     // discovered from the E820 memory map.
     bm.init(regions);
+    serial.writeString("CP3: bitmap init done\n");
 
     const mem_mod = @import("memory.zig");
 
