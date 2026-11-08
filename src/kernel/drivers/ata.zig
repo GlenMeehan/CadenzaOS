@@ -23,20 +23,23 @@ const BlockDevice = @import("../fs/block_device.zig").BlockDevice;
 const conf = @import("../config.zig");
 const coda_fs = @import("../fs/coda_fs.zig");
 const conv = @import("../convert.zig");
+const pci    = @import("../pci.zig");
+const serial = @import("serial.zig");
 
 
 // --------------------------------
 // ATA register ports
 // --------------------------------
 
-const ATA_DATA         = 0x1F0;  // 16-bit data register
-const ATA_SECTOR_COUNT = 0x1F2;
-const ATA_LBA_LOW      = 0x1F3;
-const ATA_LBA_MID      = 0x1F4;
-const ATA_LBA_HIGH     = 0x1F5;
-const ATA_DRIVE_SELECT = 0x1F6;
-const ATA_COMMAND      = 0x1F7;  // Write: command register
-const ATA_STATUS       = 0x1F7;  // Read:  status register
+var ATA_DATA:         u16 = 0x1F0;  // 16-bit data register
+var ATA_SECTOR_COUNT: u16 = 0x1F2;
+var ATA_LBA_LOW:      u16 = 0x1F3;
+var ATA_LBA_MID:      u16 = 0x1F4;
+var ATA_LBA_HIGH:     u16 = 0x1F5;
+var ATA_DRIVE_SELECT: u16 = 0x1F6;
+var ATA_COMMAND:      u16 = 0x1F7;  // Write: command register
+var ATA_STATUS:       u16 = 0x1F7;  // Read:  status register
+var ATA_CONTROL:      u16 = 0x3F6;  // Device control / alternate status
 
 // --------------------------------
 // ATA commands
@@ -110,6 +113,7 @@ pub const AtaDevice = struct {
     /// to avoid ATA sector-count overflow.
     pub fn readBlocks(ctx: ?*anyopaque, lba: u64, buf: []u8) DeviceError!void {
         _ = ctx;
+        ensureInit();
 
         var sectors_remaining = (buf.len + conf.BLOCK_SIZE - 1) / conf.BLOCK_SIZE;
         var current_lba       = lba;
@@ -161,13 +165,14 @@ pub const AtaDevice = struct {
     /// sector to ensure data reaches persistent media.
     pub fn writeBlocks(ctx: ?*anyopaque, lba: u64, buf: []const u8) DeviceError!void {
         _ = ctx;
+        ensureInit();
 
         const total_sectors = @as(u32, @intCast((buf.len + conf.BLOCK_SIZE - 1) / conf.BLOCK_SIZE));
         if (total_sectors == 0) return;
 
         // Disable device interrupts via the control register.
         // This driver uses polling exclusively.
-        port.outb(0x3F6, 0x02);
+        port.outb(ATA_CONTROL, 0x02);
 
         var current_sector: u32 = 0;
         while (current_sector < total_sectors) : (current_sector += 1) {
@@ -291,13 +296,53 @@ pub fn formatMyFileSystem(lba: u32) void {
 // Private helpers
 // ----------------------------------------------------------------
 
+var ata_ready: bool = false;
+
+/// Locate the IDE controller once. A controller in PCI native mode
+/// (prog-if bit 0 set) takes its ports from BAR0/BAR1; otherwise the
+/// legacy ports above are kept, as on QEMU.
+fn ensureInit() void {
+    if (ata_ready) return;
+    ata_ready = true;
+
+    if (pci.findIde()) |ide| {
+        if ((ide.prog_if & 0x01) != 0) {
+            const cmd: u16 = @truncate(ide.bar0 & 0xFFFC);
+            const ctl: u16 = @truncate(ide.bar1 & 0xFFFC);
+            if (cmd != 0) {
+                ATA_DATA         = cmd;
+                ATA_SECTOR_COUNT = cmd + 2;
+                ATA_LBA_LOW      = cmd + 3;
+                ATA_LBA_MID      = cmd + 4;
+                ATA_LBA_HIGH     = cmd + 5;
+                ATA_DRIVE_SELECT = cmd + 6;
+                ATA_COMMAND      = cmd + 7;
+                ATA_STATUS       = cmd + 7;
+                ATA_CONTROL      = ctl + 2;
+            }
+        }
+    }
+
+    var b1: [18]u8 = undefined;
+    var b2: [18]u8 = undefined;
+    serial.writeString("ATA cmd=");
+    serial.writeString(conv.toHex(u64, ATA_DATA, &b1));
+    serial.writeString(" ctl=");
+
+    serial.writeString(conv.toHex(u64, ATA_CONTROL, &b2));
+    serial.writeString("\n");
+}
+
 /// Busy-poll until the drive clears the BSY bit.
 ///
 /// Returns IoError if the timeout expires before the device becomes ready.
 fn wait_bsy() DeviceError!void {
     var timeout: u32 = 10_000_000;
 
-    while ((port.inb(ATA_STATUS) & STATUS_BSY) != 0) {
+    while (true) {
+        const s = port.inb(ATA_STATUS);
+        if (s == 0xFF) return DeviceError.IoError; // nothing on the bus
+        if ((s & STATUS_BSY) == 0) return;
         timeout -= 1;
         if (timeout == 0) return DeviceError.IoError;
     }
