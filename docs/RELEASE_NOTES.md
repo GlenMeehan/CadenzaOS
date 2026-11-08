@@ -1,3 +1,4 @@
+glen@fedora:~/cadenza$ sed -n 1,70p docs/RELEASE_NOTES.md
 # CadenzaOS 0.6.0
 
 Programs can now read the keyboard, and a number of filesystem and input bugs are fixed.
