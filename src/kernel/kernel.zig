@@ -703,6 +703,8 @@ pub export fn kmain() noreturn {
     apic.initLapicTimer(0x20);
     apic.initIoApicKeyboard();
     apic.initIoApicMouse();
+    @import("port_io.zig").outb(0x21, 0xFF); // mask all master PIC lines
+    @import("port_io.zig").outb(0xA1, 0xFF); // mask all slave PIC lines
 
     // Route interrupt acknowledgements through the APIC subsystem
     // once initialisation has completed successfully.

@@ -113,7 +113,21 @@ pub export fn irq0_handler() callconv(.c) void {
 pub export fn irq1_handler() callconv(.c) void {
 
     // Read the scancode from the PS/2 data port.
+    const status = io.inb(0x64);
     const scancode = io.inb(0x60);
+    const hex = "0123456789ABCDEF";
+    const ser = @import("drivers/serial.zig");
+    ser.writeString("ST=");
+    ser.putChar(hex[status >> 4]);
+    ser.putChar(hex[status & 0x0F]);
+    ser.writeString(" SC=");
+    ser.putChar(hex[scancode >> 4]);
+    ser.putChar(hex[scancode & 0x0F]);
+    ser.putChar(' ');
+    @import("drivers/serial.zig").writeString("SC=");
+    @import("drivers/serial.zig").putChar("0123456789ABCDEF"[scancode >> 4]);
+    @import("drivers/serial.zig").putChar("0123456789ABCDEF"[scancode & 0x0F]);
+    @import("drivers/serial.zig").putChar(' ');
 
     // Delegate scancode processing to the keyboard driver.
     keyboard.handleScancode(scancode);
