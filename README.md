@@ -13,7 +13,7 @@ The kernel observes, models, and acts on user and program behaviour in real time
 CadenzaOS is an early research project. Please read this before you try it.
 
 QEMU: boots to the shell. Every push is built from a clean checkout and booted headless in QEMU by CI, which checks that the shell prompt appears.
-Real hardware: it boots to the shell on one tested machine, a Dell OptiPlex 3020 (legacy BIOS, SATA controller set to ATA/IDE mode in the BIOS). AHCI mode and UEFI are not supported. Keyboard input is currently doubled on that machine. It has not been tested on any other hardware, so treat QEMU as the supported way to run CadenzaOS. See docs/REAL_HARDWARE.md for how to run it on a real machine.
+Real hardware: it boots to the shell on one tested machine, a Dell OptiPlex 3020 (legacy BIOS, SATA controller set to ATA/IDE mode in the BIOS). AHCI mode and UEFI are not supported. The Dell's keyboard is a USB keyboard; the kernel ignores the spurious second keyboard interrupt that machine raises. The uptime counter runs slowly on that machine. It has not been tested on any other hardware, so treat QEMU as the supported way to run CadenzaOS. See docs/REAL_HARDWARE.md for how to run it on a real machine.
 No memory protection: programs run in ring 0 in the kernel's address space. The behavioural-security features observe and flag, but they cannot yet contain a misbehaving program, and a buggy or hostile program can overwrite kernel memory. Privilege separation is Phase 8. <!-- TODO: check "observe and flag" matches what the Conductor and Composer actually do -->
 Small syscall surface: programs can exit, print text or a character, use a shared scratch page, read keyboard input without blocking, and yield the CPU. There is no file or process API yet.
 
@@ -42,7 +42,7 @@ Modern Local APIC (LAPIC) and I/O APIC interrupt pipeline with 8259 PIC runtime 
 Dedicated interrupt stack (TSS / IST) for timer, keyboard and mouse interrupts
 ATA PIO disk driver (read/write, LBA28), which finds a native-mode IDE controller through PCI and otherwise uses the legacy ports
 PS/2 Keyboard and PS/2 Mouse packet drivers with scan code translation and packet parsing
-VGA text mode driver (80×25) and VESA framebuffer driver (800×600×24bpp)
+VGA text mode driver (80×25) and VESA framebuffer driver (1024×768×32bpp)
 Serial port output (COM1, 38400 baud) mirrored alongside VGA/framebuffer
 Physical frame allocator (frame_allocator.zig) and page manager (page_allocator.zig) with explicit reserved ranges for all kernel structures
 Filesystem — CodaFS
@@ -118,7 +118,13 @@ bash
 tail -f serial.log
 Programs
 
-Programs live in userland/. ./build.sh builds the prog1 demo from userland/prog1/ and stages it on the disk image, and the kernel installs it into CodaFS on the first boot of a fresh image. Run it from the shell:
+Programs live in userland/, one directory per program (`<name>.zig` plus `linker.ld`). ./build.sh builds every one, packs them into a single bundle, and stages it on the disk image. The kernel installs each into CodaFS on the first boot of a fresh image. The demo programs are:
+
+prog1: prints its arguments and uses the scratch page
+hello: a minimal example
+kbecho: reads the keyboard with the read and yield syscalls
+
+Run one from the shell:
 
 spawn prog1 hello world
 
@@ -126,128 +132,23 @@ For the program format (header layout, entry point, argument convention) see src
 
 🏗 Project structure
 CadenzaOS/
-├── build
-│   ├── apps
-│   │   ├── prog1.bin
-│   │   └── prog1.elf
-│   ├── arch_util.o
-│   ├── boot.bin
-│   ├── disk.img
-│   ├── irq_stubs.o
-│   ├── iso_root
-│   │   └── disk.img
-│   ├── kernel.bin
-│   ├── kernel.elf
-│   ├── kernel_info.inc
-│   ├── kernel.o
-│   ├── os.iso
-│   ├── stage2.bin
-│   └── version.zig
-├── build.sh
-├── CODE_OF_CONDUCT.md
-├── CONTRIBUTING.md
-├── DEPENDENCIES.md
-├── docs
-│   ├── availableinstd.odt
-│   ├── bitmapsteps.odt
-│   ├── FSDeignPrinciples.odt
-│   ├── LAYOUT.md
-│   └── nextsteps.odt
-├── .gitignore
-├── GOVERNANCE.md
-├── kernel.o
-├── LICENSE
-├── linker.ld
-├── NOTICE
-├── PRINCIPLES.md
-├── qemu.log
-├── ram_dump.bin
-├── README.md
-├── ROADMAP.md
-├── screenshot.png
-├── screenshot_real.png
-├── serial.log
-├── smoke-serial.log
-├── src
-│   ├── boot
-│   │   └── boot.asm
-│   ├── kernel
-│   │   ├── apic.zig
-│   │   ├── arch_utils.s
-│   │   ├── assets
-│   │   │   └── Splash.rgb
-│   │   ├── binfmt.zig
-│   │   ├── bitmap.zig
-│   │   ├── boot_info.zig
-│   │   ├── conductor.zig
-│   │   ├── config.zig
-│   │   ├── console.zig
-│   │   ├── convert.zig
-│   │   ├── debug.zig
-│   │   ├── drivers
-│   │   │   ├── ata.zig
-│   │   │   ├── mouse.zig
-│   │   │   └── serial.zig
-│   │   ├── E820Store.zig
-│   │   ├── e820_test.zig
-│   │   ├── E820.zig
-│   │   ├── font8x16.bin
-│   │   ├── font.zig
-│   │   ├── frame_allocator.zig
-│   │   ├── framebuffer.zig
-│   │   ├── fs
-│   │   │   ├── ata_block_device.zig
-│   │   │   ├── binary_loader.zig
-│   │   │   ├── block_device.zig
-│   │   │   ├── coda_file.zig
-│   │   │   ├── coda_fs.zig
-│   │   │   ├── coda_sm.zig
-│   │   │   └── ramdisk.zig
-│   │   ├── .gitignore
-│   │   ├── globals.zig
-│   │   ├── idt.zig
-│   │   ├── inputs
-│   │   │   ├── keyboard.zig
-│   │   │   └── key_event.zig
-│   │   ├── interrupts
-│   │   │   └── irq_stubs.asm
-│   │   ├── irupts.zig
-│   │   ├── kernel.zig
-│   │   ├── logo.zig
-│   │   ├── memory.zig
-│   │   ├── page_allocator.zig
-│   │   ├── panic.zig
-│   │   ├── pic.zig
-│   │   ├── port_io.zig
-│   │   ├── scheduler.zig
-│   │   ├── security.zig
-│   │   ├── shell.zig
-│   │   ├── splash.zig
-│   │   ├── syscall.zig
-│   │   ├── system.zig
-│   │   ├── task.zig
-│   │   ├── terminal.zig
-│   │   ├── tests.zig
-│   │   ├── tss.zig
-│   │   ├── ui
-│   │   │   └── prompt.zig
-│   │   ├── version.zig
-│   │   ├── vga.zig
-│   │   └── vitals.zig
-│   └── stage2
-│       └── stage2.asm
-├── stage2.bin
-├── stage2.dis
-├── stage2.disasm
-├── stage2_from_img.bin
-├── stage2.lst
-├── tests
-│   └── smoke.sh
-├── userland
-│   └── prog1
-│       ├── linker.ld
-│       └── prog1.zig
-<!-- TODO: check this tree against `git ls-files` for anything missing -->
+├── build.sh              build script (./build.sh, ./build.sh ci, ./build.sh run)
+├── linker.ld             kernel linker script
+├── src/
+│   ├── boot/boot.asm     stage 1 bootloader (MBR)
+│   ├── stage2/stage2.asm stage 2: E820, VBE, long mode, loads the kernel
+│   └── kernel/           the kernel (Zig)
+│       ├── drivers/      ata.zig, mouse.zig, serial.zig
+│       ├── fs/           CodaFS, block devices, binary loader
+│       ├── inputs/       keyboard handling
+│       ├── ui/           prompt
+│       └── ...           memory, scheduler, shell, syscalls, PCI, APIC and more
+├── userland/             demo programs: prog1, hello, kbecho
+├── tools/pack.sh         packs the programs into the disk bundle
+├── tests/smoke.sh        headless QEMU smoke test used by CI
+├── docs/                 LAYOUT.md, REAL_HARDWARE.md, RELEASE_NOTES.md and design notes
+└── *.md                  README, ROADMAP, CONTRIBUTING, SECURITY, GOVERNANCE, PRINCIPLES
+
 🗺 Roadmap
 
 Detailed OS-level planning lives in ROADMAP.md. The phases below are the overview.
@@ -272,7 +173,7 @@ Command-line arguments for programs
 Syscall interface (int $0x80) for kernel services
 Clean task exit and physical frame reclamation
 ✅ Phase 5 — Display & Modern Interrupts
-VESA framebuffer driver (800×600×24bpp) with bitmap font renderer
+VESA framebuffer driver (1024×768×32bpp) with bitmap font renderer
 Migration to Local APIC and I/O APIC for timer, keyboard, and mouse interrupts
 Dedicated interrupt stack via the TSS
 Legacy 8259 PIC fallback support via config flags
@@ -283,7 +184,6 @@ Mouse-driven text selection, highlighting, and clipboard buffer
 Terminal paste functionality via PS/2 injection
 VESA mode hardware compatibility and rendering performance
 ✅ Reach the shell on real hardware (OptiPlex 3020), booting from the internal disk
-Fix doubled keyboard input on real hardware
 <!-- TODO: confirm which Phase 6 items are actually done -->
 📋 Phase 7 — Behavioural Security
 Extend modelling from command sequences to per-program syscall patterns
