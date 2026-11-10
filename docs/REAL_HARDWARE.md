@@ -10,7 +10,7 @@ CadenzaOS has been tested on **one** real machine. Treat QEMU as the supported w
 | RAM | 8 GB |
 | Boot mode | Legacy BIOS (not UEFI) |
 | Storage | Internal SATA SSD, controller in **ATA/IDE mode** |
-| Result | Boots to the shell. Keyboard input is doubled (see Known problems). |
+| Result | Boots to the shell |
 
 Other machines may fail in ways not described here.
 
@@ -83,7 +83,7 @@ The first line is stage 2's progress markers. The dots are kernel read chunks on
 
 ## Known problems
 
-- **Doubled keyboard input** on the Dell. Cause not yet investigated.
+- The uptime counter runs very slowly (the LAPIC timer is not calibrated).
 - Only legacy BIOS boot and IDE mode are supported. There is no AHCI or UEFI support.
 - Only one machine has been tested.
 - The kernel manages only the first 1 GiB of RAM, and stage 2 maps only the first 64 MiB.
