@@ -21,6 +21,8 @@ Other machines may fail in ways not described here.
 
 The kernel reads the IDE controller's ports from PCI when the controller is in native mode, and otherwise uses the legacy ports `0x1F0`/`0x3F6`. At boot it prints the ports it chose, for example `ATA cmd=...F110 ctl=...F102`.
 
+A CMOS reset, a flat BIOS battery or "load defaults" will undo these settings, so check them first if a previously working machine stops booting.
+
 ## Building the image
 
 ./build.sh ci
@@ -80,6 +82,7 @@ The first line is stage 2's progress markers. The dots are kernel read chunks on
 | Nothing at all, or a reboot loop | Stage 2 failed before the kernel ran. |
 | `Error: Could not read MBR`, then a panic with `IoError` | The ATA driver did not find the disk. Check that SATA is in ATA/IDE mode. |
 | Panic with "Bitmap storage too small" | Old build. Fixed in 0.7.0. |
+| Splash, then an immediate `IoError`, and no serial output | The BIOS settings have reverted (SATA back to AHCI, serial port off). Check that SATA Operation is ATA and the serial port is COM1. |
 
 ## Known problems
 
