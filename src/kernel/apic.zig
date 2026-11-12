@@ -2,6 +2,9 @@
 
 const std = @import("std");
 const mem_mod = @import("memory.zig"); // Used by APIC mapping initialisation
+const port   = @import("port_io.zig");
+const serial = @import("drivers/serial.zig");
+const conv   = @import("convert.zig");
 
 // Architectural default physical addresses defined by x86.
 //
@@ -122,11 +125,61 @@ pub fn sendEoi() void {
     lapicWrite(LAPIC_EOI, 0);
 }
 
+const LAPIC_TIMER_CUR: u32 = 0x390; // Current Count Register
+const FALLBACK_COUNT: u32 = 0x00080000; // Old fixed value, used if measuring fails
+
+/// Measure how many LAPIC timer ticks (divide-by-16) elapse in 10 ms,
+/// using PIT channel 2 as the reference clock. That count is the
+/// initial count for a 100 Hz periodic timer.
+fn calibrateLapicTimer() u32 {
+    const p61 = port.inb(0x61);
+
+    // Gate off, speaker off, then program channel 2 for a 10 ms
+    // one-shot (1193182 Hz / 100 = 11932 = 0x2E9C).
+    port.outb(0x61, p61 & 0xFC);
+    port.outb(0x43, 0xB0); // channel 2, lo/hi byte, mode 0, binary
+    port.outb(0x42, 0x9C);
+    port.outb(0x42, 0x2E);
+
+    // LAPIC: divide 16, one-shot, masked (no interrupt), max count.
+    lapicWrite(LAPIC_TIMER_DIV, 0x03);
+    lapicWrite(LAPIC_LVT_TIMER, 0x10000 | 0x20);
+    lapicWrite(LAPIC_TIMER_INIT, 0xFFFFFFFF);
+
+    // Open the PIT gate to start its countdown.
+    port.outb(0x61, (p61 & 0xFC) | 0x01);
+
+    // Wait for PIT channel 2 output (port 0x61 bit 5) to go high.
+    var done = false;
+    var guard: u32 = 0;
+    while (guard < 5_000_000) : (guard += 1) {
+        if ((port.inb(0x61) & 0x20) != 0) {
+            done = true;
+            break;
+        }
+    }
+
+    const cur = lapicRead(LAPIC_TIMER_CUR);
+    lapicWrite(LAPIC_TIMER_INIT, 0); // stop the timer
+    port.outb(0x61, p61);            // restore the original port state
+
+    const elapsed: u32 = 0xFFFFFFFF - cur;
+
+    var buf: [18]u8 = undefined;
+    serial.writeString("LAPIC calib: count=");
+    serial.writeString(conv.toHex(u64, elapsed, &buf));
+    serial.writeString(if (done) "\n" else " (timeout, using fallback)\n");
+
+    if (!done or elapsed < 1000) return FALLBACK_COUNT;
+    return elapsed;
+}
+
 /// Configure and start the Local APIC timer in periodic mode.
 ///
 /// The caller supplies the interrupt vector that will be generated
 /// when the timer fires.
 pub fn initLapicTimer(vector: u8) void {
+    const count = calibrateLapicTimer();
 
     // 1. Configure timer divisor = 16.
     lapicWrite(LAPIC_TIMER_DIV, 0x03);
@@ -135,7 +188,7 @@ pub fn initLapicTimer(vector: u8) void {
     lapicWrite(LAPIC_LVT_TIMER, @as(u32, vector) | 0x20000);
 
     // 3. Load the initial countdown value.
-    lapicWrite(LAPIC_TIMER_INIT, 0x00080000);
+        lapicWrite(LAPIC_TIMER_INIT, count);
 }
 
 /// Configure the I/O APIC to route ISA IRQ1 (keyboard)

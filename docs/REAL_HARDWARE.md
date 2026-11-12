@@ -10,7 +10,7 @@ CadenzaOS has been tested on **one** real machine. Treat QEMU as the supported w
 | RAM | 8 GB |
 | Boot mode | Legacy BIOS (not UEFI) |
 | Storage | Internal SATA SSD, controller in **ATA/IDE mode** |
-| Result | Boots to the shell. Keyboard input is doubled (see Known problems). |
+| Result | Boots to the shell |
 
 Other machines may fail in ways not described here.
 
@@ -20,6 +20,8 @@ Other machines may fail in ways not described here.
 - **SATA operation:** **ATA/IDE, not AHCI.** In AHCI mode the controller is a different PCI class and the ATA driver will not find it.
 
 The kernel reads the IDE controller's ports from PCI when the controller is in native mode, and otherwise uses the legacy ports `0x1F0`/`0x3F6`. At boot it prints the ports it chose, for example `ATA cmd=...F110 ctl=...F102`.
+
+A CMOS reset, a flat BIOS battery or "load defaults" will undo these settings, so check them first if a previously working machine stops booting.
 
 ## Building the image
 
@@ -80,10 +82,10 @@ The first line is stage 2's progress markers. The dots are kernel read chunks on
 | Nothing at all, or a reboot loop | Stage 2 failed before the kernel ran. |
 | `Error: Could not read MBR`, then a panic with `IoError` | The ATA driver did not find the disk. Check that SATA is in ATA/IDE mode. |
 | Panic with "Bitmap storage too small" | Old build. Fixed in 0.7.0. |
+| Splash, then an immediate `IoError`, and no serial output | The BIOS settings have reverted (SATA back to AHCI, serial port off). Check that SATA Operation is ATA and the serial port is COM1. |
 
 ## Known problems
 
-- **Doubled keyboard input** on the Dell. Cause not yet investigated.
 - Only legacy BIOS boot and IDE mode are supported. There is no AHCI or UEFI support.
 - Only one machine has been tested.
 - The kernel manages only the first 1 GiB of RAM, and stage 2 maps only the first 64 MiB.

@@ -112,11 +112,15 @@ pub export fn irq0_handler() callconv(.c) void {
 /// and acknowledges interrupt completion.
 pub export fn irq1_handler() callconv(.c) void {
 
-    // Read the scancode from the PS/2 data port.
-    const scancode = io.inb(0x60);
-
-    // Delegate scancode processing to the keyboard driver.
-    keyboard.handleScancode(scancode);
+    // Some firmware (for example USB legacy keyboard emulation) raises
+    // IRQ1 a second time with no data waiting. Reading port 0x60 then
+    // returns the previous byte again, which doubles every keystroke.
+    // Only read when the controller reports the output buffer full
+    // (status port 0x64, bit 0).
+    if ((io.inb(0x64) & 0x01) != 0) {
+        const scancode = io.inb(0x60);
+        keyboard.handleScancode(scancode);
+    }
 
     // Notify the active interrupt controller that processing has
     // completed and the interrupt may be re-issued.
