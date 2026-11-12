@@ -86,7 +86,6 @@ The first line is stage 2's progress markers. The dots are kernel read chunks on
 
 ## Known problems
 
-- The uptime counter runs very slowly (the LAPIC timer is not calibrated).
 - Only legacy BIOS boot and IDE mode are supported. There is no AHCI or UEFI support.
 - Only one machine has been tested.
 - The kernel manages only the first 1 GiB of RAM, and stage 2 maps only the first 64 MiB.

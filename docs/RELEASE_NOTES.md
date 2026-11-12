@@ -1,31 +1,18 @@
-# CadenzaOS 0.7.0
+# CadenzaOS 0.7.1
 
-CadenzaOS now boots to the shell on real hardware. This release fixes the bootloader, memory setup and disk driver problems that stopped it on a Dell OptiPlex 3020.
-
-## What's new
-- **Boots on real hardware.** Tested on one machine, a Dell OptiPlex 3020 (legacy BIOS boot, 8 GB RAM, SATA controller in ATA/IDE mode). It reaches the shell, and the filesystem mounts and reports healthy.
-- **ATA driver finds the controller through PCI.** The driver used to assume the legacy ports `0x1F0`/`0x3F6`. If the IDE controller is in PCI native mode, it now reads the command and control ports from BAR0/BAR1 (new `pci.zig`, plus `inl`/`outl` in `port_io.zig`). Otherwise it keeps the legacy ports, so QEMU behaves as before. It prints the ports it chose to serial as `ATA cmd=... ctl=...`.
+A small follow-up to 0.7.0 that fixes the two remaining problems seen on the Dell OptiPlex 3020: doubled keyboard input and a slow uptime clock.
 
 ## Fixes
-- **Kernel image not visible after the BIOS disk reads.** Stage 2 now reloads `FS` after `int 13h` before copying the kernel above 1 MiB.
-- **Kernel BSS was only about 1.5% cleared.** The old 16-bit loop used `loop`, which counts only CX. The whole BSS is now cleared in long mode. QEMU hid this because its RAM starts zeroed.
-- **Page tables:** the kernel high half (`0xFFFFFF8000000000`) is now mapped through PML4[511], its correct index.
-- **A20:** stage 2 never writes the fast-reset bit (bit 0) of port `0x92`.
-- **Frame allocator panic on machines with more than 1 GiB of RAM.** `bitmap.init` panicked with "Bitmap storage too small". It now manages the first 1 GiB and leaves the rest unmanaged.
-- **Disk waits fail fast.** `wait_bsy` returns an error at once when the status register reads `0xFF` (no device).
-- The `CP3: bitmap init done` serial marker now prints after the init instead of before it.
-- The `B` marker from the old BSS clear is removed from stage 2's output.
+- **Doubled keyboard input on real hardware.** On the Dell (USB keyboard) IRQ1 fired twice per key, and the second interrupt found the 8042 output buffer empty, so port `0x60` returned the previous byte again. `irq1_handler` now reads the scancode only when the controller's status bit 0 reports data waiting, and still sends the EOI. This also stopped the stuck-capitals symptom seen on that machine.
+- **Timer ran at the wrong rate on real hardware.** The LAPIC timer used a fixed initial count tuned on QEMU, while the tick handler assumes 100 Hz, so uptime and scheduling ran several times too slow on the Dell. The timer is now calibrated at boot against PIT channel 2, with a fallback to the old constant if the measurement fails. The measured count is printed to serial as `LAPIC calib: count=...`.
 
-## Other changes
-- A security policy (`SECURITY.md`), a read-only token for the smoke workflow, a README logo, and an optional `QEMU_CPU` setting for `build.sh`.
-
-## Upgrading
-- No format changes. Rebuild with `./build.sh` as usual.
-- To run on real hardware, set the SATA controller to ATA/IDE mode in the BIOS. AHCI mode is not supported. See `docs/REAL_HARDWARE.md`.
+## Documentation
+- `docs/REAL_HARDWARE.md` and the README now describe the tested hardware accurately, and note that a CMOS reset or "load defaults" reverts the BIOS settings (SATA back to AHCI, serial port off), which shows up as a splash screen followed by an immediate `IoError`.
+- The README now gives the correct framebuffer mode (1024x768x32), lists all three demo programs and has a shorter, accurate project tree.
 
 ## Known issues
-- **Keyboard input is doubled on the Dell.** Cause not yet investigated.
-- Only one real machine has been tested, and only legacy BIOS boot and IDE mode are supported.
+- **`shutdown` hangs on real hardware.** It writes to a QEMU-only port; real hardware needs ACPI.
+- Only one real machine has been tested, and only legacy BIOS boot and IDE mode are supported. There is no AHCI or UEFI support.
 - Memory above 1 GiB is not managed, and stage 2 maps only the first 64 MiB.
 - `writeBlocks` has its own busy loop with no timeout or `0xFF` check.
 - Programs run in ring 0 with no memory protection.
@@ -33,4 +20,4 @@ CadenzaOS now boots to the shell on real hardware. This release fixes the bootlo
 - Special keys (arrows, Tab, Escape, Home, End, Delete) still reach the shell while a foreground program runs, and any program can read the shared keyboard queue.
 - Creating or moving a file does not check for an existing name in the target directory.
 
-**Full changelog:** https://github.com/GlenMeehan/CadenzaOS/compare/v0.6.0...v0.7.0
+**Full changelog:** https://github.com/GlenMeehan/CadenzaOS/compare/v0.7.0...v0.7.1

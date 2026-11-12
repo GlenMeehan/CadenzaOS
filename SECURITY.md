@@ -10,9 +10,9 @@ Only the latest release and the `dev` branch are supported. Fixes are made on
 
 | Version | Supported |
 |---|---|
-| 0.6.x (latest) | ✅ |
+| 0.7.x (latest) | ✅ |
 | `dev` branch | ✅ |
-| 0.5.x and earlier | ❌ |
+| 0.6.x and earlier | ❌ |
 
 ## Known limitations (not vulnerabilities)
 
@@ -33,6 +33,8 @@ only demonstrates this is not treated as a vulnerability.
 Please report privately, not in a public issue or pull request: open the
 **Security and quality** tab of this repository, go to **Advisories**, and
 choose **Report a vulnerability**.
+
+You need a GitHub account to use this button. If you do not have one, open a public issue titled "Security contact request" with no details, and I will arrange a private channel.
 
 Include the version or commit, how you ran it (QEMU or real hardware), the
 steps to reproduce, and what you think the impact is.
