@@ -1,19 +1,20 @@
 # 🎹 CadenzaOS
 
-> *An operating system that learns how you work — and uses that knowledge to protect you.*
+> *An experiment in kernel-level behavioural security: an operating system that learns how you work.*
 
 ![CadenzaOS logo](logo_small.png)
 
 CadenzaOS is a 64-bit operating system built from scratch in Zig 0.16.0, for bare-metal x86-64 hardware. It is not a Unix clone or a teaching exercise in the traditional sense: CadenzaOS is an exploration of what an OS looks like when behavioural intelligence is a first-class kernel concern rather than a bolt-on application layer.
 
-The kernel observes, models, and acts on user and program behaviour in real time — flagging anomalies, adapting security policy, and learning what "normal" looks like for your specific deployment. The goal is an OS where the kernel itself is the first line of defence, not a passive substrate waiting to be told what to do.
+The kernel observes and models user and program behaviour in real time, flags anomalies, and adapts its policy to what "normal" looks like for a given deployment. The long-term goal is an OS where the kernel itself is the first line of defence. Today it observes and flags; it cannot yet contain a misbehaving program (see the status section below).
 
 📍 Status and limitations
 
 CadenzaOS is an early research project. Please read this before you try it.
 
-QEMU: boots to the shell. Every push is built from a clean checkout and booted headless in QEMU by CI, which checks that the shell prompt appears.
-Real hardware: it boots to the shell on one tested machine, a Dell OptiPlex 3020 (legacy BIOS, SATA controller set to ATA/IDE mode in the BIOS). AHCI mode and UEFI are not supported. The Dell's keyboard is a USB keyboard; the kernel ignores the spurious second keyboard interrupt that machine raises. It has not been tested on any other hardware, so treat QEMU as the supported way to run CadenzaOS. See docs/REAL_HARDWARE.md for how to run it on a real machine.
+-QEMU: boots to the shell. Every push is built from a clean checkout and booted headless in QEMU by CI, which checks that the shell prompt appears.
+-Demo video (recorded in QEMU; the OS also boots on a Dell OptiPlex 3020): https://youtube.com/watch?v=LTsystljoQM
+-Real hardware: it boots to the shell on one tested machine, a Dell OptiPlex 3020 (legacy BIOS, SATA controller set to ATA/IDE mode in the BIOS). AHCI mode and UEFI are not supported. The Dell's keyboard is a USB keyboard; the kernel ignores the spurious second keyboard interrupt that machine raises. It has not been tested on any other hardware, so treat QEMU as the supported way to run CadenzaOS. See docs/REAL_HARDWARE.md for how to run it on a real machine.
 No memory protection: programs run in ring 0 in the kernel's address space. The behavioural-security features observe and flag, but they cannot yet contain a misbehaving program, and a buggy or hostile program can overwrite kernel memory. Privilege separation is Phase 8. <!-- TODO: check "observe and flag" matches what the Conductor and Composer actually do -->
 Small syscall surface: programs can exit, print text or a character, use a shared scratch page, read keyboard input without blocking, and yield the CPU. There is no file or process API yet.
 
