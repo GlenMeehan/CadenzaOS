@@ -1,12 +1,12 @@
 # 🎹 CadenzaOS
 
-> *An operating system that learns how you work — and uses that knowledge to protect you.*
+> *An experiment in kernel-level behavioural security: an operating system that learns how you work.*
 
 ![CadenzaOS logo](logo_small.png)
 
 CadenzaOS is a 64-bit operating system built from scratch in Zig 0.16.0, for bare-metal x86-64 hardware. It is not a Unix clone or a teaching exercise in the traditional sense: CadenzaOS is an exploration of what an OS looks like when behavioural intelligence is a first-class kernel concern rather than a bolt-on application layer.
 
-The kernel observes, models, and acts on user and program behaviour in real time — flagging anomalies, adapting security policy, and learning what "normal" looks like for your specific deployment. The goal is an OS where the kernel itself is the first line of defence, not a passive substrate waiting to be told what to do.
+The kernel observes and models user and program behaviour in real time, flags anomalies, and adapts its policy to what "normal" looks like for a given deployment. The long-term goal is an OS where the kernel itself is the first line of defence. Today it observes and flags; it cannot yet contain a misbehaving program (see the status section below).
 
 📍 Status and limitations
 
