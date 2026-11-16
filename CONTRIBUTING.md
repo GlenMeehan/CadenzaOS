@@ -26,8 +26,8 @@ from pull requests.
 Clone the repository and build the project:
 
 ```bash
-git clone https://github.com/<your-username>/cadenzaos.git
-cd cadenzaos
+git clone https://github.com/GlenMeehan/CadenzaOS
+cd CadenzaOS
 ./build.sh
 ```
 
@@ -54,15 +54,16 @@ You will need the following tools installed:
 | Tool | Version | Purpose |
 |------|---------|---------|
 | Zig | **0.16.0 exactly** | Kernel compilation |
-| NASM | Any recent | Bootloader assembly |
-| GNU as | Any recent | arch_utils assembly |
-| GNU ld | Any recent | Kernel linking |
-| QEMU | 6.0+ | Testing |
-| dd, objcopy | Standard | Image creation |
+| NASM | Any recent (tested with 2.x and 3.x) | Bootloader assembly |
+| GNU binutils (as, ld, objcopy, readelf) | Any recent | Kernel linking and image creation |
+| QEMU | 6.0+ (tested with 10.x) | Testing |
+| dd | Standard | Image creation |
+
+See `DEPENDENCIES.md` for install commands and the versions CI uses.
 
 **Important:** CadenzaOS is built with Zig 0.16.0 specifically. Zig has
-breaking changes between releases — other versions are not supported and will
-likely fail to compile.
+breaking changes between releases, so other versions are not supported and
+will likely fail to compile.
 
 The stable Zig 0.16.0 binary can be downloaded from:
 https://ziglang.org/download/
@@ -75,7 +76,7 @@ https://ziglang.org/download/
 - `dev` — active development target. Submit all Pull Requests here.
 
 The Project Lead merges `dev` into `main` when a set of features is stable
-and tested, using a merge commit (not squash). If you are working on a larger feature, create a feature branch
+and tested, using a merge commit (not squash). Pull requests into `dev` are squash-merged. If you are working on a larger feature, create a feature branch
 from `dev`:
 
 ```bash
@@ -91,15 +92,16 @@ git checkout -b feature/your-feature-name
 1. **Fork** the repository and create your branch from `dev`.
 2. **Make your changes** — keep commits focused and atomic. One logical change
    per commit is strongly preferred over large, sprawling commits.
-3. **Test your changes** — at minimum, confirm the OS boots in QEMU and the
-   shell functions correctly after your change. If your change touches the
-   scheduler, memory management, or filesystem, run a more thorough session
-   (spawn tasks, create/delete files, check persistence across reboots).
+3. **Test your changes.** Run `./build.sh ci && ./tests/smoke.sh`. It must
+   pass; CI runs the same check on every pull request. If your change touches
+   the scheduler, memory management, or filesystem, also run a longer
+   interactive session (spawn tasks, create and delete files, check
+   persistence across reboots).
 4. **Sign off** your commits — see [Commit Sign-Off](#commit-sign-off-dco).
 5. **Open a PR** targeting the `dev` branch with:
    - A clear title describing what the PR does.
    - A description explaining *why* the change is needed and *how* it works.
-   - Evidence of testing (QEMU output, qemu.log if relevant).
+   - Evidence of testing (the smoke test result, plus QEMU output or qemu.log if relevant).
    - References to any related issues.
 
 PRs that touch the following areas require extra care and will receive closer
@@ -114,6 +116,10 @@ For significant architectural changes (new subsystem, syscall ABI change,
 filesystem format change), please open an issue for discussion *before*
 writing code. This avoids wasted effort if the direction doesn't align with
 the roadmap.
+
+CadenzaOS is maintained by one person, so reviews may take several days. CI
+must pass before a pull request is merged. If this is your first contribution,
+a maintainer has to approve the CI run before it starts, so please be patient.
 
 ---
 
@@ -141,7 +147,10 @@ You can add the sign-off automatically with:
 git commit -s -m "your commit message"
 ```
 
-PRs containing unsigned commits will be asked to resubmit before merging.
+PRs containing unsigned commits will be asked to fix them before merging. If you forgot, add the sign-off to your last commit with `git commit --amend -s`, or to every commit on your branch with `git rebase --signoff dev`. Then update your pull request with `git push --force-with-lease` (only ever on your own branch).
+
+
+## AI-assisted Contributions
 
 AI-assisted contributions are welcome if disclosed in the pull request. The person submitting is responsible for the change and signs off under the DCO, and it should be tested, or say clearly that it wasn’t.
 
@@ -164,8 +173,7 @@ CadenzaOS is written in Zig. Follow these conventions:
   error propagation or at minimum a logged failure.
 - **Memory:** Use `cmd_fba` (reset per shell command) for temporary filesystem
   allocations in shell commands. Do not use `g_allocator` for repeated or
-  interleaved allocations — see the architecture notes in `ARCHITECTURE.md`
-  (coming soon) for the full allocator policy.
+  interleaved allocations — see the wiki for the full allocator policy.
 - **Hardware access:** All hardware interaction (VGA, ATA, keyboard, timer)
   must go through the existing driver modules. Do not write directly to
   hardware registers from non-driver code.
@@ -210,6 +218,20 @@ For large features (new filesystem, networking, graphics mode, ring 3
 separation), a discussion issue is strongly preferred before any code is
 written — these touch multiple subsystems and need architectural alignment
 with the roadmap before implementation begins.
+
+---
+
+## Real Hardware Reports
+
+Reports from real machines are very welcome, whether it works or not. Please
+read `docs/REAL_HARDWARE.md` first, then include:
+
+- The machine and CPU
+- Firmware mode (legacy BIOS or UEFI) and SATA mode (IDE/ATA or AHCI)
+- What you saw on screen
+- A serial capture (38400 baud, 8N1) if you can get one
+
+Only legacy BIOS with SATA in IDE mode is supported at the moment.
 
 ---
 

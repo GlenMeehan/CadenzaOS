@@ -14,6 +14,10 @@ A clear and concise description of what the bug is.
 - **QEMU version:** (run `qemu-system-x86_64 --version`)
 - **Host OS:** (e.g. Fedora 39, Ubuntu 22.04)
 - **Running on:** [ ] QEMU  [ ] Real hardware (specify machine/motherboard)
+- **CadenzaOS version or commit:** (e.g. v0.7.1, or `git rev-parse --short HEAD`)
+- **Firmware:** [ ] Legacy BIOS  [ ] UEFI (real hardware only)
+- **SATA mode:** [ ] IDE/ATA  [ ] AHCI (real hardware only)
+- **Serial capture (38400 baud, 8N1):** attach if you have one
 
 ## Reproduction Steps
 Exact sequence of shell commands that triggers the bug:
@@ -30,7 +34,7 @@ What you expected to happen.
 ## Actual Behaviour
 What actually happened. Include any error messages printed to the VGA screen verbatim.
 
-## qemu.log Output
+## qemu.log Output (optional)
 If running in QEMU, paste the relevant tail of `qemu.log` (run QEMU with
 `-d int,cpu_reset -D qemu.log` and reproduce the bug, then run
 `tail -n 100 qemu.log`):
