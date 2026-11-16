@@ -6,6 +6,7 @@ labels: enhancement
 assignees: ''
 ---
 
+CadenzaOS is a research project, so not every request will be accepted.
 ## Summary
 A clear and concise description of the feature you are proposing.
 

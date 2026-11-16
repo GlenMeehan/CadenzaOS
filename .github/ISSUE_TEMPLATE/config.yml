@@ -6,3 +6,6 @@ contact_links:
   - name: Code of Conduct
     url: https://github.com/GlenMeehan/CadenzaOS/blob/main/CODE_OF_CONDUCT.md
     about: Please read our Code of Conduct before participating.
+  - name: Report a security vulnerability
+    url: https://github.com/GlenMeehan/CadenzaOS/security/advisories/new
+    about: Please report security problems privately here, not in a public issue.
