@@ -16,8 +16,9 @@ from pull requests.
 6. [Coding Style](#coding-style)
 7. [Reporting Bugs](#reporting-bugs)
 8. [Suggesting Features](#suggesting-features)
-9. [Good First Issues](#good-first-issues)
-10. [Code of Conduct](#code-of-conduct)
+9. [Real Hardware Reports](#real-hardware-reports)
+10. [Good First Issues](#good-first-issues)
+11. [Code of Conduct](#code-of-conduct)
 
 ---
 
