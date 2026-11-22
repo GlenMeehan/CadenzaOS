@@ -232,6 +232,8 @@ CadenzaOS welcomes contributions, at every level of experience. Please read [CON
 
 The project is in bootstrap phase; see [GOVERNANCE.md](GOVERNANCE.md) for the full governance model. All pull requests are reviewed by the project lead before merging.
 
+See [ACCESSIBILITY.md](ACCESSIBILITY.md) for the current accessibility status.
+
 ## 📜 Licence
 
 Apache License 2.0. See [LICENSE](LICENSE) for the full text.
