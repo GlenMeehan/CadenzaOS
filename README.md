@@ -4,6 +4,11 @@
 
 ![CadenzaOS logo](logo_small.png)
 
+[![smoke](https://github.com/GlenMeehan/CadenzaOS/actions/workflows/smoke.yml/badge.svg)](https://github.com/GlenMeehan/CadenzaOS/actions/workflows/smoke.yml)
+[![release](https://img.shields.io/github/v/release/GlenMeehan/CadenzaOS)](https://github.com/GlenMeehan/CadenzaOS/releases)
+[![licence](https://img.shields.io/github/license/GlenMeehan/CadenzaOS)](LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/BcDDAjnBJ)
+
 CadenzaOS is a 64-bit operating system built from scratch in Zig 0.16.0, for bare-metal x86-64 hardware. It is not a Unix clone or a teaching exercise in the traditional sense: CadenzaOS is an exploration of what an OS looks like when behavioural intelligence is a first-class kernel concern rather than a bolt-on application layer.
 
 The kernel observes and models user and program behaviour in real time, flags anomalies, and adapts its policy to what "normal" looks like for a given deployment. The long-term goal is an OS where the kernel itself is the first line of defence. Today it observes and flags; it cannot yet contain a misbehaving program (see the status section below).
