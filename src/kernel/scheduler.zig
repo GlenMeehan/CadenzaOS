@@ -35,7 +35,6 @@ pub const MAX_ARG_BYTES: usize = 512;
 
 /// Scheduler-visible task states.
 pub const TaskState = enum {
-
     /// Ready to run and eligible for scheduling.
     Ready,
 
@@ -54,10 +53,21 @@ pub const TaskState = enum {
 /// The stack is arranged to match the expectations of the low-level
 /// task-switch assembly routine.
 pub const TaskContext = packed struct {
-    r15: u64, r14: u64, r13: u64, r12: u64,
-    r11: u64, r10: u64, r9:  u64, r8:  u64,
-    rbp: u64, rdi: u64, rsi: u64, rdx: u64,
-    rcx: u64, rbx: u64, rax: u64,
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    r11: u64,
+    r10: u64,
+    r9: u64,
+    r8: u64,
+    rbp: u64,
+    rdi: u64,
+    rsi: u64,
+    rdx: u64,
+    rcx: u64,
+    rbx: u64,
+    rax: u64,
     rip: u64,
 };
 
@@ -74,10 +84,21 @@ pub const InterruptContext = packed struct {
     //
     // Fields are ordered according to their final memory layout,
     // not their push order within the assembly handler.
-    rax: u64, rbx: u64, rcx: u64, rdx: u64,
-    rsi: u64, rdi: u64, rbp: u64,
-    r8:  u64, r9:  u64, r10: u64, r11: u64,
-    r12: u64, r13: u64, r14: u64, r15: u64,
+    rax: u64,
+    rbx: u64,
+    rcx: u64,
+    rdx: u64,
+    rsi: u64,
+    rdi: u64,
+    rbp: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
 
     // Hardware interrupt frame pushed automatically by the CPU.
     rip: u64,
@@ -89,7 +110,6 @@ pub const InterruptContext = packed struct {
 
 /// Scheduler-owned task record.
 pub const Task = struct {
-
     /// Unique task identifier.
     id: usize,
 
@@ -158,8 +178,7 @@ pub fn resolveUserRange(task: *const Task, addr: usize, len: usize) ?[]u8 {
     if (task.stack_mem) |stack| {
         const base = @intFromPtr(stack.ptr);
         const save_area =
-            (base + stack.len - @sizeOf(InterruptContext))
-            & ~@as(usize, 15);
+            (base + stack.len - @sizeOf(InterruptContext)) & ~@as(usize, 15);
 
         if (addr >= base and end <= save_area) {
             const off = addr - base;
@@ -176,7 +195,6 @@ pub fn resolveUserRange(task: *const Task, addr: usize, len: usize) ?[]u8 {
 }
 
 pub const Scheduler = struct {
-
     /// Scheduler task table.
     tasks: [config.scheduler.max_tasks]?Task,
 
@@ -200,7 +218,7 @@ pub const Scheduler = struct {
     /// unused state and must be populated explicitly.
     pub fn init(allocator: std.mem.Allocator) Scheduler {
         return Scheduler{
-            .tasks = [_]?Task{null} ** config.scheduler.max_tasks,
+            .tasks = @splat(null),
             .current_task_idx = 0,
             .yield_enabled = false,
             .allocator = allocator,
@@ -214,16 +232,13 @@ pub const Scheduler = struct {
     /// initial kernel execution context into the scheduler's task
     /// model without performing an immediate context switch.
     pub fn registerCurrentThreadAsTask(self: *Scheduler, slot: usize, id: usize) void {
-
         const phys_addr =
-        bm.allocContiguous(TASK_STACK_PAGES)
-        orelse @panic("OutOfMemory allocating shell stack");
+            bm.allocContiguous(TASK_STACK_PAGES) orelse @panic("OutOfMemory allocating shell stack");
 
         const virt_addr = memory.physToVirt(phys_addr);
 
         const stack_buf =
-        @as([*]u8, @ptrFromInt(virt_addr))
-        [0 .. bm.PAGE_SIZE * TASK_STACK_PAGES];
+            @as([*]u8, @ptrFromInt(virt_addr))[0 .. bm.PAGE_SIZE * TASK_STACK_PAGES];
 
         @memset(stack_buf, 0);
 
@@ -252,9 +267,9 @@ pub const Scheduler = struct {
     pub fn registerDynamicTask(
         self: *Scheduler,
         entry_point: *const fn () callconv(.c) void,
-                               code_mem: ?[]u8,
-                               code_phys: usize,
-                               args: []const []const u8,
+        code_mem: ?[]u8,
+        code_phys: usize,
+        args: []const []const u8,
     ) !usize {
 
         // Validate argument limits before allocating any resources.
@@ -283,14 +298,12 @@ pub const Scheduler = struct {
         // Allocate a dedicated task stack from contiguous physical
         // memory to avoid heap fragmentation.
         const phys_addr =
-        bm.allocContiguous(TASK_STACK_PAGES)
-        orelse return error.OutOfMemory;
+            bm.allocContiguous(TASK_STACK_PAGES) orelse return error.OutOfMemory;
 
         const virt_addr = memory.physToVirt(phys_addr);
 
         const stack_buf =
-        @as([*]u8, @ptrFromInt(virt_addr))
-        [0 .. bm.PAGE_SIZE * TASK_STACK_PAGES];
+            @as([*]u8, @ptrFromInt(virt_addr))[0 .. bm.PAGE_SIZE * TASK_STACK_PAGES];
 
         // Clear any data left behind by previous users of the memory.
         @memset(stack_buf, 0);
@@ -321,8 +334,7 @@ pub const Scheduler = struct {
         // Must remain consistent with the destination used by the
         // preemption handler.
         const save_area =
-        (stack_top - @sizeOf(InterruptContext))
-        & ~@as(usize, 15);
+            (stack_top - @sizeOf(InterruptContext)) & ~@as(usize, 15);
 
         var cursor: usize = save_area;
 
@@ -376,22 +388,23 @@ pub const Scheduler = struct {
 
         const context_ptr = @as(*InterruptContext, @ptrFromInt(initial_sp));
 
-        inline for (std.meta.fields(InterruptContext)) |field| {
-            @field(context_ptr, field.name) = 0;
+        const info = @typeInfo(InterruptContext).@"struct";
+        inline for (info.field_names) |name| {
+            @field(context_ptr, name) = 0;
         }
 
         // Construct the machine state that will be restored when the
         // task executes for the first time.
         context_ptr.rip = @intFromPtr(entry_point);
-        context_ptr.cs = 0x18;            // Kernel code segment
-        context_ptr.rflags = 0x202;       // Interrupts enabled
+        context_ptr.cs = 0x18; // Kernel code segment
+        context_ptr.rflags = 0x202; // Interrupts enabled
         context_ptr.rsp = entry_rsp;
-        context_ptr.ss = 0x10;            // Kernel data segment
+        context_ptr.ss = 0x10; // Kernel data segment
 
         // Pass argc/argv using the standard x86_64 System V calling
         // convention.
-        context_ptr.rdi = args.len;       // argc
-        context_ptr.rsi = argv_addr;      // argv
+        context_ptr.rdi = args.len; // argc
+        context_ptr.rsi = argv_addr; // argv
 
         // Register the task with the scheduler.
         self.tasks[slot.?] = Task{
@@ -517,7 +530,6 @@ pub const Scheduler = struct {
         for (0..manager.tasks.len) |i| {
             if (manager.tasks[i]) |t| {
                 if (t.state == .Dead) {
-
                     if (t.stack_mem) |mem_slice| {
                         const phys =
                             memory.virtToPhys(@intFromPtr(mem_slice.ptr));
@@ -533,8 +545,7 @@ pub const Scheduler = struct {
                             memory.virtToPhys(@intFromPtr(code_slice.ptr));
 
                         const frame_count =
-                            (code_slice.len + bm.PAGE_SIZE - 1)
-                            / bm.PAGE_SIZE;
+                            (code_slice.len + bm.PAGE_SIZE - 1) / bm.PAGE_SIZE;
 
                         bm.freeContiguous(phys, frame_count);
                     }
@@ -577,13 +588,11 @@ pub const Scheduler = struct {
         // ---------------------------------------------------------------------
 
         if (manager.tasks[current_old]) |*curr| {
-
             if (curr.state == .Running) {
                 curr.state = .Ready;
             }
 
             if (curr.stack_mem) |mem| {
-
                 const ctx_size = @sizeOf(InterruptContext);
 
                 const raw_dest =
@@ -622,26 +631,26 @@ pub const Scheduler = struct {
         // it writes to the serial stream from the timer interrupt, which can
         // land in the middle of a program's own output.
         if (config.debug_sched_trace) {
-        var dbuf: [16]u8 = undefined;
-        var dbuf2: [16]u8 = undefined;
-        var dbuf3: [16]u8 = undefined;
-        var line: [80]u8 = undefined;
+            var dbuf: [16]u8 = undefined;
+            var dbuf2: [16]u8 = undefined;
+            var dbuf3: [16]u8 = undefined;
+            var line: [80]u8 = undefined;
 
-        const msg = std.fmt.bufPrint(
-            &line,
-            "SW from={s} to={s} sp=0x{s}\n",
-            .{
-                conv.toHex(u64, current_old, &dbuf),
-                conv.toHex(u64, next_idx, &dbuf2),
-                conv.toHex(
-                    u64,
-                    manager.tasks[next_idx].?.stack_ptr,
-                    &dbuf3,
-                ),
-            },
-        ) catch "SW: fmt error\n";
+            const msg = std.fmt.bufPrint(
+                &line,
+                "SW from={s} to={s} sp=0x{s}\n",
+                .{
+                    conv.toHex(u64, current_old, &dbuf),
+                    conv.toHex(u64, next_idx, &dbuf2),
+                    conv.toHex(
+                        u64,
+                        manager.tasks[next_idx].?.stack_ptr,
+                        &dbuf3,
+                    ),
+                },
+            ) catch "SW: fmt error\n";
 
-        serial.writeString(msg);
+            serial.writeString(msg);
         }
         // Return the saved context of the task that should resume.
         return manager.tasks[next_idx].?.stack_ptr;
@@ -718,8 +727,8 @@ pub const Scheduler = struct {
                 };
 
                 const colour: u8 =
-                if (ctx.rdx == 0)
-                    0x0F
+                    if (ctx.rdx == 0)
+                        0x0F
                     else
                         @truncate(ctx.rdx);
 
@@ -746,10 +755,10 @@ pub const Scheduler = struct {
 
                 if (offset < 4096) {
                     const scratch_virt =
-                    memory.physToVirt(SCRATCH_PAGE_PHYS + offset);
+                        memory.physToVirt(SCRATCH_PAGE_PHYS + offset);
 
                     const val =
-                    @as(*volatile u8, @ptrFromInt(scratch_virt)).*;
+                        @as(*volatile u8, @ptrFromInt(scratch_virt)).*;
 
                     ctx.rax = val;
                 }
@@ -771,7 +780,7 @@ pub const Scheduler = struct {
 
                 if (offset < 4096) {
                     const scratch_virt =
-                    memory.physToVirt(SCRATCH_PAGE_PHYS + offset);
+                        memory.physToVirt(SCRATCH_PAGE_PHYS + offset);
 
                     @as(
                         *volatile u8,
@@ -796,8 +805,8 @@ pub const Scheduler = struct {
                 const char: u8 = @truncate(ctx.rdi);
 
                 const colour: u8 =
-                if (ctx.rsi == 0)
-                    0x0F
+                    if (ctx.rsi == 0)
+                        0x0F
                     else
                         @truncate(ctx.rsi);
 
@@ -829,13 +838,13 @@ pub const Scheduler = struct {
 
                 if (offset < 4096) {
                     const scratch_virt =
-                    memory.physToVirt(SCRATCH_PAGE_PHYS + offset);
+                        memory.physToVirt(SCRATCH_PAGE_PHYS + offset);
 
                     const ptr =
-                    @as(*volatile u8, @ptrFromInt(scratch_virt));
+                        @as(*volatile u8, @ptrFromInt(scratch_virt));
 
                     const new_val =
-                    ptr.* +% @as(u8, @truncate(ctx.rsi));
+                        ptr.* +% @as(u8, @truncate(ctx.rsi));
 
                     ptr.* = new_val;
                     ctx.rax = new_val;
@@ -914,7 +923,6 @@ pub const Scheduler = struct {
             },
         }
     }
-
 };
 
 // -----------------------------------------------------------------------------
@@ -926,5 +934,3 @@ pub const Scheduler = struct {
 /// Initialised during boot and referenced by interrupt handlers,
 /// task-management code, and system-call dispatch.
 pub var manager: Scheduler = undefined;
-
-

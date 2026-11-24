@@ -10,18 +10,18 @@ itself has no runtime dependencies: only the build and the emulator do.
 
 | Tool | Version | Used for |
 |---|---|---|
-| [Zig](https://ziglang.org/download/) | **0.16.0** | kernel and program compilation |
+| [Zig](https://ziglang.org/download/) | **0.17.1** | kernel and program compilation |
 | nasm | tested with 3.02 | bootloader, stage 2, interrupt stubs |
 | GNU binutils (`as`, `ld`, `objcopy`, `readelf`) | tested with 2.46.1 | assembling, linking, flat binary, layout checks |
 | QEMU (`qemu-system-x86_64`) | tested with 10.2.2 | running the image |
 | git | any | build metadata (hash, dirty flag) |
 | coreutils, `sed`, `awk`, `dd` | any | build script |
 
-Zig is not packaged consistently by distributions. Download 0.16.0 from
+Zig is not packaged consistently by distributions. Download 0.17.1 from
 ziglang.org, unpack it anywhere, and either put it on your `PATH` or point
 the build at it:
 
-    export ZIG=/path/to/zig-0.16.0/zig
+    export ZIG=/path/to/zig-0.17.1/zig
 
 ## Optional (debugging)
 
@@ -42,7 +42,7 @@ Ubuntu / Debian:
 
 ## Verify
 
-    zig version          # 0.16.0
+    zig version          # 0.17.1
     NASM version 3.02 compiled on Jul 14 2026
     ld --version | head -n 1
     qemu-system-x86_64 --version | head -n 1

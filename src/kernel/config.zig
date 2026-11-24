@@ -65,7 +65,6 @@ pub const BLOCK_SIZE: u64 = 512;
 /// 20,480 sectors × 512 bytes = 10 MiB.
 pub const DISK_SECTOR_COUNT: u64 = 20480;
 
-
 // ============================================================
 // Buffer Sizes
 // ============================================================
@@ -85,7 +84,6 @@ pub const TERMINAL_LINE_SIZE = BASE_IO_BUF_SIZE * 8;
 /// Maximum number of parsed shell arguments.
 pub const MAX_ARGS: usize = 16;
 
-
 // ============================================================
 // Shell Command Identifiers
 // ============================================================
@@ -98,30 +96,29 @@ pub const CommandID = enum(u8) {
     UNKNOWN = 0,
 
     // Filesystem commands
-    LS       = 1,
-    CD       = 2,
-    MKDIR    = 3,
-    STAT     = 4,
-    CAT      = 5,
-    TOUCH    = 7,
-    DEL      = 12,
-    RENAME   = 13,
-    MOVE     = 14,
+    LS = 1,
+    CD = 2,
+    MKDIR = 3,
+    STAT = 4,
+    CAT = 5,
+    TOUCH = 7,
+    DEL = 12,
+    RENAME = 13,
+    MOVE = 14,
 
     // System / policy commands
-    POLICY   = 6,
-    VITALS   = 9,
+    POLICY = 6,
+    VITALS = 9,
     SHUTDOWN = 10,
-    REBOOT   = 11,
-    VERSION  = 15,
-    UPTIME   = 16,
-    DF       = 17,
+    REBOOT = 11,
+    VERSION = 15,
+    UPTIME = 16,
+    DF = 17,
 
     // Process / task commands
-    EDIT     = 8,
-    SPAWN    = 18,
+    EDIT = 8,
+    SPAWN = 18,
 };
-
 
 // ============================================================
 // System Policies
@@ -133,7 +130,6 @@ pub const CommandID = enum(u8) {
 /// persistence decisions, scheduling preferences,
 /// and safety-related checks.
 pub const SystemPolicy = enum(u8) {
-
     /// Development-oriented profile with minimal friction.
     DEV,
 
@@ -150,14 +146,12 @@ pub const SystemPolicy = enum(u8) {
 /// boot parameters, or persistent system settings.
 pub var current_policy: SystemPolicy = .ADMIN;
 
-
 // ============================================================
 // Scheduler Configuration
 // ============================================================
 
 /// Cooperative/preemptive scheduler tuning values.
 pub const scheduler = struct {
-
     /// Number of timer ticks a task receives before a
     /// scheduler-driven context switch occurs.
     ///
@@ -180,13 +174,11 @@ pub const scheduler = struct {
     pub const default_stack_size: usize = 4096;
 };
 
-
 // ============================================================
 // Timer Configuration
 // ============================================================
 
 pub const timer = struct {
-
     /// System timer frequency.
     ///
     /// 100 Hz corresponds to a 10 ms tick interval.
@@ -200,13 +192,11 @@ pub const timer = struct {
     pub var use_apic: bool = false;
 };
 
-
 /// Enable shell execution through the scheduler.
 ///
 /// When disabled, shell commands may execute directly without
 /// task scheduling overhead.
 pub const USE_SCHEDULER_SHELL = true;
-
 
 // ============================================================
 // Runtime Kernel Globals
@@ -231,8 +221,8 @@ pub var kernel_allocator: std.mem.Allocator = undefined;
 /// Kernel semantic version information.
 pub const Version = struct {
     pub const major: u32 = 0;
-    pub const minor: u32 = 7;
-    pub const patch: u32 = 1;
+    pub const minor: u32 = 8;
+    pub const patch: u32 = 0;
 };
 
 /// Build metadata generated at build time.

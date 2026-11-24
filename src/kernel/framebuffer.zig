@@ -94,31 +94,22 @@ pub var blue_pos: u5 = 0;
 /// Must be called before any text output or pixel operations.
 /// The supplied parameters are obtained from the bootloader's
 /// framebuffer information structure.
-pub fn init(
-    addr: usize,
-    stride: u32,
-    width: u32,
-    height: u32,
-    bpp: u32,
-    r_pos: u64,
-    g_pos: u64,
-    b_pos: u64
-) void {
-    fb_ptr     = @as([*]volatile u8, @ptrFromInt(addr));
-    fb_stride  = stride;
-    fb_width   = width;
-    fb_height  = height;
-    fb_bpp     = bpp / 8;
+pub fn init(addr: usize, stride: u32, width: u32, height: u32, bpp: u32, r_pos: u64, g_pos: u64, b_pos: u64) void {
+    fb_ptr = @as([*]volatile u8, @ptrFromInt(addr));
+    fb_stride = stride;
+    fb_width = width;
+    fb_height = height;
+    fb_bpp = bpp / 8;
 
     // Calculate the framebuffer's text dimensions based on the
     // fixed-size bitmap font.
-    cols       = width / font.GLYPH_WIDTH;
-    rows       = height / font.GLYPH_HEIGHT;
+    cols = width / font.GLYPH_WIDTH;
+    rows = height / font.GLYPH_HEIGHT;
 
     // Record hardware-specific colour channel locations.
-    red_pos   = @intCast(r_pos);
+    red_pos = @intCast(r_pos);
     green_pos = @intCast(g_pos);
-    blue_pos  = @intCast(b_pos);
+    blue_pos = @intCast(b_pos);
 
     // Begin text output at the top-left corner.
     cursor_col = 0;
@@ -146,9 +137,9 @@ inline fn plotPixel(x: u32, y: u32, color: u32) void {
 /// Pack RGB colour components into the framebuffer's native pixel
 /// format using the channel positions reported by the video mode.
 pub fn packColor(r: u8, g: u8, b: u8) u32 {
-    const red   = @as(u32, r) << red_pos;
+    const red = @as(u32, r) << red_pos;
     const green = @as(u32, g) << green_pos;
-    const blue  = @as(u32, b) << blue_pos;
+    const blue = @as(u32, b) << blue_pos;
     return red | green | blue;
 }
 
@@ -161,15 +152,15 @@ fn drawGlyph(char: u8, col: u32, row: u32, fg: u8, bg: u8) void {
     const fg_hex = palette[fg & 0x0F];
     const fg_colour = packColor(
         @truncate((fg_hex >> 16) & 0xFF),
-                                @truncate((fg_hex >> 8) & 0xFF),
-                                @truncate(fg_hex & 0xFF),
+        @truncate((fg_hex >> 8) & 0xFF),
+        @truncate(fg_hex & 0xFF),
     );
 
     const bg_hex = palette[bg & 0x0F];
     const bg_colour = packColor(
         @truncate((bg_hex >> 16) & 0xFF),
-                                @truncate((bg_hex >> 8) & 0xFF),
-                                @truncate(bg_hex & 0xFF),
+        @truncate((bg_hex >> 8) & 0xFF),
+        @truncate(bg_hex & 0xFF),
     );
 
     // Convert character-cell coordinates into framebuffer pixels.
@@ -187,7 +178,7 @@ fn drawGlyph(char: u8, col: u32, row: u32, fg: u8, bg: u8) void {
         while (gx < font.GLYPH_WIDTH) : (gx += 1) {
             const bit = @as(u8, 1) << @truncate(7 - gx);
             const colour = if ((glyph_row & bit) != 0)
-            fg_colour
+                fg_colour
             else
                 bg_colour;
 
@@ -304,11 +295,15 @@ pub fn clearScreen(fg: u8, bg: u8) void {
 
 /// Return the number of visible text rows supported by the current
 /// framebuffer configuration.
-pub fn getRows() u32 { return rows; }
+pub fn getRows() u32 {
+    return rows;
+}
 
 /// Return the number of visible text columns supported by the current
 /// framebuffer configuration.
-pub fn getCols() u32 { return cols; }
+pub fn getCols() u32 {
+    return cols;
+}
 
 /// Draw or erase a simple text cursor at the current character cell.
 ///
@@ -325,8 +320,8 @@ pub fn setCursorVisible(visible: bool) void {
 
     const color = packColor(
         @truncate((hex >> 16) & 0xFF),
-                            @truncate((hex >> 8) & 0xFF),
-                            @truncate(hex & 0xFF),
+        @truncate((hex >> 8) & 0xFF),
+        @truncate(hex & 0xFF),
     );
 
     // Draw the underline across the bottom of the cell.
@@ -394,8 +389,8 @@ pub fn drawImage(x: u32, y: u32, img_width: u32, img_height: u32, data: []const 
         var px: u32 = 0;
         while (px < img_width) : (px += 1) {
             const idx: usize =
-            @as(usize, py) * @as(usize, img_width) * 3 +
-            @as(usize, px) * 3;
+                @as(usize, py) * @as(usize, img_width) * 3 +
+                @as(usize, px) * 3;
 
             const r: u8 = data[idx + 0];
             const g: u8 = data[idx + 1];
@@ -412,9 +407,12 @@ pub fn drawImage(x: u32, y: u32, img_width: u32, img_height: u32, data: []const 
 /// approach is simple and fast, making it suitable for early-kernel
 /// graphics where image quality is less important than performance.
 pub fn drawImageScaled(
-    x: u32, y: u32,
-    src_width: u32, src_height: u32,
-    dest_width: u32, dest_height: u32,
+    x: u32,
+    y: u32,
+    src_width: u32,
+    src_height: u32,
+    dest_width: u32,
+    dest_height: u32,
     data: []const u8,
 ) void {
     const expected_len: usize = @as(usize, src_width) * @as(usize, src_height) * 3;
@@ -432,8 +430,8 @@ pub fn drawImageScaled(
             const sx = (dx * src_width) / dest_width;
 
             const idx: usize =
-            @as(usize, sy) * @as(usize, src_width) * 3 +
-            @as(usize, sx) * 3;
+                @as(usize, sy) * @as(usize, src_width) * 3 +
+                @as(usize, sx) * 3;
 
             const r: u8 = data[idx + 0];
             const g: u8 = data[idx + 1];
@@ -465,7 +463,7 @@ pub fn drawStringAtPixel(x: u32, y: u32, text: []const u8, fg_color: u32, bg_col
             while (gx < font.GLYPH_WIDTH) : (gx += 1) {
                 const bit = @as(u8, 1) << @truncate(7 - gx);
                 const color = if ((glyph_row & bit) != 0)
-                fg_color
+                    fg_color
                 else
                     bg_color;
 
@@ -518,14 +516,13 @@ pub fn paletteColor(idx: u8) u32 {
 
     return packColor(
         @truncate((hex >> 16) & 0xFF),
-                     @truncate((hex >> 8) & 0xFF),
-                     @truncate(hex & 0xFF),
+        @truncate((hex >> 8) & 0xFF),
+        @truncate(hex & 0xFF),
     );
 }
 
-
 test "clearScreen packs palette colors for framebuffer channel positions" {
-    var pixels: [12]u8 = .{0} ** 12;
+    var pixels: [12]u8 = @splat(0);
 
     // A two-pixel-wide, two-row 24-bit framebuffer with red and blue swapped.
     init(@intFromPtr(&pixels), 6, 2, 2, 24, 0, 8, 16);

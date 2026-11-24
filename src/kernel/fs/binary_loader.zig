@@ -95,7 +95,7 @@ fn installOne(
         .file_type = .File,
         .size_bytes = hdr.image_size,
         .extent_count = 1,
-        .extents = [_]Extent{.{ .start_block = 0, .block_count = 0 }} ** 8,
+        .extents = @splat(.{ .start_block = 0, .block_count = 0 }),
     };
     meta.extents[0] = data_extent;
 
@@ -113,7 +113,7 @@ fn installOne(
 
     // 7. Add the directory entry and persist the space manager state.
     var entry = DirEntry{
-        .name = [_]u8{0} ** 64,
+        .name = @splat(0),
         .name_len = @as(u8, @intCast(name.len)),
         .meta_extent = meta_extent,
     };

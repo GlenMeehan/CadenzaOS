@@ -54,7 +54,7 @@ You will need the following tools installed:
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| Zig | **0.16.0 exactly** | Kernel compilation |
+| Zig | **0.17.1 exactly** | Kernel compilation |
 | NASM | Any recent (tested with 2.x and 3.x) | Bootloader assembly |
 | GNU binutils (as, ld, objcopy, readelf) | Any recent | Kernel linking and image creation |
 | QEMU | 6.0+ (tested with 10.x) | Testing |
@@ -62,11 +62,11 @@ You will need the following tools installed:
 
 See `DEPENDENCIES.md` for install commands and the versions CI uses.
 
-**Important:** CadenzaOS is built with Zig 0.16.0 specifically. Zig has
+**Important:** CadenzaOS is built with Zig 0.17.1 specifically. Zig has
 breaking changes between releases, so other versions are not supported and
 will likely fail to compile.
 
-The stable Zig 0.16.0 binary can be downloaded from:
+The stable Zig 0.17.1 binary can be downloaded from:
 https://ziglang.org/download/
 
 ---
