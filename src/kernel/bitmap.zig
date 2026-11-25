@@ -19,11 +19,11 @@
 //   • Supports only single-page allocation.
 //   • No contiguous allocation, merging, or fragmentation management.
 
-const std   = @import("std");
+const std = @import("std");
 const frame_allocator = @import("frame_allocator.zig");
 const Region = frame_allocator.Region;
-const vga   = @import("vga.zig");
-const mem   = @import("memory.zig");
+const vga = @import("vga.zig");
+const mem = @import("memory.zig");
 
 /// Size of a managed physical frame.
 pub const PAGE_SIZE: usize = 4096;
@@ -36,7 +36,7 @@ pub const PAGE_SIZE: usize = 4096;
 //
 // Bits are initialised to 1 so all memory starts in the reserved state
 // until explicitly marked usable during initialisation.
-var bitmap_storage: [32768]u8 = [_]u8{0xFF} ** 32768;
+var bitmap_storage: [32768]u8 = @splat(0xFF);
 
 var bitmap: []u8 = bitmap_storage[0..];
 
@@ -55,7 +55,7 @@ fn computeBitmapSize(pages: usize) usize {
 /// Mark a page as free (bit = 0).
 fn markFree(page_index: usize) void {
     const byte_index = page_index / 8;
-    const bit_index  = page_index % 8;
+    const bit_index = page_index % 8;
 
     bitmap[byte_index] &= ~(@as(u8, 1) << @intCast(bit_index));
 }
@@ -63,7 +63,7 @@ fn markFree(page_index: usize) void {
 /// Mark a page as allocated/reserved (bit = 1).
 fn markUsed(page_index: usize) void {
     const byte_index = page_index / 8;
-    const bit_index  = page_index % 8;
+    const bit_index = page_index % 8;
 
     bitmap[byte_index] |= (@as(u8, 1) << @intCast(bit_index));
 }
@@ -86,7 +86,7 @@ pub fn init(regions: []const Region) void {
 
     for (regions) |r| {
         const start_page = r.base / PAGE_SIZE;
-        const full_end   = start_page + r.length / PAGE_SIZE;
+        const full_end = start_page + r.length / PAGE_SIZE;
 
         // Memory beyond what the bitmap can describe is left unmanaged.
         if (start_page >= capacity_pages) continue;
@@ -116,7 +116,7 @@ pub fn init(regions: []const Region) void {
 /// `end_phys` is exclusive.
 pub fn markUsedRange(start_phys: usize, end_phys: usize) void {
     const start_page = start_phys / PAGE_SIZE;
-    const end_page   = (end_phys + PAGE_SIZE - 1) / PAGE_SIZE;
+    const end_page = (end_phys + PAGE_SIZE - 1) / PAGE_SIZE;
 
     var page = start_page;
     while (page < end_page) : (page += 1) {
@@ -130,10 +130,10 @@ pub fn markUsedRange(start_phys: usize, end_phys: usize) void {
 /// memory used to store its own bookkeeping structures.
 pub fn getStorageRange() struct { start: usize, end: usize } {
     const virt_start = @intFromPtr(&bitmap_storage[0]);
-    const virt_end   = virt_start + bitmap_storage.len;
+    const virt_end = virt_start + bitmap_storage.len;
 
     const phys_start = mem.virtToPhys(virt_start);
-    const phys_end   = mem.virtToPhys(virt_end);
+    const phys_end = mem.virtToPhys(virt_end);
 
     return .{ .start = phys_start, .end = phys_end };
 }
@@ -170,7 +170,7 @@ fn findFirstFree() ?usize {
 /// Return true if the specified page is currently marked used.
 fn isUsed(page_index: usize) bool {
     const byte_index = page_index / 8;
-    const bit_index  = page_index % 8;
+    const bit_index = page_index % 8;
 
     const mask = @as(u8, 1) << @intCast(bit_index);
 

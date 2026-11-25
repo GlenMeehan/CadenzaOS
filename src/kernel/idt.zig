@@ -29,13 +29,13 @@ extern fn load_idt(ptr: *const IDTR) void;
 /// The processor requires a 64-bit handler address to be split across
 /// three separate fields within each IDT entry.
 const IDTEntry = packed struct {
-    offset_low:  u16,
-    selector:    u16,
-    ist:         u8,
-    flags:       u8,
-    offset_mid:  u16,
+    offset_low: u16,
+    selector: u16,
+    ist: u8,
+    flags: u8,
+    offset_mid: u16,
     offset_high: u32,
-    reserved:    u32 = 0,
+    reserved: u32 = 0,
 };
 
 /// Interrupt Descriptor Table Register (IDTR).
@@ -44,7 +44,7 @@ const IDTEntry = packed struct {
 /// Descriptor Table.
 const IDTR = packed struct {
     limit: u16,
-    base:  u64,
+    base: u64,
 };
 
 /// The kernel's Interrupt Descriptor Table.
@@ -52,15 +52,15 @@ const IDTR = packed struct {
 /// x86 processors support 256 interrupt vectors. The table is aligned
 /// to a 16-byte boundary for predictable low-level access and CPU
 /// compatibility.
-var idt: [256]IDTEntry align(16) = [_]IDTEntry{.{
+var idt: [256]IDTEntry align(16) = @splat(.{
     .offset_low = 0,
-    .selector   = 0,
-    .ist        = 0,
-    .flags      = 0,
+    .selector = 0,
+    .ist = 0,
+    .flags = 0,
     .offset_mid = 0,
     .offset_high = 0,
-    .reserved   = 0,
-}} ** 256;
+    .reserved = 0,
+});
 
 // -----------------------------------------------------------------------------
 //  EXCEPTION DESCRIPTIONS
@@ -71,28 +71,28 @@ var idt: [256]IDTEntry align(16) = [_]IDTEntry{.{
 /// Used when displaying fault information during exception handling
 /// and early-kernel debugging.
 const exception_names = [_][]const u8{
-    "Division By Zero",                // 0
-    "Debug",                           // 1
-    "Non-Maskable Interrupt",          // 2
-    "Breakpoint",                      // 3
-    "Overflow",                        // 4
-    "Bound Range Exceeded",            // 5
-    "Invalid Opcode",                  // 6
-    "Device Not Available",            // 7
-    "Double Fault",                    // 8
-    "Coprocessor Segment Overrun",     // 9
-    "Invalid TSS",                     // 10
-    "Segment Not Present",             // 11
-    "Stack-Segment Fault",             // 12
-    "General Protection Fault",        // 13
-    "Page Fault",                      // 14
-    "Reserved",                        // 15
-    "x87 Floating-Point Exception",    // 16
-    "Alignment Check",                 // 17
-    "Machine Check",                   // 18
-    "SIMD Floating-Point Exception",   // 19
-    "Virtualization Exception",        // 20
-    "Control Protection Exception",    // 21
+    "Division By Zero", // 0
+    "Debug", // 1
+    "Non-Maskable Interrupt", // 2
+    "Breakpoint", // 3
+    "Overflow", // 4
+    "Bound Range Exceeded", // 5
+    "Invalid Opcode", // 6
+    "Device Not Available", // 7
+    "Double Fault", // 8
+    "Coprocessor Segment Overrun", // 9
+    "Invalid TSS", // 10
+    "Segment Not Present", // 11
+    "Stack-Segment Fault", // 12
+    "General Protection Fault", // 13
+    "Page Fault", // 14
+    "Reserved", // 15
+    "x87 Floating-Point Exception", // 16
+    "Alignment Check", // 17
+    "Machine Check", // 18
+    "SIMD Floating-Point Exception", // 19
+    "Virtualization Exception", // 20
+    "Control Protection Exception", // 21
 };
 
 // -----------------------------------------------------------------------------
@@ -105,13 +105,13 @@ const exception_names = [_][]const u8{
 /// fields required by the x86_64 interrupt-gate descriptor format.
 fn setIDTEntry(index: u8, handler: u64, selector: u16, flags: u8, ist: u8) void {
     idt[index] = IDTEntry{
-        .offset_low  = @truncate(handler & 0xFFFF),
-        .selector    = selector,
-        .ist         = ist,
-        .flags       = flags,
-        .offset_mid  = @truncate((handler >> 16) & 0xFFFF),
+        .offset_low = @truncate(handler & 0xFFFF),
+        .selector = selector,
+        .ist = ist,
+        .flags = flags,
+        .offset_mid = @truncate((handler >> 16) & 0xFFFF),
         .offset_high = @truncate((handler >> 32) & 0xFFFFFFFF),
-        .reserved    = 0,
+        .reserved = 0,
     };
 }
 
@@ -125,24 +125,24 @@ fn setIDTEntry(index: u8, handler: u64, selector: u16, flags: u8, ist: u8) void 
 /// then activates the completed table using the lidt instruction.
 pub fn init() void {
     const cs_selector: u16 = 0x08; // Kernel code segment selector
-    const flags: u8 = 0x8E;        // Present, Ring 0, interrupt gate
+    const flags: u8 = 0x8E; // Present, Ring 0, interrupt gate
 
     // Register exception handlers for selected CPU fault vectors.
-    setIDTEntry(0,  @intFromPtr(&exception0_asm),  cs_selector, flags, 0);
-    setIDTEntry(1,  @intFromPtr(&exception1_asm),  cs_selector, flags, 0);
-    setIDTEntry(2,  @intFromPtr(&exception2_asm),  cs_selector, flags, 0);
-    setIDTEntry(3,  @intFromPtr(&exception3_asm),  cs_selector, flags, 0);
-    setIDTEntry(4,  @intFromPtr(&exception4_asm),  cs_selector, flags, 0);
-    setIDTEntry(5,  @intFromPtr(&exception5_asm),  cs_selector, flags, 0);
-    setIDTEntry(6,  @intFromPtr(&exception6_asm),  cs_selector, flags, 0);
-    setIDTEntry(7,  @intFromPtr(&exception7_asm),  cs_selector, flags, 0);
-    setIDTEntry(8,  @intFromPtr(&exception8_asm),  cs_selector, flags, 0);
+    setIDTEntry(0, @intFromPtr(&exception0_asm), cs_selector, flags, 0);
+    setIDTEntry(1, @intFromPtr(&exception1_asm), cs_selector, flags, 0);
+    setIDTEntry(2, @intFromPtr(&exception2_asm), cs_selector, flags, 0);
+    setIDTEntry(3, @intFromPtr(&exception3_asm), cs_selector, flags, 0);
+    setIDTEntry(4, @intFromPtr(&exception4_asm), cs_selector, flags, 0);
+    setIDTEntry(5, @intFromPtr(&exception5_asm), cs_selector, flags, 0);
+    setIDTEntry(6, @intFromPtr(&exception6_asm), cs_selector, flags, 0);
+    setIDTEntry(7, @intFromPtr(&exception7_asm), cs_selector, flags, 0);
+    setIDTEntry(8, @intFromPtr(&exception8_asm), cs_selector, flags, 0);
     setIDTEntry(13, @intFromPtr(&exception13_asm), cs_selector, flags, 0);
     setIDTEntry(14, @intFromPtr(&exception14_asm), cs_selector, flags, 0);
 
     const idtr = IDTR{
         .limit = @sizeOf(@TypeOf(idt)) - 1,
-        .base  = @intFromPtr(&idt),
+        .base = @intFromPtr(&idt),
     };
 
     load_idt(&idtr);
@@ -184,15 +184,15 @@ fn exceptionHandler(num: u64, error_code: u64) noreturn {
 ///
 /// These routines save processor state, normalise exception stack
 /// layouts, and transfer control into Zig exception handling code.
-extern fn exception0_asm()  void;
-extern fn exception1_asm()  void;
-extern fn exception2_asm()  void;
-extern fn exception3_asm()  void;
-extern fn exception4_asm()  void;
-extern fn exception5_asm()  void;
-extern fn exception6_asm()  void;
-extern fn exception7_asm()  void;
-extern fn exception8_asm()  void;
+extern fn exception0_asm() void;
+extern fn exception1_asm() void;
+extern fn exception2_asm() void;
+extern fn exception3_asm() void;
+extern fn exception4_asm() void;
+extern fn exception5_asm() void;
+extern fn exception6_asm() void;
+extern fn exception7_asm() void;
+extern fn exception8_asm() void;
 extern fn exception13_asm() void;
 extern fn exception14_asm() void;
 

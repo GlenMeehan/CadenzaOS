@@ -20,19 +20,19 @@
 //   strategies (best-fit, coalescing policies, etc.) are not yet
 //   implemented.
 
-const std           = @import("std");
+const std = @import("std");
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
-const BlockDevice   = @import("block_device.zig").BlockDevice;
-const conv          = @import("../convert.zig");
-const memory        = @import("../memory.zig");
-const vga           = @import("../vga.zig");
+const BlockDevice = @import("block_device.zig").BlockDevice;
+const conv = @import("../convert.zig");
+const memory = @import("../memory.zig");
+const vga = @import("../vga.zig");
 const conf = @import("../config.zig");
 
 // --------------------------------
 // On-disk constants and structures
 // --------------------------------
 
-pub const SM_MAGIC: u64 = 0x434F44415F534D31;  // "CODA_SM1"
+pub const SM_MAGIC: u64 = 0x434F44415F534D31; // "CODA_SM1"
 
 /// A contiguous range of filesystem blocks.
 ///
@@ -55,9 +55,9 @@ pub const Extent = extern struct {
 /// Layout is fixed at 64 bytes. The reserved field provides space for
 /// future format extensions while preserving on-disk compatibility.
 pub const SmHeader = struct {
-    magic:             u64,      // Must equal SM_MAGIC
-    free_extent_count: u32,      // Number of free Extent records on disk
-    reserved:          [52]u8,   // Reserved for future use; must remain zeroed
+    magic: u64, // Must equal SM_MAGIC
+    free_extent_count: u32, // Number of free Extent records on disk
+    reserved: [52]u8, // Reserved for future use; must remain zeroed
 };
 
 /// Errors specific to SpaceManager operations.
@@ -72,7 +72,7 @@ pub const SpaceManagerError = error{
 // --------------------------------
 
 pub const SpaceManager = struct {
-    device:    *BlockDevice,
+    device: *BlockDevice,
     free_list: ArrayListUnmanaged(Extent),
 
     // ----------------------------------------------------------------
@@ -89,8 +89,8 @@ pub const SpaceManager = struct {
     /// (superblock, SM blocks, etc.) rather than relying on callers
     /// to exclude them from the initial extent.
     pub fn initFresh(
-        allocator:   std.mem.Allocator,
-        device:      *BlockDevice,
+        allocator: std.mem.Allocator,
+        device: *BlockDevice,
         start_block: u64,
         block_count: u64,
     ) !SpaceManager {
@@ -104,7 +104,8 @@ pub const SpaceManager = struct {
         return SpaceManager{
             .device = device,
             .free_list = .{
-                .items    = slice[0..1],
+                .pointer_stability = .{},
+                .items = slice[0..1],
                 .capacity = 1,
             },
         };
@@ -118,8 +119,8 @@ pub const SpaceManager = struct {
     /// TODO: Support a richer on-disk metadata format spanning multiple
     /// metadata records or regions.
     pub fn initFromDisk(
-        allocator:   std.mem.Allocator,
-        device:      *BlockDevice,
+        allocator: std.mem.Allocator,
+        device: *BlockDevice,
         start_block: u64,
     ) !SpaceManager {
 
@@ -142,9 +143,9 @@ pub const SpaceManager = struct {
 
         // 3. Calculate how many complete blocks are required to hold
         //    the persisted extent array.
-        const total_bytes    = header.free_extent_count * @sizeOf(Extent);
+        const total_bytes = header.free_extent_count * @sizeOf(Extent);
         const blocks_to_read = (total_bytes + device.block_size - 1) / device.block_size;
-        const read_size      = blocks_to_read * device.block_size;
+        const read_size = blocks_to_read * device.block_size;
 
         // 4. Read the packed extent data immediately following the header.
         var temp_buf = try allocator.alloc(u8, read_size);
@@ -159,7 +160,8 @@ pub const SpaceManager = struct {
         return SpaceManager{
             .device = device,
             .free_list = .{
-                .items    = slice,
+                .pointer_stability = .{},
+                .items = slice,
                 .capacity = header.free_extent_count,
             },
         };
@@ -235,8 +237,8 @@ pub const SpaceManager = struct {
     ///
     /// TODO: Support extent lists that span multiple metadata blocks.
     pub fn flushToDisk(
-        self:        *SpaceManager,
-        allocator:   std.mem.Allocator,
+        self: *SpaceManager,
+        allocator: std.mem.Allocator,
         start_block: u64,
         block_count: u64,
     ) !void {
@@ -247,9 +249,9 @@ pub const SpaceManager = struct {
 
         // Write the Space Manager header block first.
         var header = SmHeader{
-            .magic             = SM_MAGIC,
+            .magic = SM_MAGIC,
             .free_extent_count = @as(u32, @intCast(self.free_list.items.len)),
-            .reserved          = [_]u8{0} ** 52,
+            .reserved = @splat(0),
         };
 
         try writeBlockStruct(
@@ -305,8 +307,8 @@ pub const SpaceManager = struct {
     ///
     /// TODO: Implement adjacency checks against the free-list.
     pub fn tryGrow(
-        self:         *SpaceManager,
-        extent:       Extent,
+        self: *SpaceManager,
+        extent: Extent,
         extra_blocks: u64,
     ) SpaceManagerError!?Extent {
         _ = self;
@@ -345,7 +347,6 @@ pub const SpaceManager = struct {
     pub fn getUsedBlockCount(self: *const SpaceManager, total_disk_blocks: u64) u64 {
         return total_disk_blocks - self.getFreeBlockCount();
     }
-
 };
 
 // ----------------------------------------------------------------

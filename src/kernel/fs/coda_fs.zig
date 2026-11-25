@@ -12,28 +12,28 @@
 // This file contains NO caching, NO VFS layer, and NO buffering.
 // All operations are direct, synchronous, and block-aligned.
 
-const std        = @import("std");
-const conf       = @import("../config.zig");
-const memory     = @import("../memory.zig");
-const vga        = @import("../vga.zig");
-const vitals     = @import("../vitals.zig");
+const std = @import("std");
+const conf = @import("../config.zig");
+const memory = @import("../memory.zig");
+const vga = @import("../vga.zig");
+const vitals = @import("../vitals.zig");
 const BlockDevice = @import("block_device.zig").BlockDevice;
-const Extent      = @import("coda_sm.zig").Extent;
+const Extent = @import("coda_sm.zig").Extent;
 const SpaceManager = @import("coda_sm.zig").SpaceManager;
-const Directory  = @import("coda_file.zig").Directory;
-const DirEntry   = @import("coda_file.zig").DirEntry;
-const FileMeta   = @import("coda_file.zig").FileMeta;
-const FileType   = @import("coda_file.zig").FileType;
-const MAX_NAME   = @import("coda_file.zig").MAX_NAME;
+const Directory = @import("coda_file.zig").Directory;
+const DirEntry = @import("coda_file.zig").DirEntry;
+const FileMeta = @import("coda_file.zig").FileMeta;
+const FileType = @import("coda_file.zig").FileType;
+const MAX_NAME = @import("coda_file.zig").MAX_NAME;
 const conv = @import("../convert.zig");
 
 // --------------------------------
 // Filesystem constants
 // --------------------------------
 
-pub const CODA_MAGIC:   u64 = 0x434F44415F465331;
+pub const CODA_MAGIC: u64 = 0x434F44415F465331;
 pub const CODA_VERSION: u32 = 1;
-pub const FLAG_DIRTY:   u64 = 1 << 0;  // 0x0000000000000001
+pub const FLAG_DIRTY: u64 = 1 << 0; // 0x0000000000000001
 
 // --------------------------------
 // Public types
@@ -41,9 +41,9 @@ pub const FLAG_DIRTY:   u64 = 1 << 0;  // 0x0000000000000001
 
 /// Telemetry record captured per block I/O operation.
 pub const IoEvent = struct {
-    lba:      u64,
+    lba: u64,
     is_write: bool,
-    cycles:   u64,
+    cycles: u64,
 };
 
 /// Operating policy embedded in the superblock.
@@ -65,21 +65,21 @@ pub const SystemPolicy = conf.SystemPolicy;
 /// NOTE: This struct is written to disk verbatim via writeBlockStruct().
 ///       Any layout change is a breaking on-disk format change.
 pub const Superblock = struct {
-    magic:        u64,  // 8 bytes
-    flags:        u64,  // 8 bytes
-    version:      u32,  // 4 bytes
-    block_size:   u32,  // 4 bytes (Total 24 - Good)
-    total_blocks: u64,  // 8 bytes (Total 32 - Good)
+    magic: u64, // 8 bytes
+    flags: u64, // 8 bytes
+    version: u32, // 4 bytes
+    block_size: u32, // 4 bytes (Total 24 - Good)
+    total_blocks: u64, // 8 bytes (Total 32 - Good)
 
     // Build policy awareness into the superblock
-    policy: conf.SystemPolicy,          // 1 byte (from config.zig)
-    _pad: [7]u8 = [_]u8{0} ** 7,        // 7 bytes (Total 8 - Perfect alignment!)
+    policy: conf.SystemPolicy, // 1 byte (from config.zig)
+    _pad: [7]u8 = @splat(0), // 7 bytes (Total 8 - Perfect alignment!)
 
-    latency_threshold_ns: u64,          // Now starts on a clean 8-byte boundary
-    sm_start_block:       u64,
-    sm_block_count:       u64,
+    latency_threshold_ns: u64, // Now starts on a clean 8-byte boundary
+    sm_start_block: u64,
+    sm_block_count: u64,
 
-    root_dir_extent_start:  u64,
+    root_dir_extent_start: u64,
     root_dir_extent_blocks: u64,
 
     reserved: [128]u8,
@@ -87,8 +87,8 @@ pub const Superblock = struct {
 
 /// Result returned by resolvePath().
 pub const PathResult = struct {
-    lba:          u64,
-    blocks:       u64,
+    lba: u64,
+    blocks: u64,
     is_directory: bool,
 };
 
@@ -108,12 +108,12 @@ pub const PathResult = struct {
 ///
 /// NOT reference-counted. NOT thread-safe.
 pub const CodaFs = struct {
-    device:        *BlockDevice,
-    superblock:    Superblock,
+    device: *BlockDevice,
+    superblock: Superblock,
     space_manager: SpaceManager,
-    root_dir:      Directory,
-    brain_ptr:     ?*anyopaque = null,
-    on_telemetry:  ?*const fn (ctx: ?*anyopaque, policy: SystemPolicy, cycles: u64) void = null,
+    root_dir: Directory,
+    brain_ptr: ?*anyopaque = null,
+    on_telemetry: ?*const fn (ctx: ?*anyopaque, policy: SystemPolicy, cycles: u64) void = null,
 
     // ----------------------------------------------------------------
     // Mount / format
@@ -147,10 +147,10 @@ pub const CodaFs = struct {
         };
 
         return CodaFs{
-            .device        = device,
-            .superblock    = sb,
+            .device = device,
+            .superblock = sb,
             .space_manager = sm,
-            .root_dir      = root_dir,
+            .root_dir = root_dir,
         };
     }
 
@@ -162,7 +162,7 @@ pub const CodaFs = struct {
 
         const total_blocks: u64 = device.total_blocks;
 
-        const sb_block:      u64 = conf.SB_LBA;
+        const sb_block: u64 = conf.SB_LBA;
         const sm_start_block: u64 = conf.SB_LBA + 1;
         const sm_block_count: u64 = 16;
 
@@ -180,20 +180,19 @@ pub const CodaFs = struct {
         const root_extent = try sm.allocate(4);
 
         var sb = Superblock{
-            .magic       = CODA_MAGIC,
-            .version     = CODA_VERSION,
-            .block_size  = @as(u32, @intCast(device.block_size)),
+            .magic = CODA_MAGIC,
+            .version = CODA_VERSION,
+            .block_size = @as(u32, @intCast(device.block_size)),
             .total_blocks = total_blocks,
-            .policy               = conf.current_policy,    // Default operating policy
-            .latency_threshold_ns = 28480,   // Placeholder baseline
-            .sm_start_block  = sm_start_block,
-            .sm_block_count  = sm_block_count,
-            .root_dir_extent_start  = root_extent.start_block,
+            .policy = conf.current_policy, // Default operating policy
+            .latency_threshold_ns = 28480, // Placeholder baseline
+            .sm_start_block = sm_start_block,
+            .sm_block_count = sm_block_count,
+            .root_dir_extent_start = root_extent.start_block,
             .root_dir_extent_blocks = root_extent.block_count,
-            .flags   = 0,
-            .reserved = [_]u8{0} ** 128,
+            .flags = 0,
+            .reserved = @splat(0),
         };
-
 
         try sm.flushToDisk(allocator, sm_start_block, sm_block_count);
         try initEmptyRootDir(device, root_extent);
@@ -244,11 +243,11 @@ pub const CodaFs = struct {
     ///
     /// `dir_blocks` is retained for signature compatibility but unused here.
     pub fn createEntry(
-        fs:        *CodaFs,
+        fs: *CodaFs,
         allocator: std.mem.Allocator,
-        dir_lba:   u64,
+        dir_lba: u64,
         dir_blocks: u64,
-        name:      []const u8,
+        name: []const u8,
         file_type: FileType,
     ) !void {
         _ = dir_blocks;
@@ -268,10 +267,10 @@ pub const CodaFs = struct {
 
         // 3. Initialise FileMeta
         var meta = FileMeta{
-            .file_type    = file_type,
-            .size_bytes   = 0,
+            .file_type = file_type,
+            .size_bytes = 0,
             .extent_count = 1,
-            .extents      = [_]Extent{.{ .start_block = 0, .block_count = 0 }} ** 8,
+            .extents = @splat(.{ .start_block = 0, .block_count = 0 }),
         };
         meta.extents[0] = data_extent;
 
@@ -298,8 +297,8 @@ pub const CodaFs = struct {
 
         // 6. Build and insert the DirEntry into the parent
         var new_entry = DirEntry{
-            .name       = [_]u8{0} ** MAX_NAME,
-            .name_len   = @as(u8, @intCast(name.len)),
+            .name = @splat(0),
+            .name_len = @as(u8, @intCast(name.len)),
             .meta_extent = meta_extent,
         };
         @memcpy(new_entry.name[0..name.len], name);
@@ -504,7 +503,7 @@ pub const CodaFs = struct {
                     }
                 }
             }
-            return error.DirectoryFull;  // Root is fixed-size; cannot grow
+            return error.DirectoryFull; // Root is fixed-size; cannot grow
         } else {
             // Subdirectory: scan existing extents for a free slot
             var meta = try fs.readFileMeta(allocator, dest_meta_lba);
@@ -675,7 +674,6 @@ pub const CodaFs = struct {
         _ = memory.memcpy(buf[0..size].ptr, src.ptr, size);
 
         _ = try self.writeBlocksWithTelemetry(lba, buf[0..self.device.block_size]);
-
     }
 
     /// Append a new data block to a file's extent list.
@@ -726,17 +724,17 @@ pub const CodaFs = struct {
     pub fn resolvePath(fs: *CodaFs, allocator: std.mem.Allocator, start_dir_lba: u64, path: []const u8) !PathResult {
         if (path.len == 0) return error.EmptyPath;
 
-        var current_lba:    u64 = 0;
+        var current_lba: u64 = 0;
         var current_blocks: u64 = 1;
         var remaining_path: []const u8 = "";
 
         // 1. Determine start: absolute ("/...") or relative
         if (path[0] == '/') {
-            current_lba    = fs.superblock.root_dir_extent_start;
+            current_lba = fs.superblock.root_dir_extent_start;
             current_blocks = fs.superblock.root_dir_extent_blocks;
             remaining_path = path[1..];
         } else {
-            current_lba    = start_dir_lba;
+            current_lba = start_dir_lba;
             current_blocks = 1;
             remaining_path = path;
         }
@@ -747,8 +745,8 @@ pub const CodaFs = struct {
             std.mem.eql(u8, remaining_path, ".."))
         {
             return PathResult{
-                .lba          = current_lba,
-                .blocks       = current_blocks,
+                .lba = current_lba,
+                .blocks = current_blocks,
                 .is_directory = true,
             };
         }
@@ -756,8 +754,8 @@ pub const CodaFs = struct {
         // 3. Walk the tree segment by segment
         var it = std.mem.tokenizeScalar(u8, remaining_path, '/');
         while (it.next()) |segment| {
-            if (std.mem.eql(u8, segment, "."))  continue;
-            if (std.mem.eql(u8, segment, "..")) continue;  // Parent traversal not yet implemented
+            if (std.mem.eql(u8, segment, ".")) continue;
+            if (std.mem.eql(u8, segment, "..")) continue; // Parent traversal not yet implemented
 
             const entry = fs.findFile(allocator, current_lba, segment) catch |err| {
                 if (err == error.FileNotFound) return error.PathNotFound;
@@ -769,13 +767,13 @@ pub const CodaFs = struct {
             if (it.peek() != null) {
                 // Intermediate segment — must be a directory
                 if (meta.file_type != .Directory) return error.NotADirectory;
-                current_lba    = entry.meta_extent.start_block;
+                current_lba = entry.meta_extent.start_block;
                 current_blocks = meta.extent_count;
             } else {
                 // Final segment
                 return PathResult{
-                    .lba          = entry.meta_extent.start_block,
-                    .blocks       = meta.extent_count,
+                    .lba = entry.meta_extent.start_block,
+                    .blocks = meta.extent_count,
                     .is_directory = (meta.file_type == .Directory),
                 };
             }
@@ -841,8 +839,8 @@ pub const CodaFs = struct {
         var lo: u32 = undefined;
         var hi: u32 = undefined;
         asm volatile ("rdtsc"
-        : [lo] "={eax}" (lo),
-                      [hi] "={edx}" (hi),
+            : [lo] "={eax}" (lo),
+              [hi] "={edx}" (hi),
         );
         return (@as(u64, hi) << 32) | lo;
     }
@@ -853,7 +851,6 @@ pub const CodaFs = struct {
         // We call the existing writeSuperblock helper used by mkfs
         try writeSuperblock(self.device, sb_block, &self.superblock);
     }
-
 };
 
 // ----------------------------------------------------------------
