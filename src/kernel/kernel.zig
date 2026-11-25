@@ -112,7 +112,7 @@ var kmain_stack: [16384]u8 align(16) linksection(".bss") = undefined;
 ///
 /// Stored outside the kmain() stack frame so it remains valid for the
 /// lifetime of the shell task.
-var shell_stack_buf: [65536]u8 align(16) = [_]u8{0} ** 65536;
+var shell_stack_buf: [65536]u8 align(16) = @splat(0);
 
 extern const _kernel_end: u8;
 extern fn isr80_stub() callconv(.c) void;
@@ -257,12 +257,12 @@ pub export fn kmain() noreturn {
         fb.init(
             boot_info.framebuffer_addr,
             @intCast(boot_info.fb_stride),
-                @intCast(boot_info.fb_width),
-                @intCast(boot_info.fb_height),
-                @intCast(boot_info.fb_bpp),
-                boot_info.red_position,
-                boot_info.green_position,
-                boot_info.blue_position,
+            @intCast(boot_info.fb_width),
+            @intCast(boot_info.fb_height),
+            @intCast(boot_info.fb_bpp),
+            boot_info.red_position,
+            boot_info.green_position,
+            boot_info.blue_position,
         );
 
         vga.graphics_mode = true;
@@ -540,10 +540,10 @@ pub export fn kmain() noreturn {
     pic.remap(32, 40);
 
     // Enable required hardware interrupt lines.
-    pic.unmaskIrq(@as(u8, 0));   // PIT timer
-    pic.unmaskIrq(@as(u8, 1));   // Keyboard
-    pic.unmaskIrq(@as(u8, 2));   // PIC cascade
-    pic.unmaskIrq(@as(u8, 12));  // Mouse
+    pic.unmaskIrq(@as(u8, 0)); // PIT timer
+    pic.unmaskIrq(@as(u8, 1)); // Keyboard
+    pic.unmaskIrq(@as(u8, 2)); // PIC cascade
+    pic.unmaskIrq(@as(u8, 12)); // Mouse
 
     // Initialise PS/2 mouse support.
     mouse.initMouse();
@@ -609,8 +609,8 @@ pub export fn kmain() noreturn {
     // Kernel-owned E820 memory map copy.
     const e820_start = E820Store.getTableAddr();
     const e820_end =
-    e820_start +
-    @as(usize, E820Store.getTableCount()) * @sizeOf(E820Store.E820Entry);
+        e820_start +
+        @as(usize, E820Store.getTableCount()) * @sizeOf(E820Store.E820Entry);
 
     bm.markUsedRange(e820_start, e820_end);
 
@@ -668,7 +668,9 @@ pub export fn kmain() noreturn {
     // Read the currently active page-table root from CR3 so that APIC
     // mappings can be added to the running address space.
     var cr3: usize = 0;
-    asm volatile ("mov %%cr3, %[cr3]" : [cr3] "=r" (cr3));
+    asm volatile ("mov %%cr3, %[cr3]"
+        : [cr3] "=r" (cr3),
+    );
 
     // Map the Local APIC MMIO region.
     mem_mod.mapPage(
@@ -890,9 +892,8 @@ pub export fn kmain() noreturn {
             \\ mov %[top], %%rsp
             \\ xor %%rbp, %%rbp
             :
-            : [top] "r" (stack_top)
-            : .{}
-        );
+            : [top] "r" (stack_top),
+            : .{});
 
         // Register the current execution context as Task 0.
         scheduler.manager.registerCurrentThreadAsTask(0, 0);
@@ -914,7 +915,6 @@ pub export fn kmain() noreturn {
         while (true) {
             asm volatile ("hlt");
         }
-
     } else {
 
         // Scheduler-disabled mode.

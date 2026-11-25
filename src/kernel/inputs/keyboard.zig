@@ -43,36 +43,64 @@ const term = root.term;
 // Entries that do not produce printable characters are left as null.
 
 pub const KEYMAP: [128]?u8 = blk: {
-    var map: [128]?u8 = .{null} ** 128;
+    var map: [128]?u8 = @splat(null);
 
     // Letters (US QWERTY)
-    map[0x1E] = 'a'; map[0x30] = 'b'; map[0x2E] = 'c';
-    map[0x20] = 'd'; map[0x12] = 'e'; map[0x21] = 'f';
-    map[0x22] = 'g'; map[0x23] = 'h'; map[0x17] = 'i';
-    map[0x24] = 'j'; map[0x25] = 'k'; map[0x26] = 'l';
-    map[0x32] = 'm'; map[0x31] = 'n'; map[0x18] = 'o';
-    map[0x19] = 'p'; map[0x10] = 'q'; map[0x13] = 'r';
-    map[0x1F] = 's'; map[0x14] = 't'; map[0x16] = 'u';
-    map[0x2F] = 'v'; map[0x11] = 'w'; map[0x2D] = 'x';
-    map[0x15] = 'y'; map[0x2C] = 'z';
+    map[0x1E] = 'a';
+    map[0x30] = 'b';
+    map[0x2E] = 'c';
+    map[0x20] = 'd';
+    map[0x12] = 'e';
+    map[0x21] = 'f';
+    map[0x22] = 'g';
+    map[0x23] = 'h';
+    map[0x17] = 'i';
+    map[0x24] = 'j';
+    map[0x25] = 'k';
+    map[0x26] = 'l';
+    map[0x32] = 'm';
+    map[0x31] = 'n';
+    map[0x18] = 'o';
+    map[0x19] = 'p';
+    map[0x10] = 'q';
+    map[0x13] = 'r';
+    map[0x1F] = 's';
+    map[0x14] = 't';
+    map[0x16] = 'u';
+    map[0x2F] = 'v';
+    map[0x11] = 'w';
+    map[0x2D] = 'x';
+    map[0x15] = 'y';
+    map[0x2C] = 'z';
 
     // Number row
-    map[0x0B] = '0'; map[0x02] = '1'; map[0x03] = '2';
-    map[0x04] = '3'; map[0x05] = '4'; map[0x06] = '5';
-    map[0x07] = '6'; map[0x08] = '7'; map[0x09] = '8';
+    map[0x0B] = '0';
+    map[0x02] = '1';
+    map[0x03] = '2';
+    map[0x04] = '3';
+    map[0x05] = '4';
+    map[0x06] = '5';
+    map[0x07] = '6';
+    map[0x08] = '7';
+    map[0x09] = '8';
     map[0x0A] = '9';
 
     // Whitespace and control characters
-    map[0x39] = ' ';     // Space
-    map[0x1C] = '\n';    // Enter
-    map[0x0E] = '\x08';  // Backspace
+    map[0x39] = ' '; // Space
+    map[0x1C] = '\n'; // Enter
+    map[0x0E] = '\x08'; // Backspace
 
     // Symbols
-    map[0x0C] = '-'; map[0x0D] = '=';
-    map[0x1A] = '['; map[0x1B] = ']';
-    map[0x27] = ';'; map[0x28] = '\'';
-    map[0x29] = '`'; map[0x33] = ',';
-    map[0x34] = '.'; map[0x35] = '/';
+    map[0x0C] = '-';
+    map[0x0D] = '=';
+    map[0x1A] = '[';
+    map[0x1B] = ']';
+    map[0x27] = ';';
+    map[0x28] = '\'';
+    map[0x29] = '`';
+    map[0x33] = ',';
+    map[0x34] = '.';
+    map[0x35] = '/';
 
     break :blk map;
 };
@@ -82,23 +110,46 @@ pub const KEYMAP: [128]?u8 = blk: {
 /// Produces uppercase letters and the shifted variants of symbol keys
 /// according to the US QWERTY keyboard layout.
 pub const KEYMAP_SHIFTED: [128]?u8 = blk: {
-    var map: [128]?u8 = .{null} ** 128;
+    var map: [128]?u8 = @splat(null);
 
     // Uppercase letters
-    map[0x1E] = 'A'; map[0x30] = 'B'; map[0x2E] = 'C';
-    map[0x20] = 'D'; map[0x12] = 'E'; map[0x21] = 'F';
-    map[0x22] = 'G'; map[0x23] = 'H'; map[0x17] = 'I';
-    map[0x24] = 'J'; map[0x25] = 'K'; map[0x26] = 'L';
-    map[0x32] = 'M'; map[0x31] = 'N'; map[0x18] = 'O';
-    map[0x19] = 'P'; map[0x10] = 'Q'; map[0x13] = 'R';
-    map[0x1F] = 'S'; map[0x14] = 'T'; map[0x16] = 'U';
-    map[0x2F] = 'V'; map[0x11] = 'W'; map[0x2D] = 'X';
-    map[0x15] = 'Y'; map[0x2C] = 'Z';
+    map[0x1E] = 'A';
+    map[0x30] = 'B';
+    map[0x2E] = 'C';
+    map[0x20] = 'D';
+    map[0x12] = 'E';
+    map[0x21] = 'F';
+    map[0x22] = 'G';
+    map[0x23] = 'H';
+    map[0x17] = 'I';
+    map[0x24] = 'J';
+    map[0x25] = 'K';
+    map[0x26] = 'L';
+    map[0x32] = 'M';
+    map[0x31] = 'N';
+    map[0x18] = 'O';
+    map[0x19] = 'P';
+    map[0x10] = 'Q';
+    map[0x13] = 'R';
+    map[0x1F] = 'S';
+    map[0x14] = 'T';
+    map[0x16] = 'U';
+    map[0x2F] = 'V';
+    map[0x11] = 'W';
+    map[0x2D] = 'X';
+    map[0x15] = 'Y';
+    map[0x2C] = 'Z';
 
     // Shifted number row
-    map[0x02] = '!'; map[0x03] = '@'; map[0x04] = '#';
-    map[0x05] = '$'; map[0x06] = '%'; map[0x07] = '^';
-    map[0x08] = '&'; map[0x09] = '*'; map[0x0A] = '(';
+    map[0x02] = '!';
+    map[0x03] = '@';
+    map[0x04] = '#';
+    map[0x05] = '$';
+    map[0x06] = '%';
+    map[0x07] = '^';
+    map[0x08] = '&';
+    map[0x09] = '*';
+    map[0x0A] = '(';
     map[0x0B] = ')';
 
     // Whitespace and control characters
@@ -107,11 +158,16 @@ pub const KEYMAP_SHIFTED: [128]?u8 = blk: {
     map[0x0E] = '\x08';
 
     // Shifted symbols
-    map[0x0C] = '_'; map[0x0D] = '+';
-    map[0x1A] = '{'; map[0x1B] = '}';
-    map[0x27] = ':'; map[0x28] = '"';
-    map[0x29] = '~'; map[0x33] = '<';
-    map[0x34] = '>'; map[0x35] = '?';
+    map[0x0C] = '_';
+    map[0x0D] = '+';
+    map[0x1A] = '{';
+    map[0x1B] = '}';
+    map[0x27] = ':';
+    map[0x28] = '"';
+    map[0x29] = '~';
+    map[0x33] = '<';
+    map[0x34] = '>';
+    map[0x35] = '?';
 
     break :blk map;
 };
@@ -154,7 +210,7 @@ var extended_release = false;
 const BUFFER_SIZE = 64;
 
 pub const RingBuffer = struct {
-    data: [BUFFER_SIZE]u8 = [_]u8{0} ** BUFFER_SIZE,
+    data: [BUFFER_SIZE]u8 = @splat(0),
     head: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     tail: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
@@ -249,8 +305,14 @@ pub fn handleScancode(scancode: u8) void {
 
     // Non-ASCII special keys handled directly.
     switch (scancode) {
-        0x01 => { term.handleKeyEvent(.{ .special = .Escape }); return; },
-        0x0F => { term.handleKeyEvent(.{ .special = .Tab }); return; },
+        0x01 => {
+            term.handleKeyEvent(.{ .special = .Escape });
+            return;
+        },
+        0x0F => {
+            term.handleKeyEvent(.{ .special = .Tab });
+            return;
+        },
         else => {},
     }
 
@@ -259,7 +321,7 @@ pub fn handleScancode(scancode: u8) void {
     // Translate printable keys through the active keymap.
     if (scancodeToAscii(scancode)) |ch| {
         const final_ch = if (ctrl_down)
-        (ch & 0x1F) // Convert Ctrl+A..Ctrl+Z into control characters
+            (ch & 0x1F) // Convert Ctrl+A..Ctrl+Z into control characters
         else
             ch;
 
@@ -293,7 +355,7 @@ fn scancodeToAscii(sc: u8) ?u8 {
     if (sc >= KEYMAP.len) return null;
 
     return if (shift_down)
-    KEYMAP_SHIFTED[sc]
+        KEYMAP_SHIFTED[sc]
     else
         KEYMAP[sc];
 }
@@ -342,9 +404,9 @@ fn handleExtended(sc: u8) void {
         0x50, 0x72 => term.handleKeyEvent(.{ .special = .Down }),
         0x4B, 0x6B => term.handleKeyEvent(.{ .special = .Left }),
         0x4D, 0x74 => term.handleKeyEvent(.{ .special = .Right }),
-        0x53       => term.handleKeyEvent(.{ .special = .Delete }),
-        0x47       => term.handleKeyEvent(.{ .special = .Home }),
-        0x4F       => term.handleKeyEvent(.{ .special = .End }),
+        0x53 => term.handleKeyEvent(.{ .special = .Delete }),
+        0x47 => term.handleKeyEvent(.{ .special = .Home }),
+        0x4F => term.handleKeyEvent(.{ .special = .End }),
         else => {},
     }
 }

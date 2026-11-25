@@ -21,13 +21,13 @@ const cmd_count = std.enums.values(conf.CommandID).len;
 
 // Fixed-size transition table storing transition weights between
 // command pairs.
-pub var transition_table = [_][32]u16{ [_]u16{0} ** 32 } ** 32;
+pub var transition_table: [32][32]u16 = @splat(@splat(0));
 
 /// The Conductor's assessment of overall system health.
 pub const ConductorState = enum {
-    Optimal,    // Low latency, all features enabled
+    Optimal, // Low latency, all features enabled
     Discordant, // Elevated latency, defer non-essential work
-    Critical,   // Severe latency, restrict expensive operations
+    Critical, // Severe latency, restrict expensive operations
 };
 
 pub var current_state: ConductorState = .Optimal;
@@ -152,8 +152,8 @@ pub fn decayHabits() void {
 ///
 /// A score of zero indicates the sequence has never been observed.
 pub fn getScore(prev: conf.CommandID, curr: conf.CommandID) u16 {
-    const p_idx = @intFromEnum(prev);
-    const c_idx = @intFromEnum(curr);
+    const p_idx = @backingInt(prev);
+    const c_idx = @backingInt(curr);
 
     // Defensive bounds check against table dimensions.
     if (p_idx >= transition_table.len or
@@ -165,7 +165,7 @@ pub fn getScore(prev: conf.CommandID, curr: conf.CommandID) u16 {
 
 /// Return the highest transition score originating from `prev`.
 pub fn getTopScoreInRow(prev: conf.CommandID) u16 {
-    const row = @intFromEnum(prev);
+    const row = @backingInt(prev);
 
     // Defensive safety fence against invalid indices.
     if (row >= 16) return 0;

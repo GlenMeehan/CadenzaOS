@@ -9,7 +9,7 @@
 [![licence](https://img.shields.io/github/license/GlenMeehan/CadenzaOS)](LICENSE)
 [![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/BcDDAjnBJ)
 
-CadenzaOS is a 64-bit operating system built from scratch in Zig 0.16.0, for bare-metal x86-64 hardware. It is not a Unix clone or a teaching exercise in the traditional sense: CadenzaOS is an exploration of what an OS looks like when behavioural intelligence is a first-class kernel concern rather than a bolt-on application layer.
+CadenzaOS is a 64-bit operating system built from scratch in Zig 0.17.1, for bare-metal x86-64 hardware. It is not a Unix clone or a teaching exercise in the traditional sense: CadenzaOS is an exploration of what an OS looks like when behavioural intelligence is a first-class kernel concern rather than a bolt-on application layer.
 
 The kernel observes and models user and program behaviour in real time, flags anomalies, and adapts its policy to what "normal" looks like for a given deployment. The long-term goal is an OS where the kernel itself is the first line of defence. Today it observes and flags; it cannot yet contain a misbehaving program (see the status section below).
 
@@ -88,12 +88,12 @@ See [DEPENDENCIES.md](DEPENDENCIES.md) for the full list, install commands and t
 
 | Tool | Version | Notes |
 |------|---------|-------|
-| Zig | 0.16.0 exactly | Other versions will not compile |
+| Zig | 0.17.1 exactly | Other versions will not compile |
 | NASM | tested with 2.x and 3.02 | Bootloader and IRQ assembly stubs |
 | GNU binutils (as, ld, objcopy, readelf) | tested with 2.42 and 2.46 | Kernel linking |
 | QEMU | tested with 10.2.2 | `qemu-system-x86_64` |
 
-Zig 0.16.0 can be downloaded from [ziglang.org/download](https://ziglang.org/download/). Put it on your PATH, or point the build at it with `export ZIG=/path/to/zig`.
+Zig 0.17.1 can be downloaded from [ziglang.org/download](https://ziglang.org/download/). Put it on your PATH, or point the build at it with `export ZIG=/path/to/zig`.
 
 ### Build and run
 
