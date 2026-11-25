@@ -13,7 +13,7 @@
 set -e
 
 # --- Configuration ---
-ZIG="${ZIG:-/home/glen/zig/stable-0.17.1/zig}"
+ZIG="${ZIG:-zig}"
 if ! command -v "$ZIG" >/dev/null 2>&1; then
     echo "❌ Zig not found. Install Zig 0.17.1 or set ZIG=/path/to/zig"
     exit 1
