@@ -7,7 +7,7 @@
 [![smoke](https://github.com/GlenMeehan/CadenzaOS/actions/workflows/smoke.yml/badge.svg)](https://github.com/GlenMeehan/CadenzaOS/actions/workflows/smoke.yml)
 [![release](https://img.shields.io/github/v/release/GlenMeehan/CadenzaOS)](https://github.com/GlenMeehan/CadenzaOS/releases)
 [![licence](https://img.shields.io/github/license/GlenMeehan/CadenzaOS)](LICENSE)
-[![Discord](https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white)](https://discord.gg/BcDDAjnBJ)
+[![Reddit](https://img.shields.io/badge/Reddit-r%2FCadenzaOS-FF4500?logo=reddit&logoColor=white)](https://www.reddit.com/user/Impossible_Cod9831/)
 
 CadenzaOS is a 64-bit operating system built from scratch in Zig 0.17.1, for bare-metal x86-64 hardware. It is not a Unix clone or a teaching exercise in the traditional sense: CadenzaOS is an exploration of what an OS looks like when behavioural intelligence is a first-class kernel concern rather than a bolt-on application layer.
 
@@ -248,5 +248,7 @@ Apache License 2.0. See [LICENSE](LICENSE) for the full text.
 Glen Meehan, Project Lead · [GitHub profile](https://github.com/GlenMeehan)
 
 Built with Zig · Runs on bare metal · No runtime dependencies
+
+**How this project is built.** The code is written by the maintainer. Claude has drafted some kernel changes (for example the PCI-based ATA driver, the LAPIC timer calibration and the keyboard fix), which the maintainer reviewed, integrated and tested. AI tools are used for documentation drafting, GitHub project management and code review (Claude) and commenting (Copilot). The comments are deliberately thorough so that tools such as DeepWiki can index the code for wiki page generation. Every change is built, smoke-tested, and tested on real hardware by the maintainer. Socials are composed with the support of Gemini.
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/GlenMeehan/CadenzaOS)
